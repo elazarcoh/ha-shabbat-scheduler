@@ -6,13 +6,16 @@
 
 **Architecture:** All scheduling logic lives in pure functions (`block.py`, `device_ops.py`) with zero Home Assistant imports, so it is unit-testable in milliseconds. A thin engine layer executes those decisions against HA, serialising commands per device and stamping every call with an HA `Context`. Rules persist in HA `.storage`; YAML is an import/export view only.
 
-**Tech Stack:** Python 3.13, Home Assistant 2026.8.1, `uv` for dependency management, `pytest` + `pytest-homeassistant-custom-component` + `pytest-asyncio`, `PyYAML`.
+**Tech Stack:** Python 3.14 (uv-managed), Home Assistant 2026.8.1, `uv` for dependency management, `pytest` + `pytest-homeassistant-custom-component` + `pytest-asyncio`, `PyYAML`.
 
 ## Global Constraints
 
 Every task's requirements implicitly include this section.
 
-- Target Home Assistant **2026.8.1**, Python **3.13**.
+- Target Home Assistant **2026.8.1**, Python **3.14** (uv-managed, not the
+  system 3.13.5). Home Assistant raised its Python floor to `>=3.14.2` at
+  release 2026.3.0, so 2026.8.1 cannot be installed on 3.13 — verified against
+  PyPI metadata. Obtain the interpreter with `uv python install 3.14`.
 - `.storage` is the **source of truth**. YAML is import/export only — never a live-watched source.
 - **Fire once, never re-assert.** No enforcement in v1. A rule acts at its moment and then leaves the device alone.
 - **No implicit precedence.** Overlapping rules are surfaced as warnings, never silently resolved. Saving with conflicts is always permitted.
@@ -82,10 +85,22 @@ tests/
 
 ```bash
 cd /home/rpi4/ha-shabbat-scheduler
-uv init --name shabbat-scheduler --no-package .
+# HA 2026.8.1 requires Python >=3.14.2; the system interpreter is 3.13.5.
+uv python install 3.14
+uv init --name shabbat-scheduler --no-package --python 3.14 .
 uv add --dev pytest pytest-asyncio pytest-homeassistant-custom-component
 uv add pyyaml
 ```
+
+Verify the resolved versions before continuing — a silent backtrack to an
+older Home Assistant is the failure mode to catch here:
+
+```bash
+uv run python -c "import homeassistant, sys; print(sys.version.split()[0], homeassistant.__version__)"
+```
+
+Expected: a `3.14.x` interpreter and `homeassistant` `2026.8.1`. If either is
+lower, stop and report rather than proceeding.
 
 Then replace the generated `pyproject.toml` `[project]` section body so it reads:
 
@@ -94,7 +109,7 @@ Then replace the generated `pyproject.toml` `[project]` section body so it reads
 name = "shabbat-scheduler"
 version = "0.1.0"
 description = "Home Assistant integration scheduling appliances across Shabbat and Chag"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = ["pyyaml"]
 
 [tool.pytest.ini_options]

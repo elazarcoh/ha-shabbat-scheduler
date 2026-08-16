@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from dataclasses import replace
+from datetime import datetime, timedelta, tzinfo
 
-from .models import Block
+from .models import EREV, Block, ResolvedRule, Rule
 
 
 def compute_block(candle_lighting: datetime, havdalah: datetime) -> Block:
@@ -30,3 +31,41 @@ def compute_block(candle_lighting: datetime, havdalah: datetime) -> Block:
         erev_date=erev_date,
         day_dates=day_dates,
     )
+
+
+def merge_defaults(defaults: dict, rule: Rule) -> Rule:
+    """Fill unset keys from the global defaults, per key, without mutating."""
+    devices = rule.devices or tuple(defaults.get("devices", ()))
+    settings = {**defaults.get("settings", {}), **rule.settings}
+    return replace(rule, devices=tuple(devices), settings=settings)
+
+
+def has_profile(rules: list[Rule], length: int) -> bool:
+    """True when at least one rule is authored for this block length."""
+    return any(rule.profile == length for rule in rules)
+
+
+def resolve_rules(
+    rules: list[Rule], block: Block, tz: tzinfo
+) -> list[ResolvedRule]:
+    """Bind the profile matching this block to concrete datetimes."""
+    resolved: list[ResolvedRule] = []
+    for rule in rules:
+        if rule.profile != block.length or not rule.enabled:
+            continue
+
+        if rule.day == EREV:
+            day_date = block.erev_date
+        else:
+            index = int(rule.day)
+            if index < 1 or index > block.length:
+                continue
+            day_date = block.day_dates[index - 1]
+
+        resolved.append(
+            ResolvedRule(
+                when=datetime.combine(day_date, rule.time, tzinfo=tz), rule=rule
+            )
+        )
+
+    return sorted(resolved, key=lambda item: item.when)

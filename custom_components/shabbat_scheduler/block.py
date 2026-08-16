@@ -102,3 +102,46 @@ def find_conflicts(rules: list[Rule]) -> list[Conflict]:
                 )
             )
     return conflicts
+
+
+def desired_state_at(
+    rules: list[Rule],
+    block: Block,
+    when: datetime,
+    device: str,
+    tz: tzinfo,
+) -> Rule | Conflict | None:
+    """What state should `device` be in at `when`?
+
+    Restart catch-up is one caller; enforcement would be a second caller of
+    this same function, which is why it lives here rather than inside the
+    catch-up routine.
+
+    Returns None where undefined (before the first rule, or the device is
+    driven only by custom rules), and a Conflict where the answer is
+    ambiguous - callers must decline to act rather than guess.
+    """
+    passed = [
+        item
+        for item in resolve_rules(rules, block, tz)
+        if item.when <= when
+        and item.rule.action in _STATEFUL_ACTIONS
+        and device in item.rule.devices
+    ]
+    if not passed:
+        return None
+
+    latest = passed[-1].when
+    tied = [item.rule for item in passed if item.when == latest]
+
+    if len({rule.action for rule in tied}) > 1:
+        first = tied[0]
+        return Conflict(
+            profile=first.profile,
+            day=first.day,
+            time=first.time,
+            device=device,
+            rule_ids=tuple(rule.id for rule in tied),
+        )
+
+    return tied[-1]

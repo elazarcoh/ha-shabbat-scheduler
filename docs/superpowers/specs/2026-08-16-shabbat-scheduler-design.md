@@ -164,17 +164,42 @@ master toggle, and midnight. Each resolved rule gets one
 then left alone; turning it off by hand at 11:05 leaves it off. This is the
 direct fix for the behavior that made the previous component unusable.
 
+### Desired state
+
+`block.py` exports a first-class pure function:
+
+```python
+desired_state_at(rules, block, when, device) -> Action | None
+```
+
+It returns the action of the most recent already-passed `on`/`off` rule
+affecting that device within the block, or `None` where undefined (before the
+block's first rule, after its last, or when the device is driven only by
+`custom` rules). Restart catch-up is one caller; **enforcement is a second
+caller of the same function** (see below). It is exported deliberately rather
+than living inside the catch-up routine, so enforcement is an addition rather
+than a refactor.
+
 ### Restart catch-up
 
 The active block is the one whose span `[candle_lighting … last rule time]`
 contains now — deliberately extended past havdalah so post-havdalah rules such
-as `23:00 OFF` are covered. For each device, only the single most recent
-already-passed rule is applied.
+as `23:00 OFF` are covered. For each device, `desired_state_at(now)` is applied
+once.
 
 `action: custom` rules are **excluded from catch-up by default**
 (`replay_on_restart: false`), because an arbitrary script may not be idempotent —
 it might notify, toggle, or start a timed sequence. `on`/`off` rules are
 idempotent and always replay.
+
+### Command context (required now, enables enforcement later)
+
+Every service call the engine makes carries an HA `Context` that the engine
+records. The resulting `state_changed` event carries that context, which is how
+a change we caused is distinguished from a change a human caused. This is
+required in v1 even though nothing consumes it yet — without it, enforcement can
+never tell drift from deliberate override, which is the most likely reason the
+previous `scheduler` component fought the user.
 
 ### Applying actions per device
 
@@ -279,9 +304,44 @@ already working and was used to prototype the card.
 
 Final distribution is a HACS custom repository.
 
+## Future: enforcement (designed for, not built in v1)
+
+v1 is strictly fire-once. Enforcement is deliberately deferred because discrete
+events are far easier to reason about, test, and verify than a continuously
+evaluated state function — but the design keeps the door open at near-zero cost.
+
+When added, enforcement becomes a **second caller of `desired_state_at`**,
+reacting to `state_changed` instead of to a timer. Planned shape:
+
+```yaml
+enforce: none | window | until_next   # per rule, default none
+enforce_minutes: 15                   # when enforce == window
+```
+
+- **`none`** — pure fire-once (v1 behavior, and the only legal value for
+  `action: custom`).
+- **`window(N)`** — re-assert if actual ≠ desired, but only for N minutes after
+  the rule fires. Targets the observed failure mode (cloud AC offline or command
+  dropped at the moment of firing) and then goes quiet. Expected default choice.
+- **`until_next`** — re-assert until the next rule for that device.
+
+**All modes yield permanently to a manual override** until the next rule fires,
+detected via the recorded command context. The plugin must never fight the user;
+that behavior is what made the previous component unusable.
+
+Two definitional limits, not implementation shortcuts:
+
+- **`custom` rules can never be enforced.** A script's effect is opaque, so no
+  desired state is derivable. Devices driven solely by scripts stay fire-once.
+- **Enforcement is scoped to an active block**, between its first and last rule.
+  Outside that, desired state is undefined and enforcement must not run —
+  otherwise the plugin would be driving appliances on an ordinary weekday.
+
 ## Open questions
 
 - Zmanim-relative rule times — deferred, revisit once absolute times are proven.
+- Whether `until_next` enforcement is worth building at all, or whether
+  `window(N)` covers every real case.
 - Whether a Chag falling on a weekday needs coverage beyond the block model
   (the block model already handles it; only the legacy automations do not).
 - Whether `day_n` is needed at all in practice, or whether

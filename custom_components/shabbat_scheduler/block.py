@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timedelta, tzinfo
 
-from .models import EREV, Block, ResolvedRule, Rule
+from .models import EREV, Action, Block, Conflict, ResolvedRule, Rule
 
 
 def compute_block(candle_lighting: datetime, havdalah: datetime) -> Block:
@@ -69,3 +69,36 @@ def resolve_rules(
         )
 
     return sorted(resolved, key=lambda item: item.when)
+
+
+_STATEFUL_ACTIONS = (Action.ON, Action.OFF)
+
+
+def find_conflicts(rules: list[Rule]) -> list[Conflict]:
+    """Find enabled rules that disagree for one device at one moment.
+
+    There is no precedence rule by design, so a conflict has no defined
+    winner - it is reported rather than resolved.
+    """
+    grouped: dict[tuple, list[Rule]] = {}
+    for rule in rules:
+        if not rule.enabled or rule.action not in _STATEFUL_ACTIONS:
+            continue
+        for device in rule.devices:
+            grouped.setdefault(
+                (rule.profile, rule.day, rule.time, device), []
+            ).append(rule)
+
+    conflicts: list[Conflict] = []
+    for (profile, day, at, device), group in grouped.items():
+        if len({rule.action for rule in group}) > 1:
+            conflicts.append(
+                Conflict(
+                    profile=profile,
+                    day=day,
+                    time=at,
+                    device=device,
+                    rule_ids=tuple(rule.id for rule in group),
+                )
+            )
+    return conflicts

@@ -99,8 +99,15 @@ older Home Assistant is the failure mode to catch here:
 uv run python -c "import homeassistant, sys; print(sys.version.split()[0], homeassistant.__version__)"
 ```
 
-Expected: a `3.14.x` interpreter and `homeassistant` `2026.8.1`. If either is
-lower, stop and report rather than proceeding.
+Expected: a `3.14.x` interpreter and `homeassistant` `2026.8.1` or a later
+`2026.8.x` patch. If either is lower, stop and report rather than proceeding.
+
+`requires-python` must be `>=3.14.2`, not `>=3.14`. `uv.lock` resolves two
+branches: below 3.14.2 it pins `homeassistant==2026.2.3` (six months older,
+different API surface), and at/above it the intended `2026.8.x`. A loose floor
+lets a future `uv sync` on a 3.14.0/3.14.1 interpreter silently take the old
+branch. Commit `.python-version` as well, so the interpreter is pinned rather
+than merely constrained.
 
 Then replace the generated `pyproject.toml` `[project]` section body so it reads:
 
@@ -109,7 +116,7 @@ Then replace the generated `pyproject.toml` `[project]` section body so it reads
 name = "shabbat-scheduler"
 version = "0.1.0"
 description = "Home Assistant integration scheduling appliances across Shabbat and Chag"
-requires-python = ">=3.14"
+requires-python = ">=3.14.2"
 dependencies = ["pyyaml"]
 
 [tool.pytest.ini_options]

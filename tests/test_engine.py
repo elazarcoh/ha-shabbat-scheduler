@@ -428,3 +428,26 @@ async def test_enabled_master_lists_upcoming_rules(hass, engine, freezer):
     )
     await engine.async_refresh()
     assert [item.rule.id for item in engine.upcoming()] == ["r"]
+
+
+# --- Fix round 1: implausible zmanim must notify, not fail silently -------
+
+
+async def test_implausible_zmanim_notifies_and_schedules_nothing(hass, engine):
+    """havdalah at/before candle lighting must surface a notification.
+
+    The no-matching-profile silent-failure path already raises a
+    persistent_notification; this path (compute_block's ValueError) must
+    be equally loud, not just logged.
+    """
+    # havdalah BEFORE candle lighting - implausible per compute_block.
+    _set_zmanim(hass, "2026-08-15T17:01:00+00:00", "2026-08-14T15:44:00+00:00")
+    await engine.store.async_set_enabled(True)
+    await engine.store.async_add(
+        Rule(id="r", profile=1, day="1", time=time(11, 0),
+             action=Action.ON, devices=("input_boolean.t",))
+    )
+    await engine.async_refresh()
+
+    assert engine.upcoming() == []
+    assert hass.data.get("persistent_notification")

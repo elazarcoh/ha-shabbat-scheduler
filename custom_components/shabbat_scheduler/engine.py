@@ -99,6 +99,14 @@ class ShabbatEngine:
                 self._block = compute_block(*zmanim)
             except ValueError:
                 _LOGGER.warning("Ignoring implausible zmanim pair %s", zmanim)
+                persistent_notification.async_create(
+                    self.hass,
+                    f"The {CANDLE_SENSOR} and {HAVDALAH_SENSOR} sensors "
+                    "don't describe a valid Shabbat/Chag block (havdalah "
+                    "must be after candle lighting). The schedule is not "
+                    "running until this is fixed.",
+                    title="Shabbat Scheduler",
+                )
 
         if self._block is None or not self.store.enabled:
             return

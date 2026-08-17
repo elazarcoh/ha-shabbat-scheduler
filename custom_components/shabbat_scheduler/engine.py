@@ -8,7 +8,7 @@ from collections import defaultdict, deque
 from datetime import datetime
 
 from homeassistant.components import persistent_notification
-from homeassistant.core import Context, HomeAssistant
+from homeassistant.core import Context, CoreState, HomeAssistant
 from homeassistant.helpers.event import async_track_point_in_time
 from homeassistant.util import dt as dt_util
 
@@ -33,6 +33,12 @@ from .store import RuleStore
 _LOGGER = logging.getLogger(__name__)
 
 _UNTRUSTED_STATES = ("unknown", "unavailable")
+
+# Fixed notification ids so a condition that is re-evaluated on every state
+# change replaces its own notification instead of stacking dozens of copies,
+# and can be dismissed once it clears.
+_NOTIFY_ZMANIM = "shabbat_scheduler_zmanim"
+_NOTIFY_NO_PROFILE = "shabbat_scheduler_no_profile"
 
 # How many of our own recent context ids we remember per device. Bounded so a
 # long-running instance cannot grow this without limit; generous enough that
@@ -81,6 +87,13 @@ class ShabbatEngine:
     def upcoming(self) -> list[ResolvedRule]:
         return list(self._upcoming)
 
+    def _tz(self):
+        """The one timezone this integration is allowed to use."""
+        return dt_util.get_time_zone(self.hass.config.time_zone)
+
+    def _merged_rules(self) -> list[Rule]:
+        return [merge_defaults(self.store.defaults, r) for r in self.store.rules]
+
     def _read_zmanim(self) -> tuple[datetime, datetime] | None:
         candle = self.hass.states.get(CANDLE_SENSOR)
         havdalah = self.hass.states.get(HAVDALAH_SENSOR)
@@ -90,21 +103,40 @@ class ShabbatEngine:
         end = dt_util.parse_datetime(havdalah.state)
         if start is None or end is None:
             return None
-        return start, end
+        # HA serialises timestamp sensor states as UTC. compute_block takes
+        # `.date()` of each instant while resolve_rules combines those dates
+        # with the LOCAL timezone, so they must be localised here or every
+        # rule binds to the wrong calendar day wherever the UTC date and the
+        # local date differ (i.e. anywhere west of UTC). block.py stays pure.
+        tz = self._tz()
+        return start.astimezone(tz), end.astimezone(tz)
+
+    def _tail_of(self, block: Block) -> datetime | None:
+        """When the last rule of `block` is due, or None if it has none."""
+        resolved = resolve_rules(self._merged_rules(), block, self._tz())
+        return resolved[-1].when if resolved else None
 
     async def async_refresh(self) -> None:
-        """Recompute the block and rebuild every timer."""
+        """Recompute the block and rebuild every timer.
+
+        Idempotent: it cancels every timer of the block in force and rebuilds
+        them from that same block.
+        """
         for cancel in self._unsubscribes:
             cancel()
         self._unsubscribes = []
         self._upcoming = []
 
+        now = dt_util.now()
         zmanim = self._read_zmanim()
-        if zmanim is not None:
+        candidate: Block | None = None
+
+        if zmanim is None:
+            self._notify_zmanim_unreadable()
+        else:
+            persistent_notification.async_dismiss(self.hass, _NOTIFY_ZMANIM)
             try:
-                # Cache survives a jewish_calendar outage so the schedule is
-                # never silently wiped.
-                self._block = compute_block(*zmanim)
+                candidate = compute_block(*zmanim)
             except ValueError:
                 _LOGGER.warning("Ignoring implausible zmanim pair %s", zmanim)
                 persistent_notification.async_create(
@@ -114,26 +146,47 @@ class ShabbatEngine:
                     "must be after candle lighting). The schedule is not "
                     "running until this is fixed.",
                     title="Shabbat Scheduler",
+                    notification_id=_NOTIFY_ZMANIM,
                 )
+
+        if candidate is not None and candidate != self._block:
+            # Both jewish_calendar sensors advance to the NEXT occurrence the
+            # moment `now >= havdalah`, which happens mid-block: rules are
+            # deliberately not clamped to the zmanim, so a "23:00 on the last
+            # day" rule is still pending at that point. Adopting the new block
+            # there would cancel it and the appliance would run all night.
+            # Hold the current block until its own rule tail is spent.
+            tail = self._tail_of(self._block) if self._block is not None else None
+            if tail is not None and now <= tail:
+                _LOGGER.debug(
+                    "Zmanim rolled forward to %s, but the current block still "
+                    "has rules pending until %s; keeping it",
+                    candidate.erev_date,
+                    tail,
+                )
+            else:
+                self._block = candidate
 
         if self._block is None or not self.store.enabled:
             return
 
-        rules = [merge_defaults(self.store.defaults, r) for r in self.store.rules]
+        rules = self._merged_rules()
 
         if not has_profile(rules, self._block.length):
             persistent_notification.async_create(
                 self.hass,
-                f"No rules are configured for a {self._block.length}-day block; "
+                f"No rules are enabled for a {self._block.length}-day block; "
                 "nothing will run.",
                 title="Shabbat Scheduler",
+                notification_id=_NOTIFY_NO_PROFILE,
             )
             return
 
-        tz = dt_util.get_time_zone(self.hass.config.time_zone)
-        now = dt_util.now()
+        persistent_notification.async_dismiss(self.hass, _NOTIFY_NO_PROFILE)
         self._upcoming = [
-            item for item in resolve_rules(rules, self._block, tz) if item.when > now
+            item
+            for item in resolve_rules(rules, self._block, self._tz())
+            if item.when > now
         ]
 
         for item in self._upcoming:
@@ -142,6 +195,36 @@ class ShabbatEngine:
                     self.hass, self._make_callback(item), item.when
                 )
             )
+
+    def _notify_zmanim_unreadable(self) -> None:
+        """Say so when the zmanim sensors cannot be read at all.
+
+        Every other failure path here is loud; this one used to return in
+        silence, so a renamed or missing jewish_calendar entity left the
+        integration loaded, the master switch on, and nothing ever happening.
+
+        Two deliberate limits: nothing is said while a cached block exists
+        (that path is correctly quiet and survives a jewish_calendar outage),
+        and nothing is said before HA has finished starting, because config
+        entries set up concurrently and jewish_calendar has simply not
+        published its sensors yet at that point.
+        """
+        if self._block is not None or self.hass.state is not CoreState.running:
+            return
+        _LOGGER.warning(
+            "Cannot read %s / %s; no block is known, so nothing is scheduled",
+            CANDLE_SENSOR,
+            HAVDALAH_SENSOR,
+        )
+        persistent_notification.async_create(
+            self.hass,
+            f"Shabbat Scheduler cannot read {CANDLE_SENSOR} and "
+            f"{HAVDALAH_SENSOR}. Is the Jewish Calendar integration set up, "
+            "and are those entity ids still correct? Nothing is scheduled "
+            "until they can be read.",
+            title="Shabbat Scheduler",
+            notification_id=_NOTIFY_ZMANIM,
+        )
 
     def _make_callback(self, item: ResolvedRule):
         async def _fire(_now) -> None:
@@ -158,9 +241,9 @@ class ShabbatEngine:
         if self._block is None or not self.store.enabled:
             return []
 
-        tz = dt_util.get_time_zone(self.hass.config.time_zone)
+        tz = self._tz()
         now = dt_util.now()
-        rules = [merge_defaults(self.store.defaults, r) for r in self.store.rules]
+        rules = self._merged_rules()
 
         devices = {device for rule in rules for device in rule.devices}
         results: list[dict] = []

@@ -620,3 +620,134 @@ async def test_catch_up_declines_to_act_on_a_conflicting_pair(hass, engine):
 
     assert results == []
     assert hass.states.get("input_boolean.t").state == "off"
+
+
+# --- Final review C1: a rolled-forward zmanim pair must not cancel the -----
+# --- remaining rules of the block that is still in force -------------------
+
+from datetime import date
+
+
+async def test_rolled_forward_zmanim_keep_the_current_blocks_tail(
+    hass, engine, freezer
+):
+    """At havdalah jewish_calendar advances to NEXT week - mid-block.
+
+    Both zmanim sensors jump to the following occurrence the moment
+    `now >= havdalah`, which fires the state listener and refreshes. If the
+    engine adopted that candidate block it would cancel every still-pending
+    timer of the block actually in force, so a deliberately post-havdalah
+    rule ("23:00 turn everything off on the last day") would never fire and
+    the AC would run all night with nothing in the log.
+    """
+    freezer.move_to("2026-08-15T05:00:00+00:00")
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.store.async_set_enabled(True)
+    hass.states.async_set("input_boolean.t", "on")
+    await engine.store.async_replace_all({}, [
+        Rule(id="late-off", profile=1, day="1", time=time(23, 0),
+             action=Action.OFF, devices=("input_boolean.t",)),
+    ])
+    await engine.async_refresh()
+    assert [item.rule.id for item in engine.upcoming()] == ["late-off"]
+
+    # Havdalah passes (20:01 local); the sensors roll forward to next week.
+    freezer.move_to("2026-08-15T17:01:30+00:00")
+    _set_zmanim(hass, "2026-08-21T15:36:00+00:00", "2026-08-22T16:53:00+00:00")
+    await engine.async_refresh()
+
+    assert engine.current_block.erev_date == date(2026, 8, 14)
+    assert [item.rule.id for item in engine.upcoming()] == ["late-off"]
+
+    # 23:00 Asia/Jerusalem == 20:00 UTC.
+    async_fire_time_changed(
+        hass, dt_util.parse_datetime("2026-08-15T20:00:00+00:00")
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get("input_boolean.t").state == "off"
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_next_block_is_adopted_once_the_tail_has_passed(
+    hass, engine, freezer
+):
+    """The hold is only until the current block's last rule is spent."""
+    freezer.move_to("2026-08-15T05:00:00+00:00")
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.store.async_set_enabled(True)
+    await engine.store.async_replace_all({}, [
+        Rule(id="late-off", profile=1, day="1", time=time(23, 0),
+             action=Action.OFF, devices=("input_boolean.t",)),
+    ])
+    await engine.async_refresh()
+    assert engine.current_block.erev_date == date(2026, 8, 14)
+
+    # Sunday morning: the 23:00 tail is long gone.
+    freezer.move_to("2026-08-16T05:00:00+00:00")
+    _set_zmanim(hass, "2026-08-21T15:36:00+00:00", "2026-08-22T16:53:00+00:00")
+    await engine.async_refresh()
+
+    assert engine.current_block.erev_date == date(2026, 8, 21)
+    assert [item.rule.id for item in engine.upcoming()] == ["late-off"]
+
+
+# --- Final review I1: block dates must be derived in the LOCAL timezone ----
+
+
+async def test_block_dates_follow_the_local_timezone_not_utc(hass, test_booleans):
+    """HA serialises timestamp sensors as UTC; the dates must still be local.
+
+    Israel hides this bug (evening local == same UTC date), so the test uses
+    a timezone west of UTC where the two genuinely differ.
+    """
+    await hass.config.async_set_time_zone("America/New_York")
+    store = RuleStore(hass)
+    await store.async_load()
+    engine = ShabbatEngine(hass, store)
+
+    # 20:44 local on Friday 14 Aug is 00:44 UTC on Saturday 15 Aug.
+    _set_zmanim(hass, "2026-08-15T00:44:00+00:00", "2026-08-16T00:53:00+00:00")
+    await engine.async_refresh()
+
+    assert engine.current_block.erev_date == date(2026, 8, 14)
+    assert engine.current_block.day_dates == (date(2026, 8, 15),)
+    assert engine.current_block.length == 1
+
+
+# --- Final review I5: unreadable zmanim sensors must not fail silently -----
+
+
+async def test_unreadable_zmanim_with_no_cached_block_notifies(hass, engine):
+    """A renamed/missing jewish_calendar entity used to be wholly silent."""
+    await engine.store.async_set_enabled(True)
+    await engine.async_refresh()
+
+    assert engine.current_block is None
+    assert "shabbat_scheduler_zmanim" in hass.data["persistent_notification"]
+    message = hass.data["persistent_notification"]["shabbat_scheduler_zmanim"][
+        "message"
+    ]
+    assert CANDLE_SENSOR in message
+    assert HAVDALAH_SENSOR in message
+
+
+async def test_unreadable_zmanim_is_quiet_when_a_block_is_cached(hass, engine):
+    """The cached-block path is correctly quiet - it must stay that way."""
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.async_refresh()
+    hass.states.async_remove(CANDLE_SENSOR)
+    await engine.async_refresh()
+
+    assert engine.current_block is not None
+    assert "shabbat_scheduler_zmanim" not in hass.data.get(
+        "persistent_notification", {}
+    )
+
+
+async def test_zmanim_notification_is_dismissed_once_readable(hass, engine):
+    await engine.async_refresh()
+    assert "shabbat_scheduler_zmanim" in hass.data["persistent_notification"]
+
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.async_refresh()
+    assert "shabbat_scheduler_zmanim" not in hass.data["persistent_notification"]

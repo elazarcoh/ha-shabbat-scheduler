@@ -17,3 +17,6 @@ FAN_SYNONYMS: dict[str, tuple[str, ...]] = {
     "silent": ("silent", "quiet", "low"),
     "low": ("low", "quiet", "silent"),
 }
+
+CANDLE_SENSOR = "sensor.jewish_calendar_upcoming_candle_lighting"
+HAVDALAH_SENSOR = "sensor.jewish_calendar_upcoming_havdalah"

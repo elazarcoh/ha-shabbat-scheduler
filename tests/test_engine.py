@@ -338,3 +338,93 @@ async def test_retry_succeeds_on_second_attempt(hass, engine):
 
     assert len(attempts) == 2
     assert results[0]["outcome"] == "changed"
+
+
+from datetime import timedelta
+
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import async_fire_time_changed
+
+from custom_components.shabbat_scheduler.const import CANDLE_SENSOR, HAVDALAH_SENSOR
+
+
+def _set_zmanim(hass, candle: str, havdalah: str):
+    hass.states.async_set(CANDLE_SENSOR, candle)
+    hass.states.async_set(HAVDALAH_SENSOR, havdalah)
+
+
+async def test_refresh_computes_the_block(hass, engine):
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.async_refresh()
+    assert engine.current_block.length == 1
+
+
+async def test_missing_sensor_keeps_the_cached_block(hass, engine):
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.async_refresh()
+
+    hass.states.async_remove(CANDLE_SENSOR)
+    await engine.async_refresh()
+    assert engine.current_block is not None  # cached, not wiped
+
+
+async def test_no_matching_profile_notifies(hass, engine):
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    # The master must be on, otherwise refresh returns before the check.
+    await engine.store.async_set_enabled(True)
+    await engine.store.async_add(
+        Rule(id="r", profile=3, day="1", time=time(11, 0), action=Action.ON)
+    )
+    await engine.async_refresh()
+
+    assert engine.upcoming() == []
+    # DEVIATION from the brief (flagged, not silently fixed): this HA
+    # version's persistent_notification no longer creates
+    # `persistent_notification.*` entity states (see the sibling test
+    # `test_failed_call_is_retried_then_notified` above, which already
+    # documents this and checks hass.data instead). The brief's literal
+    # assertion on hass.states.async_all() would always be empty here, so
+    # the notification would never be verified as having fired. Using the
+    # same hass.data check already established in this file.
+    assert hass.data.get("persistent_notification")
+
+
+async def test_disabled_master_schedules_nothing(hass, engine):
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.store.async_add(
+        Rule(id="r", profile=1, day="1", time=time(11, 0),
+             action=Action.ON, devices=("input_boolean.t",))
+    )
+    await engine.async_refresh()  # master defaults OFF
+    assert engine.upcoming() == []
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+# DEVIATION from the brief (flagged, not silently fixed): once time is
+# frozen (see below) `async_refresh` schedules a genuine
+# `async_track_point_in_time` callback ~23h out for the rule's `when`. That
+# handle is still pending at test teardown, which
+# pytest-homeassistant-custom-component's `verify_cleanup` fixture treats as
+# a hard failure ("Lingering timer") outside tests/components/*. This is a
+# real, scheduling-only test - nothing in it fires or cancels the timer - so
+# the framework's own documented escape hatch applies (see
+# `expected_lingering_timers` in pytest_homeassistant_custom_component's
+# plugins.py).
+async def test_enabled_master_lists_upcoming_rules(hass, engine, freezer):
+    # DEVIATION from the brief (flagged, not silently fixed): async_refresh
+    # filters to `item.when > now` using the real wall clock, and the
+    # brief's fixed zmanim literals place day 1 at 2026-08-15T11:00
+    # Asia/Jerusalem. That instant is now in the past relative to the
+    # machine's real clock, so without freezing time this test would fail
+    # for a reason unrelated to the code under test - it is time-bombed as
+    # written. Freezing to a moment before the block keeps the brief's exact
+    # zmanim literals unchanged while restoring the comparison it depends on.
+    freezer.move_to("2026-08-14T12:00:00+03:00")
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.store.async_set_enabled(True)
+    await engine.store.async_add(
+        Rule(id="r", profile=1, day="1", time=time(11, 0),
+             action=Action.ON, devices=("input_boolean.t",))
+    )
+    await engine.async_refresh()
+    assert [item.rule.id for item in engine.upcoming()] == ["r"]

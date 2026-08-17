@@ -9,11 +9,19 @@ from datetime import datetime
 
 from homeassistant.components import persistent_notification
 from homeassistant.core import Context, HomeAssistant
+from homeassistant.helpers.event import async_track_point_in_time
 from homeassistant.util import dt as dt_util
 
-from .const import EVENT_RULE_APPLIED, RETRY_ATTEMPTS, RETRY_DELAY_SECONDS
+from .block import compute_block, has_profile, merge_defaults, resolve_rules
+from .const import (
+    CANDLE_SENSOR,
+    EVENT_RULE_APPLIED,
+    HAVDALAH_SENSOR,
+    RETRY_ATTEMPTS,
+    RETRY_DELAY_SECONDS,
+)
 from .device_ops import plan_calls
-from .models import Action, Rule
+from .models import Action, Block, ResolvedRule, Rule
 from .store import RuleStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -39,6 +47,9 @@ class ShabbatEngine:
         self._our_contexts: dict[str, deque[str]] = defaultdict(
             lambda: deque(maxlen=_CONTEXT_HISTORY_PER_DEVICE)
         )
+        self._block: Block | None = None
+        self._unsubscribes: list = []
+        self._upcoming: list[ResolvedRule] = []
 
     async def async_apply_rule(self, rule: Rule, force: bool = False) -> list[dict]:
         """Apply one rule, returning a per-attribute outcome report."""
@@ -54,6 +65,73 @@ class ShabbatEngine:
             EVENT_RULE_APPLIED, {"rule_id": rule.id, "results": results}
         )
         return results
+
+    @property
+    def current_block(self) -> Block | None:
+        return self._block
+
+    def upcoming(self) -> list[ResolvedRule]:
+        return list(self._upcoming)
+
+    def _read_zmanim(self) -> tuple[datetime, datetime] | None:
+        candle = self.hass.states.get(CANDLE_SENSOR)
+        havdalah = self.hass.states.get(HAVDALAH_SENSOR)
+        if candle is None or havdalah is None:
+            return None
+        start = dt_util.parse_datetime(candle.state)
+        end = dt_util.parse_datetime(havdalah.state)
+        if start is None or end is None:
+            return None
+        return start, end
+
+    async def async_refresh(self) -> None:
+        """Recompute the block and rebuild every timer."""
+        for cancel in self._unsubscribes:
+            cancel()
+        self._unsubscribes = []
+        self._upcoming = []
+
+        zmanim = self._read_zmanim()
+        if zmanim is not None:
+            try:
+                # Cache survives a jewish_calendar outage so the schedule is
+                # never silently wiped.
+                self._block = compute_block(*zmanim)
+            except ValueError:
+                _LOGGER.warning("Ignoring implausible zmanim pair %s", zmanim)
+
+        if self._block is None or not self.store.enabled:
+            return
+
+        rules = [merge_defaults(self.store.defaults, r) for r in self.store.rules]
+
+        if not has_profile(rules, self._block.length):
+            persistent_notification.async_create(
+                self.hass,
+                f"No rules are configured for a {self._block.length}-day block; "
+                "nothing will run.",
+                title="Shabbat Scheduler",
+            )
+            return
+
+        tz = dt_util.get_time_zone(self.hass.config.time_zone)
+        now = dt_util.now()
+        self._upcoming = [
+            item for item in resolve_rules(rules, self._block, tz) if item.when > now
+        ]
+
+        for item in self._upcoming:
+            self._unsubscribes.append(
+                async_track_point_in_time(
+                    self.hass, self._make_callback(item), item.when
+                )
+            )
+
+    def _make_callback(self, item: ResolvedRule):
+        async def _fire(_now) -> None:
+            await self.async_apply_rule(item.rule)
+
+        return _fire
 
     async def _apply_custom(self, rule: Rule) -> list[dict]:
         if not rule.script:

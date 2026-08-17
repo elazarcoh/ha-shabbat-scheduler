@@ -451,3 +451,76 @@ async def test_implausible_zmanim_notifies_and_schedules_nothing(hass, engine):
 
     assert engine.upcoming() == []
     assert hass.data.get("persistent_notification")
+
+
+# --- Task 12: restart catch-up ---------------------------------------------
+
+from freezegun import freeze_time
+
+
+# DEVIATION from the brief (flagged, not silently fixed): the brief's three
+# catch-up tests never call `engine.async_refresh()`, but `async_catch_up`
+# reads `self._block`, which starts as None and is only ever populated by
+# `async_refresh()` (see its assignment from `compute_block(*zmanim)`). As
+# written, every one of the brief's tests would exercise nothing but the
+# `self._block is None` early-return - test 1 would then fail outright
+# (asserting "on" while the device never gets touched) and tests 2-3 would
+# pass, but only vacuously, for the wrong reason. In real use,
+# `async_setup_entry` calls `async_refresh()` before `async_catch_up()` so
+# `_block` is already populated by the time catch-up runs; these tests add
+# that same call to match. `async_refresh()` is called outside `freeze_time`
+# since block computation only reads the zmanim sensors, never the clock.
+async def test_catch_up_applies_the_last_passed_rule(hass, engine):
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.store.async_set_enabled(True)
+    hass.states.async_set("input_boolean.t", "off")
+    await engine.store.async_replace_all({}, [
+        Rule(id="on", profile=1, day="1", time=time(11, 0),
+             action=Action.ON, devices=("input_boolean.t",)),
+        Rule(id="off", profile=1, day="1", time=time(18, 0),
+             action=Action.OFF, devices=("input_boolean.t",)),
+    ])
+    await engine.async_refresh()
+
+    # 11:30 local - the 11:00 ON has passed, 18:00 OFF has not.
+    with freeze_time("2026-08-15T08:30:00+00:00"):
+        results = await engine.async_catch_up()
+    await hass.async_block_till_done()
+
+    assert hass.states.get("input_boolean.t").state == "on"
+    assert [r["outcome"] for r in results] == ["changed"]
+
+
+async def test_catch_up_before_any_rule_does_nothing(hass, engine):
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.store.async_set_enabled(True)
+    hass.states.async_set("input_boolean.t", "off")
+    await engine.store.async_replace_all({}, [
+        Rule(id="on", profile=1, day="1", time=time(11, 0),
+             action=Action.ON, devices=("input_boolean.t",)),
+    ])
+    await engine.async_refresh()
+
+    with freeze_time("2026-08-15T06:00:00+00:00"):  # 09:00 local
+        assert await engine.async_catch_up() == []
+
+
+async def test_catch_up_skips_custom_rules_by_default(hass, engine):
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.store.async_set_enabled(True)
+    calls = []
+
+    async def record(call):
+        calls.append(call)
+
+    hass.services.async_register("script", "turn_on", record)
+    await engine.store.async_replace_all({}, [
+        Rule(id="c", profile=1, day="1", time=time(11, 0),
+             action=Action.CUSTOM, script="script.demo"),
+    ])
+    await engine.async_refresh()
+
+    with freeze_time("2026-08-15T08:30:00+00:00"):
+        await engine.async_catch_up()
+    await hass.async_block_till_done()
+    assert calls == []

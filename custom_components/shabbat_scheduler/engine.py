@@ -12,7 +12,13 @@ from homeassistant.core import Context, HomeAssistant
 from homeassistant.helpers.event import async_track_point_in_time
 from homeassistant.util import dt as dt_util
 
-from .block import compute_block, has_profile, merge_defaults, resolve_rules
+from .block import (
+    compute_block,
+    desired_state_at,
+    has_profile,
+    merge_defaults,
+    resolve_rules,
+)
 from .const import (
     CANDLE_SENSOR,
     EVENT_RULE_APPLIED,
@@ -21,7 +27,7 @@ from .const import (
     RETRY_DELAY_SECONDS,
 )
 from .device_ops import plan_calls
-from .models import Action, Block, ResolvedRule, Rule
+from .models import Action, Block, Conflict, ResolvedRule, Rule
 from .store import RuleStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -140,6 +146,43 @@ class ShabbatEngine:
             await self.async_apply_rule(item.rule)
 
         return _fire
+
+    async def async_catch_up(self) -> list[dict]:
+        """Re-apply the current desired state after a restart.
+
+        Only the most recent already-passed rule per device is applied, and
+        because application is idempotent this is safe to repeat.
+        """
+        if self._block is None or not self.store.enabled:
+            return []
+
+        tz = dt_util.get_time_zone(self.hass.config.time_zone)
+        now = dt_util.now()
+        rules = [merge_defaults(self.store.defaults, r) for r in self.store.rules]
+
+        devices = {device for rule in rules for device in rule.devices}
+        results: list[dict] = []
+
+        for device in sorted(devices):
+            wanted = desired_state_at(rules, self._block, now, device, tz)
+            if wanted is None:
+                continue
+            if isinstance(wanted, Conflict):
+                _LOGGER.warning(
+                    "%s: ambiguous desired state (rules %s); not acting",
+                    device, ", ".join(wanted.rule_ids),
+                )
+                continue
+            results.extend(await self._apply_device(wanted, device, force=False))
+
+        # Custom rules are excluded above because desired_state_at ignores
+        # them; replay them only where explicitly opted in.
+        for rule in rules:
+            if rule.action is Action.CUSTOM and rule.replay_on_restart:
+                results.extend(await self._apply_custom(rule))
+
+        self.last_run = results
+        return results
 
     async def _apply_custom(self, rule: Rule) -> list[dict]:
         if not rule.script:

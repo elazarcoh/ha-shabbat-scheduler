@@ -15,6 +15,9 @@ def test_rule_dict_round_trip():
     )
     restored = rule_from_dict(rule_to_dict(rule))
     assert restored == rule
+    assert isinstance(restored.action, Action)
+    assert isinstance(restored.devices, tuple)
+    assert isinstance(restored.time, time)
 
 
 async def test_store_starts_empty_and_disabled(hass):

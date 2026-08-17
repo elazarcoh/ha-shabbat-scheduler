@@ -524,3 +524,99 @@ async def test_catch_up_skips_custom_rules_by_default(hass, engine):
         await engine.async_catch_up()
     await hass.async_block_till_done()
     assert calls == []
+
+
+# --- Fix round 1: custom replay must be gated by resolve_rules, not free --
+
+
+async def test_catch_up_replays_a_passed_replay_on_restart_custom_rule(hass, engine):
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.store.async_set_enabled(True)
+    calls = []
+
+    async def record(call):
+        calls.append(call)
+
+    hass.services.async_register("script", "turn_on", record)
+    await engine.store.async_replace_all({}, [
+        Rule(id="c", profile=1, day="1", time=time(11, 0),
+             action=Action.CUSTOM, script="script.demo",
+             replay_on_restart=True),
+    ])
+    await engine.async_refresh()
+
+    # 11:30 local - the 11:00 custom rule has passed.
+    with freeze_time("2026-08-15T08:30:00+00:00"):
+        await engine.async_catch_up()
+    await hass.async_block_till_done()
+    assert len(calls) == 1
+
+
+async def test_catch_up_does_not_replay_a_custom_rule_that_has_not_passed(hass, engine):
+    # Regression test for the bug the coordinator's round-1 review caught:
+    # the original implementation looped over the unfiltered rule list and
+    # replayed every `replay_on_restart` custom rule unconditionally,
+    # firing scripts scheduled for later the same day immediately on
+    # restart. Confirmed to fail against the pre-fix code (calls == 1).
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.store.async_set_enabled(True)
+    calls = []
+
+    async def record(call):
+        calls.append(call)
+
+    hass.services.async_register("script", "turn_on", record)
+    await engine.store.async_replace_all({}, [
+        Rule(id="c", profile=1, day="1", time=time(18, 0),
+             action=Action.CUSTOM, script="script.demo",
+             replay_on_restart=True),
+    ])
+    await engine.async_refresh()
+
+    # 11:30 local - the 18:00 custom rule has NOT passed yet.
+    with freeze_time("2026-08-15T08:30:00+00:00"):
+        await engine.async_catch_up()
+    await hass.async_block_till_done()
+    assert calls == []
+
+
+async def test_catch_up_does_not_replay_a_disabled_custom_rule(hass, engine):
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.store.async_set_enabled(True)
+    calls = []
+
+    async def record(call):
+        calls.append(call)
+
+    hass.services.async_register("script", "turn_on", record)
+    await engine.store.async_replace_all({}, [
+        Rule(id="c", profile=1, day="1", time=time(11, 0),
+             action=Action.CUSTOM, script="script.demo",
+             replay_on_restart=True, enabled=False),
+    ])
+    await engine.async_refresh()
+
+    with freeze_time("2026-08-15T08:30:00+00:00"):
+        await engine.async_catch_up()
+    await hass.async_block_till_done()
+    assert calls == []
+
+
+async def test_catch_up_declines_to_act_on_a_conflicting_pair(hass, engine):
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.store.async_set_enabled(True)
+    hass.states.async_set("input_boolean.t", "off")
+    await engine.store.async_replace_all({}, [
+        Rule(id="on", profile=1, day="1", time=time(11, 0),
+             action=Action.ON, devices=("input_boolean.t",)),
+        Rule(id="off-same-time", profile=1, day="1", time=time(11, 0),
+             action=Action.OFF, devices=("input_boolean.t",)),
+    ])
+    await engine.async_refresh()
+
+    with freeze_time("2026-08-15T08:30:00+00:00"):
+        results = await engine.async_catch_up()
+    await hass.async_block_till_done()
+
+    assert results == []
+    assert hass.states.get("input_boolean.t").state == "off"

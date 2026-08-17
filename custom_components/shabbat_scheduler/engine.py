@@ -176,10 +176,18 @@ class ShabbatEngine:
             results.extend(await self._apply_device(wanted, device, force=False))
 
         # Custom rules are excluded above because desired_state_at ignores
-        # them; replay them only where explicitly opted in.
-        for rule in rules:
-            if rule.action is Action.CUSTOM and rule.replay_on_restart:
-                results.extend(await self._apply_custom(rule))
+        # them; replay them only where explicitly opted in, and only once
+        # they have actually passed. Reuse resolve_rules rather than
+        # hand-rolling profile/enabled/time filtering a second time - it
+        # already binds each rule to the concrete datetime the on/off path
+        # trusts.
+        for item in resolve_rules(rules, self._block, tz):
+            if (
+                item.rule.action is Action.CUSTOM
+                and item.rule.replay_on_restart
+                and item.when <= now
+            ):
+                results.extend(await self._apply_custom(item.rule))
 
         self.last_run = results
         return results

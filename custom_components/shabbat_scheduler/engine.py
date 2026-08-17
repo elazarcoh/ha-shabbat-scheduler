@@ -7,10 +7,11 @@ import logging
 from collections import defaultdict, deque
 from datetime import datetime
 
+from homeassistant.components import persistent_notification
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from .const import EVENT_RULE_APPLIED
+from .const import EVENT_RULE_APPLIED, RETRY_ATTEMPTS, RETRY_DELAY_SECONDS
 from .device_ops import plan_calls
 from .models import Action, Rule
 from .store import RuleStore
@@ -150,29 +151,34 @@ class ShabbatEngine:
             return result
 
         data = {"entity_id": entity_id, **call.data}
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            # Stamped before each attempt - see the note in Task 9. Stamping
+            # after a successful call makes every later reading look stale.
+            self._last_command[entity_id] = dt_util.utcnow()
+            try:
+                await self.hass.services.async_call(
+                    call.domain, call.service, data,
+                    blocking=True, context=self._new_context(entity_id),
+                )
+            except Exception:  # noqa: BLE001 - one device must not abort the rest
+                _LOGGER.warning(
+                    "%s: %s.%s failed (attempt %s/%s)",
+                    entity_id, call.domain, call.service, attempt, RETRY_ATTEMPTS,
+                )
+                if attempt < RETRY_ATTEMPTS:
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
+                    continue
+                persistent_notification.async_create(
+                    self.hass,
+                    f"{entity_id}: {call.domain}.{call.service} failed after "
+                    f"{RETRY_ATTEMPTS} attempts.",
+                    title="Shabbat Scheduler",
+                )
+                result["outcome"] = "failed"
+                return result
 
-        # Stamp BEFORE issuing the call, not after it returns. The guard's
-        # question is "does the state I just read predate my own command?".
-        # A local entity's state write happens synchronously inside
-        # async_call, so a stamp taken after it returns would always be
-        # later than that write - reporting every subsequent read as stale
-        # forever. Stamping first means a fast local write lands after
-        # `sent` (fresh, correctly not stale) while a genuinely lagging
-        # cloud device's write still lands before `sent` (correctly stale).
-        # It also means a FAILED call still marks the device as
-        # recently-commanded: we cannot know whether a failed call landed,
-        # so the conservative choice is to force the next apply rather than
-        # trust the reading.
-        self._last_command[entity_id] = dt_util.utcnow()
-        try:
-            await self.hass.services.async_call(
-                call.domain, call.service, data,
-                blocking=True, context=self._new_context(entity_id),
-            )
-        except Exception:  # noqa: BLE001 - one device must not abort the rest
-            _LOGGER.exception("%s: %s.%s failed", entity_id, call.domain, call.service)
-            result["outcome"] = "failed"
+            result["outcome"] = "changed"
             return result
 
-        result["outcome"] = "changed"
+        result["outcome"] = "failed"
         return result

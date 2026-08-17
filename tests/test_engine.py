@@ -1,6 +1,7 @@
 import asyncio
 import itertools
 from datetime import time
+from unittest.mock import patch
 
 import pytest
 from homeassistant.components.climate import (
@@ -275,15 +276,65 @@ async def test_sibling_device_still_applied_after_a_failure(hass, engine):
     hass.states.async_set("input_boolean.t", "off")
     hass.states.async_set("input_boolean.salon", "off")
 
-    results = await engine.async_apply_rule(
-        _rule(devices=("input_boolean.t", "input_boolean.salon"))
-    )
+    # Task 10 added retry-on-failure: input_boolean.t now fails all
+    # RETRY_ATTEMPTS attempts before the rule moves on. Patch sleep so the
+    # retry delays between those attempts don't slow the test down.
+    with patch("custom_components.shabbat_scheduler.engine.asyncio.sleep"):
+        results = await engine.async_apply_rule(
+            _rule(devices=("input_boolean.t", "input_boolean.salon"))
+        )
     await hass.async_block_till_done()
 
-    # Both devices were reached - the failure on the first did not abort
-    # processing of the second.
-    assert seen_entity_ids == ["input_boolean.t", "input_boolean.salon"]
+    # Both devices were reached - the failure on the first (retried
+    # RETRY_ATTEMPTS times) did not abort processing of the second.
+    assert seen_entity_ids == ["input_boolean.t"] * 3 + ["input_boolean.salon"]
 
     by_entity = {r["entity_id"]: r["outcome"] for r in results}
     assert by_entity["input_boolean.t"] == "failed"
     assert by_entity["input_boolean.salon"] == "changed"
+
+
+# --- Task 10: retry on failure ----------------------------------------------
+
+
+async def test_failed_call_is_retried_then_notified(hass, engine):
+    # A bare `switch` entity: the switch component is not loaded, so the stub
+    # service below is the only handler and can be made to fail on demand.
+    hass.states.async_set("switch.t", "off")
+    attempts = []
+
+    async def always_fail(call):
+        attempts.append(call)
+        raise RuntimeError("boom")
+
+    hass.services.async_register("switch", "turn_on", always_fail)
+
+    rule = _rule(devices=("switch.t",))
+    # Patch sleep so the test does not actually wait 60 seconds.
+    with patch("custom_components.shabbat_scheduler.engine.asyncio.sleep"):
+        results = await engine.async_apply_rule(rule)
+
+    assert len(attempts) == 3
+    assert results[0]["outcome"] == "failed"
+    # This HA version's persistent_notification no longer creates entity
+    # states (see homeassistant/components/persistent_notification) - it
+    # keeps notifications in hass.data instead, so that's what we check.
+    assert hass.data.get("persistent_notification")
+
+
+async def test_retry_succeeds_on_second_attempt(hass, engine):
+    hass.states.async_set("switch.t", "off")
+    attempts = []
+
+    async def fail_once(call):
+        attempts.append(call)
+        if len(attempts) == 1:
+            raise RuntimeError("transient")
+
+    hass.services.async_register("switch", "turn_on", fail_once)
+
+    with patch("custom_components.shabbat_scheduler.engine.asyncio.sleep"):
+        results = await engine.async_apply_rule(_rule(devices=("switch.t",)))
+
+    assert len(attempts) == 2
+    assert results[0]["outcome"] == "changed"

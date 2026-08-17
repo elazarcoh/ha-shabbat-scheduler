@@ -2441,10 +2441,18 @@ from .models import Conflict
             results.extend(await self._apply_device(wanted, device, force=False))
 
         # Custom rules are excluded above because desired_state_at ignores
-        # them; replay them only where explicitly opted in.
-        for rule in rules:
-            if rule.action is Action.CUSTOM and rule.replay_on_restart:
-                results.extend(await self._apply_custom(rule))
+        # them; replay them only where explicitly opted in AND already passed.
+        # Resolve through the same path as everything else so profile
+        # matching, the enabled check and date binding stay consistent -
+        # otherwise a disabled script, a script from another profile, or one
+        # scheduled for later today all fire on every restart.
+        for item in resolve_rules(rules, self._block, tz):
+            if (
+                item.when <= now
+                and item.rule.action is Action.CUSTOM
+                and item.rule.replay_on_restart
+            ):
+                results.extend(await self._apply_custom(item.rule))
 
         self.last_run = results
         return results

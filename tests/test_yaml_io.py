@@ -82,3 +82,66 @@ def test_import_accepts_empty_document():
     defaults, rules = import_yaml("")
     assert defaults == {}
     assert rules == []
+
+
+# --- Final review C3: an unvalidated day key used to brick the integration -
+
+import pytest
+
+
+def _one_rule(profile_key: str, day_key: str) -> str:
+    return f"""
+defaults: {{}}
+profiles:
+  {profile_key}:
+    {day_key}:
+      - at: "23:00"
+        action: "off"
+        devices: [climate.a]
+"""
+
+
+def test_import_rejects_an_unrecognised_day_key():
+    """`dya_1` used to pass straight through into .storage.
+
+    block.py then does int(rule.day) unguarded, so every later setup raised -
+    and so did export_yaml, leaving the user unable even to dump their rules
+    to find the typo. Recovery meant hand-editing .storage.
+    """
+    with pytest.raises(ValueError):
+        import_yaml(_one_rule("1_day", "dya_1"))
+
+
+def test_import_rejects_a_non_positive_day_number():
+    with pytest.raises(ValueError):
+        import_yaml(_one_rule("1_day", "day_0"))
+
+
+def test_import_rejects_a_non_numeric_day_number():
+    with pytest.raises(ValueError):
+        import_yaml(_one_rule("1_day", "day_erev"))
+
+
+def test_import_rejects_an_unrecognised_profile_key():
+    with pytest.raises(ValueError):
+        import_yaml(_one_rule("one_day", "day_1"))
+
+
+def test_import_accepts_yaml_1_1_booleans_for_actions():
+    """Unquoted `action: on` is what a human writes; YAML 1.1 makes it True.
+
+    Export always quotes, so only hand-edited documents hit this - and they
+    used to fail with a bare "'True' is not a valid Action".
+    """
+    text = """
+defaults: {}
+profiles:
+  1_day:
+    day_1:
+      - at: "11:00"
+        action: on
+      - at: "23:00"
+        action: off
+"""
+    _defaults, rules = import_yaml(text)
+    assert [rule.action for rule in rules] == [Action.ON, Action.OFF]

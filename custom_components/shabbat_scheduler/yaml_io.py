@@ -22,8 +22,49 @@ def _day_key(day: str) -> str:
     return EREV if day == EREV else f"day_{day}"
 
 
-def _day_from_key(key: str) -> str:
-    return EREV if key == EREV else key.removeprefix("day_")
+def _day_from_key(key) -> str:
+    """Parse a day key, rejecting anything that is not erev or day_<n>.
+
+    Validated at the door rather than trusted: an unrecognised key used to be
+    passed through verbatim and persisted, after which block.py's int(day)
+    raised on every setup AND on every export - so the user could not even
+    dump their rules to find the typo, and recovery meant hand-editing
+    .storage.
+    """
+    text = str(key)
+    if text == EREV:
+        return EREV
+    number = text.removeprefix("day_") if text.startswith("day_") else ""
+    if not number.isdecimal() or int(number) < 1:
+        raise ValueError(
+            f"unknown day key {text!r}: expected 'erev' or 'day_<n>' "
+            "with n >= 1, e.g. 'day_1'"
+        )
+    return str(int(number))
+
+
+def _profile_from_key(key) -> int:
+    """Parse a profile key like '1_day'. Same reasoning as _day_from_key."""
+    number = str(key).split("_", 1)[0]
+    if not number.isdecimal() or int(number) < 1:
+        raise ValueError(
+            f"unknown profile key {str(key)!r}: expected '<n>_day' with "
+            "n >= 1, e.g. '1_day'"
+        )
+    return int(number)
+
+
+def _action_from_value(value) -> Action:
+    """Accept YAML 1.1 booleans for actions.
+
+    An unquoted `action: on` - the most natural thing to hand-write - parses
+    as the boolean True. Export always quotes, so only hand-edits land here.
+    """
+    if value is True:
+        return Action.ON
+    if value is False:
+        return Action.OFF
+    return Action(str(value))
 
 
 def export_yaml(defaults: dict, rules: list[Rule]) -> str:
@@ -67,7 +108,7 @@ def import_yaml(text: str) -> tuple[dict, list[Rule]]:
     rules: list[Rule] = []
 
     for profile_key, days in (data.get("profiles") or {}).items():
-        profile = int(str(profile_key).split("_", 1)[0])
+        profile = _profile_from_key(profile_key)
         for day_key, entries in (days or {}).items():
             day = _day_from_key(day_key)
             for entry in entries or []:
@@ -77,7 +118,7 @@ def import_yaml(text: str) -> tuple[dict, list[Rule]]:
                         profile=profile,
                         day=day,
                         time=time.fromisoformat(str(entry["at"])),
-                        action=Action(entry["action"]),
+                        action=_action_from_value(entry["action"]),
                         devices=tuple(entry.get("devices", ())),
                         settings=dict(entry.get("settings", {})),
                         name=entry.get("name"),

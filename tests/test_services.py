@@ -189,3 +189,36 @@ async def test_services_removed_on_unload(hass):
     assert hass.services.has_service(DOMAIN, "set_dry_run") is False
     assert hass.services.has_service(DOMAIN, "export_yaml") is False
     assert hass.services.has_service(DOMAIN, "import_yaml") is False
+
+
+async def test_import_yaml_rejects_an_unknown_day_key_and_keeps_the_store(hass):
+    """A typo'd day key must never reach .storage.
+
+    _import_yaml persists BEFORE refreshing, so a stored `dya_1` used to make
+    async_setup_entry raise on every restart AND make export_yaml raise, so
+    the user could not dump the rules to find it.
+    """
+    await _setup(hass, [
+        Rule(id="r1", profile=1, day="1", time=time(11, 0),
+             action=Action.ON, devices=("climate.a",)),
+    ])
+    bad_yaml = """
+defaults: {}
+profiles:
+  1_day:
+    dya_1:
+    - id: r2
+      at: '23:00:00'
+      action: 'off'
+      devices: [climate.a]
+"""
+
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(
+            DOMAIN, "import_yaml", {"yaml": bad_yaml}, blocking=True
+        )
+
+    store = RuleStore(hass)
+    await store.async_load()
+    assert [rule.id for rule in store.rules] == ["r1"]
+    assert store.rules[0].day == "1"

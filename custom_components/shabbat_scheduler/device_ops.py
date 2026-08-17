@@ -26,6 +26,21 @@ class Call:
     to_value: Any = None
 
 
+@dataclass(frozen=True)
+class Skip:
+    """Something that was asked for and cannot be done.
+
+    Returned alongside the executable calls so the engine can say so. Fire
+    once means nothing ever retries a dropped sub-call, so dropping one in
+    silence is how an AC ends up running the night on the wrong fan speed -
+    or how a rule on an unsupported domain reports success and does nothing.
+    """
+
+    attribute: str
+    requested: Any = None
+    reason: str = ""
+
+
 def resolve_fan_mode(requested: str, supported: list[str]) -> str | None:
     """Map a requested fan mode onto one this device actually exposes."""
     if requested in supported:
@@ -43,12 +58,15 @@ def plan_calls(
     action: Action,
     settings: dict,
     force: bool,
-) -> list[Call]:
+) -> list[Call | Skip]:
     """Return only the calls whose values genuinely differ.
 
     `force` is set by the caller when the reading cannot be trusted (unknown,
     unavailable, or older than our last command), in which case everything is
     re-sent rather than skipped.
+
+    Anything asked for that cannot be done comes back as a `Skip` rather than
+    being dropped, so the engine can report it instead of implying success.
     """
     domain = entity_id.split(".", 1)[0]
 
@@ -71,7 +89,16 @@ def plan_calls(
             )
         ]
 
-    return []
+    # Not climate and not a simple on/off domain: this rule can never do
+    # anything. Returning [] made the engine report "ok", indistinguishable
+    # from "already correct".
+    return [
+        Skip(
+            attribute="state",
+            requested="on" if action is Action.ON else "off",
+            reason=f"unsupported domain '{domain}'",
+        )
+    ]
 
 
 def _plan_climate(
@@ -80,7 +107,7 @@ def _plan_climate(
     action: Action,
     settings: dict,
     force: bool,
-) -> list[Call]:
+) -> list[Call | Skip]:
     if action is Action.OFF:
         if not force and current_state == "off":
             return []
@@ -94,7 +121,7 @@ def _plan_climate(
             )
         ]
 
-    calls: list[Call] = []
+    calls: list[Call | Skip] = []
 
     hvac_mode = settings.get("hvac_mode")
     if hvac_mode is not None and (force or current_state != hvac_mode):
@@ -124,11 +151,24 @@ def _plan_climate(
 
     fan_mode = settings.get("fan_mode")
     if fan_mode is not None:
-        actual = resolve_fan_mode(fan_mode, list(attrs.get("fan_modes", [])))
+        supported = list(attrs.get("fan_modes", []))
+        actual = resolve_fan_mode(fan_mode, supported)
         if actual is None:
-            # Unsupported everywhere - skip this sub-call, never fail the rule.
-            return calls
-        if force or attrs.get("fan_mode") != actual:
+            # No supported equivalent - skip this sub-call, never fail the
+            # rule, but say so. An unavailable device reports no attributes
+            # at all, so `supported` is empty and every fan request would
+            # otherwise vanish without a trace.
+            calls.append(
+                Skip(
+                    attribute="fan_mode",
+                    requested=fan_mode,
+                    reason=(
+                        f"no supported equivalent of fan mode '{fan_mode}' "
+                        f"(device reports {supported or 'no fan modes'})"
+                    ),
+                )
+            )
+        elif force or attrs.get("fan_mode") != actual:
             calls.append(
                 Call(
                     domain="climate",

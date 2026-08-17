@@ -1,5 +1,6 @@
 from custom_components.shabbat_scheduler.device_ops import (
     Call,
+    Skip,
     plan_calls,
     resolve_fan_mode,
 )
@@ -64,12 +65,42 @@ def test_force_emits_everything_even_when_matching():
 
 
 def test_unsupported_fan_mode_is_skipped_not_fatal():
+    # CHANGED by final-review finding I2: the fan sub-call is still skipped
+    # and the rest of the rule still applies, but the skip is now REPORTED
+    # (a Skip alongside the executable calls) instead of vanishing. It used
+    # to return silently, and fire-once means nothing ever retries it.
     attrs = {**CLIMATE_ATTRS, "fan_modes": ["auto", "high"]}
-    calls = plan_calls(
+    planned = plan_calls(
         "climate.a", "off", attrs, Action.ON,
         {"hvac_mode": "cool", "fan_mode": "quiet"}, force=False,
     )
-    assert [c.service for c in calls] == ["set_hvac_mode"]
+    assert [c.service for c in planned if isinstance(c, Call)] == ["set_hvac_mode"]
+
+    skips = [c for c in planned if isinstance(c, Skip)]
+    assert len(skips) == 1
+    assert skips[0].attribute == "fan_mode"
+    assert skips[0].requested == "quiet"
+    assert skips[0].reason
+
+
+def test_unavailable_device_reporting_no_fan_modes_is_reported():
+    """An unavailable device has empty attributes, so fan_modes is [].
+
+    Worst case for a silent drop: the AC runs the night on the wrong fan
+    speed and nothing anywhere says so.
+    """
+    planned = plan_calls(
+        "climate.a", "unavailable", {}, Action.ON,
+        {"hvac_mode": "cool", "fan_mode": "quiet"}, force=True,
+    )
+    assert [c.attribute for c in planned if isinstance(c, Skip)] == ["fan_mode"]
+
+
+def test_unsupported_domain_is_reported_not_silently_successful():
+    planned = plan_calls("cover.a", "open", {}, Action.OFF, {}, force=False)
+    assert len(planned) == 1
+    assert isinstance(planned[0], Skip)
+    assert "cover" in planned[0].reason
 
 
 def test_climate_off_when_already_off_is_skipped():

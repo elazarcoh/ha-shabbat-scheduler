@@ -751,3 +751,35 @@ async def test_zmanim_notification_is_dismissed_once_readable(hass, engine):
     _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
     await engine.async_refresh()
     assert "shabbat_scheduler_zmanim" not in hass.data["persistent_notification"]
+
+
+# --- Final review I2/I3: nothing may be dropped in silence ----------------
+
+
+async def test_unsupported_domain_reports_skipped_not_ok(hass, engine, caplog):
+    """A cover./media_player. rule used to report success and do nothing."""
+    hass.states.async_set("cover.a", "open")
+    results = await engine.async_apply_rule(
+        _rule(action=Action.OFF, devices=("cover.a",))
+    )
+
+    assert [item["outcome"] for item in results] == ["skipped"]
+    assert "cover" in caplog.text
+    assert "cover.a" in caplog.text
+
+
+async def test_unsupported_fan_mode_is_logged_with_entity_and_mode(
+    hass, engine, caplog
+):
+    hass.states.async_set(
+        "climate.ac", "cool",
+        {"fan_modes": ["auto", "high"], "fan_mode": "auto"},
+    )
+    results = await engine.async_apply_rule(
+        _rule(devices=("climate.ac",), settings={"fan_mode": "quiet"})
+    )
+
+    assert [item["outcome"] for item in results] == ["skipped"]
+    assert results[0]["attribute"] == "fan_mode"
+    assert "climate.ac" in caplog.text
+    assert "quiet" in caplog.text

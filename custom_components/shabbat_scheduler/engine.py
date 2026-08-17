@@ -26,7 +26,7 @@ from .const import (
     RETRY_ATTEMPTS,
     RETRY_DELAY_SECONDS,
 )
-from .device_ops import plan_calls
+from .device_ops import Skip, plan_calls
 from .models import Action, Block, Conflict, ResolvedRule, Rule
 from .store import RuleStore
 
@@ -338,6 +338,24 @@ class ShabbatEngine:
         results: list[dict] = []
         async with self._locks[entity_id]:
             for call in calls:
+                if isinstance(call, Skip):
+                    # Nothing retries a dropped sub-call, so it is reported
+                    # rather than passed over in silence.
+                    _LOGGER.warning(
+                        "%s: cannot apply %s=%r: %s",
+                        entity_id, call.attribute, call.requested, call.reason,
+                    )
+                    results.append(
+                        {
+                            "entity_id": entity_id,
+                            "attribute": call.attribute,
+                            "outcome": "skipped",
+                            "from": None,
+                            "to": call.requested,
+                            "reason": call.reason,
+                        }
+                    )
+                    continue
                 results.append(await self._execute(entity_id, call))
         return results
 

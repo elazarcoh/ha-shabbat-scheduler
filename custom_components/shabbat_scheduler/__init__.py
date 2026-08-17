@@ -138,6 +138,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ) from err
         await store.async_replace_all(defaults, rules)
         await engine.async_refresh()
+        # Rule switches are built once, at forward-setup. An import replaces
+        # the whole rule set, so without this new rules would have no switch
+        # and deleted rules' switches would linger. Reloading rebuilds them.
+        #
+        # Scheduled, never awaited: awaiting a reload here would tear down
+        # the very service registration this call is running under. HA
+        # serialises reloads per entry, and nothing in setup imports YAML,
+        # so this cannot recurse or race with the import that triggered it -
+        # the store is already written before the reload is scheduled.
+        hass.config_entries.async_schedule_reload(entry.entry_id)
 
     hass.services.async_register(
         DOMAIN, "simulate", _simulate,

@@ -2,6 +2,7 @@ from datetime import time
 
 import pytest
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.shabbat_scheduler.const import DOMAIN
@@ -222,3 +223,52 @@ profiles:
     await store.async_load()
     assert [rule.id for rule in store.rules] == ["r1"]
     assert store.rules[0].day == "1"
+
+
+async def test_import_yaml_rebuilds_the_rule_switches(hass):
+    """Rule switches are static, built once at forward-setup.
+
+    An import replaces the whole rule set, so without a reload the new rules
+    have no switch and the deleted rules' switches linger, still toggleable
+    and attached to nothing.
+    """
+    entry = await _setup(hass, [
+        Rule(id="old", profile=1, day="1", time=time(11, 0),
+             action=Action.ON, devices=("climate.a",)),
+    ])
+    registry = er.async_get(hass)
+    assert registry.async_get_entity_id(
+        "switch", DOMAIN, f"{entry.entry_id}_rule_old"
+    ) is not None
+
+    await hass.services.async_call(
+        DOMAIN, "import_yaml",
+        {"yaml": """
+defaults: {}
+profiles:
+  1_day:
+    day_1:
+    - id: fresh
+      at: '11:00:00'
+      action: 'on'
+      devices: [climate.a]
+"""},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    fresh = registry.async_get_entity_id(
+        "switch", DOMAIN, f"{entry.entry_id}_rule_fresh"
+    )
+    assert fresh is not None
+    assert hass.states.get(fresh) is not None
+
+    # The switch for the rule that no longer exists is gone entirely - not
+    # left behind as an "unavailable" orphan that looks broken.
+    assert registry.async_get_entity_id(
+        "switch", DOMAIN, f"{entry.entry_id}_rule_old"
+    ) is None
+
+    store = RuleStore(hass)
+    await store.async_load()
+    assert [rule.id for rule in store.rules] == ["fresh"]

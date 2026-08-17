@@ -9,6 +9,7 @@ from __future__ import annotations
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -25,6 +26,17 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     store: RuleStore = data["store"]
     engine: ShabbatEngine = data["engine"]
+
+    # A YAML import replaces the whole rule set and reloads the entry, so
+    # rules can disappear between setups. Drop the registry entries of rules
+    # that no longer exist, otherwise their switches linger forever as
+    # "unavailable" and look like something is broken.
+    registry = er.async_get(hass)
+    live = {f"{entry.entry_id}_rule_{rule.id}" for rule in store.rules}
+    prefix = f"{entry.entry_id}_rule_"
+    for registered in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if registered.unique_id.startswith(prefix) and registered.unique_id not in live:
+            registry.async_remove(registered.entity_id)
 
     entities: list[SwitchEntity] = [MasterSwitch(entry, store, engine)]
     entities.extend(RuleSwitch(entry, store, engine, rule) for rule in store.rules)

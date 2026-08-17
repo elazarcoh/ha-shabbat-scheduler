@@ -8,6 +8,7 @@ from collections import defaultdict, deque
 from datetime import datetime
 
 from homeassistant.core import Context, HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from .const import EVENT_RULE_APPLIED
 from .device_ops import plan_calls
@@ -149,6 +150,20 @@ class ShabbatEngine:
             return result
 
         data = {"entity_id": entity_id, **call.data}
+
+        # Stamp BEFORE issuing the call, not after it returns. The guard's
+        # question is "does the state I just read predate my own command?".
+        # A local entity's state write happens synchronously inside
+        # async_call, so a stamp taken after it returns would always be
+        # later than that write - reporting every subsequent read as stale
+        # forever. Stamping first means a fast local write lands after
+        # `sent` (fresh, correctly not stale) while a genuinely lagging
+        # cloud device's write still lands before `sent` (correctly stale).
+        # It also means a FAILED call still marks the device as
+        # recently-commanded: we cannot know whether a failed call landed,
+        # so the conservative choice is to force the next apply rather than
+        # trust the reading.
+        self._last_command[entity_id] = dt_util.utcnow()
         try:
             await self.hass.services.async_call(
                 call.domain, call.service, data,
@@ -159,6 +174,5 @@ class ShabbatEngine:
             result["outcome"] = "failed"
             return result
 
-        self._last_command[entity_id] = datetime.now(tz=None).astimezone()
         result["outcome"] = "changed"
         return result

@@ -1,7 +1,19 @@
+import asyncio
+import itertools
 from datetime import time
 
 import pytest
+from homeassistant.components.climate import (
+    DATA_COMPONENT as CLIMATE_DATA_COMPONENT,
+)
+from homeassistant.components.climate import (
+    ClimateEntity,
+    ClimateEntityFeature,
+    HVACMode,
+)
+from homeassistant.const import EVENT_CALL_SERVICE
 from homeassistant.core import Context
+from homeassistant.setup import async_setup_component
 
 from custom_components.shabbat_scheduler.engine import ShabbatEngine
 from custom_components.shabbat_scheduler.models import Action, Rule
@@ -107,3 +119,171 @@ async def test_engine_recognises_its_own_context(hass, engine):
 
     assert engine.is_our_context("input_boolean.t", issued_context)
     assert not engine.is_our_context("input_boolean.t", Context())
+
+
+# --- Finding 1: idempotent re-apply must not re-issue a landed command -----
+
+
+async def test_reapplying_same_rule_with_no_state_change_is_a_noop(hass, engine):
+    """Applying an already-satisfied rule a second time must be a no-op.
+
+    Regression test for the staleness guard stamping `_last_command` AFTER
+    the awaited service call returned: for a synchronous local entity (like
+    input_boolean) the entity's own `last_updated` lands DURING the call,
+    so a post-call stamp is always later than that write - the guard then
+    reports "stale" forever and forces a real service call on every repeat
+    apply, even though nothing changed. This is exactly the "keeps
+    re-asserting" failure mode the whole engine exists to avoid.
+    """
+    hass.states.async_set("input_boolean.t", "off")
+    rule = _rule()
+
+    first = await engine.async_apply_rule(rule)
+    await hass.async_block_till_done()
+    assert first[0]["outcome"] == "changed"
+    assert hass.states.get("input_boolean.t").state == "on"
+
+    seen_service_calls = []
+    hass.bus.async_listen(
+        EVENT_CALL_SERVICE,
+        lambda event: seen_service_calls.append(event.data),
+    )
+
+    second = await engine.async_apply_rule(rule)
+    await hass.async_block_till_done()
+
+    assert second[0]["outcome"] == "ok"
+    assert not seen_service_calls, (
+        f"expected no service call on the second apply, got {seen_service_calls}"
+    )
+
+
+# --- Finding 2: two rules on one device must not interleave ----------------
+
+
+class _RecordingClimate(ClimateEntity):
+    """A bare climate entity that records the order service calls land in.
+
+    Each setter yields (`await asyncio.sleep(0)`) between recording the call
+    and applying it, giving a missing per-device lock a real opportunity to
+    let a second concurrent rule's calls land in between.
+    """
+
+    _attr_hvac_modes = [HVACMode.OFF, HVACMode.COOL, HVACMode.HEAT]
+    _attr_fan_modes = ["low", "high", "quiet"]
+    _attr_supported_features = (
+        ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.FAN_MODE
+    )
+
+    def __init__(self, call_log: list[tuple[str, object]], temperature_unit) -> None:
+        self.entity_id = "climate.ac"
+        self._attr_temperature_unit = temperature_unit
+        self._call_log = call_log
+        self._attr_hvac_mode = HVACMode.OFF
+        self._attr_target_temperature = 20
+        self._attr_fan_mode = "low"
+
+    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
+        self._call_log.append(("hvac_mode", hvac_mode))
+        await asyncio.sleep(0)
+        self._attr_hvac_mode = hvac_mode
+        self.async_write_ha_state()
+
+    async def async_set_temperature(self, **kwargs) -> None:
+        self._call_log.append(("temperature", kwargs.get("temperature")))
+        await asyncio.sleep(0)
+        self._attr_target_temperature = kwargs.get("temperature")
+        self.async_write_ha_state()
+
+    async def async_set_fan_mode(self, fan_mode: str) -> None:
+        self._call_log.append(("fan_mode", fan_mode))
+        await asyncio.sleep(0)
+        self._attr_fan_mode = fan_mode
+        self.async_write_ha_state()
+
+
+async def test_concurrent_rules_on_same_device_do_not_interleave(hass, engine):
+    """Two rules firing at once on one climate entity must not interleave.
+
+    The spec calls out the exact failure this guards against: the unit left
+    off with a target temperature applied - a state matching neither rule.
+    Each rule below issues three climate calls (hvac_mode, temperature,
+    fan_mode); every value is distinct from the entity's initial state AND
+    from the other rule's values, in both attribute-position and
+    across-rules, so a full, uncontaminated triplet is expected from
+    whichever rule runs first or second.
+    """
+    call_log: list[tuple[str, object]] = []
+    await async_setup_component(hass, "climate", {})
+    component = hass.data[CLIMATE_DATA_COMPONENT]
+    await component.async_add_entities(
+        [_RecordingClimate(call_log, hass.config.units.temperature_unit)]
+    )
+    await hass.async_block_till_done()
+
+    rule_a = _rule(
+        devices=("climate.ac",),
+        settings={"hvac_mode": "cool", "temperature": 22, "fan_mode": "high"},
+    )
+    rule_b = Rule(
+        id="r2", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        devices=("climate.ac",),
+        settings={"hvac_mode": "heat", "temperature": 24, "fan_mode": "quiet"},
+    )
+
+    await asyncio.gather(
+        engine.async_apply_rule(rule_a), engine.async_apply_rule(rule_b)
+    )
+    await hass.async_block_till_done()
+
+    assert len(call_log) == 6, call_log
+
+    owner_by_value = {
+        "cool": "A", "heat": "B",
+        22: "A", 24: "B",
+        "high": "A", "quiet": "B",
+    }
+    labels = [owner_by_value[value] for _attr, value in call_log]
+    runs = [label for label, _ in itertools.groupby(labels)]
+    assert len(runs) == 2, f"calls interleaved: {labels}"
+
+    # The final state must be wholly one rule's configuration, never a mix
+    # (e.g. rule B's hvac_mode with rule A's temperature).
+    final = hass.states.get("climate.ac")
+    final_owner = owner_by_value[final.attributes["fan_mode"]]
+    if final_owner == "A":
+        assert final.state == "cool"
+        assert final.attributes["temperature"] == 22
+    else:
+        assert final.state == "heat"
+        assert final.attributes["temperature"] == 24
+
+
+# --- Finding 3: one device failing must not block its siblings -------------
+
+
+async def test_sibling_device_still_applied_after_a_failure(hass, engine):
+    """One device's service call raising must not abort the rest of the rule."""
+    seen_entity_ids = []
+
+    async def flaky_turn_on(call):
+        seen_entity_ids.append(call.data["entity_id"])
+        if call.data["entity_id"] == "input_boolean.t":
+            raise RuntimeError("simulated failure for input_boolean.t")
+
+    hass.services.async_register("input_boolean", "turn_on", flaky_turn_on)
+    hass.states.async_set("input_boolean.t", "off")
+    hass.states.async_set("input_boolean.salon", "off")
+
+    results = await engine.async_apply_rule(
+        _rule(devices=("input_boolean.t", "input_boolean.salon"))
+    )
+    await hass.async_block_till_done()
+
+    # Both devices were reached - the failure on the first did not abort
+    # processing of the second.
+    assert seen_entity_ids == ["input_boolean.t", "input_boolean.salon"]
+
+    by_entity = {r["entity_id"]: r["outcome"] for r in results}
+    assert by_entity["input_boolean.t"] == "failed"
+    assert by_entity["input_boolean.salon"] == "changed"

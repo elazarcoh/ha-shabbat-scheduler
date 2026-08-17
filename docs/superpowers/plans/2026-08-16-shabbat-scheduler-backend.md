@@ -1812,10 +1812,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime
 
 from homeassistant.core import Context, HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from .const import EVENT_RULE_APPLIED
 from .device_ops import plan_calls
@@ -1934,17 +1935,23 @@ class ShabbatEngine:
             return result
 
         data = {"entity_id": entity_id, **call.data}
+        # Stamp BEFORE issuing: the entity's own last_updated is set during
+        # the awaited call, so stamping afterwards would make every reading
+        # look stale forever and force a re-apply on every pass - which is
+        # exactly the re-assertion behaviour this design exists to avoid.
+        # Stamping first also correctly forces on failure, since we cannot
+        # know whether a failed call landed.
+        self._last_command[entity_id] = dt_util.utcnow()
         try:
             await self.hass.services.async_call(
                 call.domain, call.service, data,
-                blocking=True, context=self._new_context(),
+                blocking=True, context=self._new_context(entity_id),
             )
         except Exception:  # noqa: BLE001 - one device must not abort the rest
             _LOGGER.exception("%s: %s.%s failed", entity_id, call.domain, call.service)
             result["outcome"] = "failed"
             return result
 
-        self._last_command[entity_id] = datetime.now(tz=None).astimezone()
         result["outcome"] = "changed"
         return result
 ```
@@ -2055,10 +2062,13 @@ from .const import EVENT_RULE_APPLIED, RETRY_ATTEMPTS, RETRY_DELAY_SECONDS
 
         data = {"entity_id": entity_id, **call.data}
         for attempt in range(1, RETRY_ATTEMPTS + 1):
+            # Stamped before each attempt - see the note in Task 9. Stamping
+            # after a successful call makes every later reading look stale.
+            self._last_command[entity_id] = dt_util.utcnow()
             try:
                 await self.hass.services.async_call(
                     call.domain, call.service, data,
-                    blocking=True, context=self._new_context(),
+                    blocking=True, context=self._new_context(entity_id),
                 )
             except Exception:  # noqa: BLE001 - one device must not abort the rest
                 _LOGGER.warning(
@@ -2077,7 +2087,6 @@ from .const import EVENT_RULE_APPLIED, RETRY_ATTEMPTS, RETRY_DELAY_SECONDS
                 result["outcome"] = "failed"
                 return result
 
-            self._last_command[entity_id] = datetime.now(tz=None).astimezone()
             result["outcome"] = "changed"
             return result
 

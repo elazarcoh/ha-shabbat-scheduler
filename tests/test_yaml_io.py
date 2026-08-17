@@ -30,6 +30,29 @@ def test_round_trip_preserves_rules():
         (1, EREV, time(23, 0), Action.OFF),
         (1, "1", time(11, 0), Action.ON),
     }
+    assert {r.id for r in rules} == {"a", "b"}
+
+
+def test_export_writes_hebrew_unescaped_in_raw_text():
+    text = export_yaml({"temperature": 26}, _rules())
+    assert "בוקר שבת" in text
+    assert "\\u" not in text
+
+
+def test_import_honours_existing_id():
+    text = """
+defaults: {}
+profiles:
+  2_day:
+    day_2:
+      - id: "existing-id"
+        at: "18:00"
+        action: "off"
+        devices: [climate.a]
+"""
+    _defaults, rules = import_yaml(text)
+    assert len(rules) == 1
+    assert rules[0].id == "existing-id"
 
 
 def test_import_generates_ids_when_absent():

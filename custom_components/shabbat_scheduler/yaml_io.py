@@ -30,10 +30,14 @@ def export_yaml(defaults: dict, rules: list[Rule]) -> str:
     """Render the rule set grouped by profile and day, for human review."""
     profiles: dict[str, dict[str, list[dict]]] = {}
 
-    for rule in sorted(rules, key=lambda r: (r.profile, r.day, r.time)):
+    def _day_rank(day: str) -> int:
+        return 0 if day == EREV else int(day)
+
+    for rule in sorted(rules, key=lambda r: (r.profile, _day_rank(r.day), r.time)):
         profile_key = f"{rule.profile}_day"
         day_key = _day_key(rule.day)
         entry: dict = {
+            "id": rule.id,
             "at": rule.time.isoformat(),
             "action": rule.action.value,
         }

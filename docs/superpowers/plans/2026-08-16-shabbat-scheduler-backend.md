@@ -2502,6 +2502,7 @@ Create `tests/test_entities.py`:
 from datetime import time
 
 from homeassistant.const import STATE_OFF, STATE_ON
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.shabbat_scheduler.const import DOMAIN
@@ -2565,26 +2566,35 @@ async def test_master_switch_turns_on_and_persists(hass):
     assert reloaded.enabled is True
 
 
+# entity_id is slugified from the entity NAME (a user-facing Hebrew rule
+# name here), not from unique_id - so resolve through the registry. unique_id
+# is the identity contract that matters: Task 8 preserves rule.id across YAML
+# round trips precisely so these entities are not orphaned.
+def _rule_switch_entity_id(hass, entry, rule_id):
+    registry = er.async_get(hass)
+    return registry.async_get_entity_id(
+        "switch", DOMAIN, f"{entry.entry_id}_rule_{rule_id}"
+    )
+
+
 async def test_one_switch_per_rule(hass):
-    await _setup(hass, [
+    entry = await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
              action=Action.ON, name="בוקר שבת"),
     ])
-    matching = [
-        state.entity_id for state in hass.states.async_all()
-        if state.entity_id.startswith("switch.") and "r1" in state.entity_id
-    ]
-    assert matching
+    entity_id = _rule_switch_entity_id(hass, entry, "r1")
+    assert entity_id is not None
+    assert hass.states.get(entity_id) is not None
+    # Pin the unique_id itself - this is what YAML id-preservation protects.
+    registry = er.async_get(hass)
+    assert registry.async_get(entity_id).unique_id == f"{entry.entry_id}_rule_r1"
 
 
 async def test_rule_switch_toggle_persists(hass):
-    await _setup(hass, [
+    entry = await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON),
     ])
-    entity_id = next(
-        state.entity_id for state in hass.states.async_all()
-        if state.entity_id.startswith("switch.") and "r1" in state.entity_id
-    )
+    entity_id = _rule_switch_entity_id(hass, entry, "r1")
     await hass.services.async_call(
         "switch", "turn_off", {"entity_id": entity_id}, blocking=True
     )

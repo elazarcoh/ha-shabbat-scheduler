@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import timedelta
 
 import voluptuous as vol
+import yaml
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
@@ -99,7 +101,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return {"yaml": export_yaml(store.defaults, store.rules)}
 
     async def _import_yaml(call: ServiceCall) -> None:
-        defaults, rules = import_yaml(call.data["yaml"])
+        try:
+            defaults, rules = import_yaml(call.data["yaml"])
+        except yaml.YAMLError as err:
+            raise ServiceValidationError(
+                f"Could not parse YAML: {err}"
+            ) from err
+        except (KeyError, ValueError) as err:
+            raise ServiceValidationError(
+                f"Invalid rule set: {err}"
+            ) from err
         await store.async_replace_all(defaults, rules)
         await engine.async_refresh()
 
@@ -130,4 +141,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unloaded:
         data = hass.data[DOMAIN].pop(entry.entry_id)
         await data["engine"].async_shutdown()
+        for service in ("simulate", "set_dry_run", "export_yaml", "import_yaml"):
+            hass.services.async_remove(DOMAIN, service)
     return unloaded

@@ -11,6 +11,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 
 from .block import compute_block, find_conflicts, has_profile, merge_defaults, resolve_rules
@@ -33,12 +34,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     }
 
     await engine.async_refresh()
+
     # Re-apply the current desired state after a restart, so a reboot part-way
     # through a block does not leave devices stranded.
-    await engine.async_catch_up()
+    #
+    # Deliberately NOT inline in setup. At boot config entries are set up
+    # concurrently, so jewish_calendar has often not published its sensors
+    # yet: an inline catch-up would find no block, return [], and never be
+    # retried - silently losing the mid-block restart it exists for. And when
+    # the target devices are unavailable the staleness guard forces every
+    # call, each retried RETRY_ATTEMPTS x RETRY_DELAY_SECONDS, which inline
+    # would block async_setup_entry for minutes before any entity exists.
+    #
+    # So: wait until HA has started, then run once - as a background task -
+    # the first time a block is actually computable, whether that is at start
+    # or when a late jewish_calendar finally publishes.
+    catch_up = {"started": False, "done": False}
+
+    def _maybe_catch_up() -> None:
+        if catch_up["done"] or not catch_up["started"]:
+            return
+        if engine.current_block is None:
+            return
+        catch_up["done"] = True
+        entry.async_create_background_task(
+            hass, engine.async_catch_up(), f"{DOMAIN} restart catch-up"
+        )
 
     async def _zmanim_changed(_event) -> None:
         await engine.async_refresh()
+        _maybe_catch_up()
 
     entry.async_on_unload(
         async_track_state_change_event(
@@ -133,6 +158,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    async def _hass_started(_hass: HomeAssistant) -> None:
+        catch_up["started"] = True
+        # jewish_calendar may have published while we were setting up.
+        await engine.async_refresh()
+        _maybe_catch_up()
+
+    # Registered last so this integration's own entities always exist before
+    # any catch-up work begins.
+    entry.async_on_unload(async_at_started(hass, _hass_started))
     return True
 
 

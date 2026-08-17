@@ -178,3 +178,127 @@ async def test_last_run_sensor_distinguishes_empty_run_from_never_ran(hass):
     state = hass.states.get("sensor.shabbat_scheduler_last_run")
     assert state.state != never_ran_state
     assert state.attributes["result_count"] == 0
+
+
+# --- Final review C2: restart catch-up must not be a one-shot inline in ----
+# --- setup (it usually no-ops, and sometimes blocks setup for minutes) -----
+
+import asyncio
+
+from custom_components.shabbat_scheduler.const import CANDLE_SENSOR, HAVDALAH_SENSOR
+from custom_components.shabbat_scheduler.engine import ShabbatEngine
+
+
+def _zmanim(hass):
+    hass.states.async_set(CANDLE_SENSOR, "2026-08-14T15:44:00+00:00")
+    hass.states.async_set(HAVDALAH_SENSOR, "2026-08-15T17:01:00+00:00")
+
+
+async def _entry_with(hass, rules, enabled=True):
+    await hass.config.async_set_time_zone("Asia/Jerusalem")
+    store = RuleStore(hass)
+    await store.async_load()
+    await store.async_replace_all({}, list(rules))
+    if enabled:
+        await store.async_set_enabled(True)
+    entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
+    entry.add_to_hass(hass)
+    return entry
+
+
+async def test_catch_up_runs_when_zmanim_arrive_after_setup(
+    hass, test_booleans, freezer
+):
+    """At boot, config entries set up concurrently.
+
+    jewish_calendar may not have published its sensors when this integration
+    is set up, so an inline one-shot catch-up sees no block, returns [], and
+    is never retried - losing exactly the mid-block restart the feature
+    exists for. It must run when the block first becomes computable.
+    """
+    freezer.move_to("2026-08-15T08:30:00+00:00")  # 11:30 Asia/Jerusalem
+    entry = await _entry_with(hass, [
+        Rule(id="on", profile=1, day="1", time=time(11, 0),
+             action=Action.ON, devices=("input_boolean.t",)),
+    ])
+    hass.states.async_set("input_boolean.t", "off")
+
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    # No zmanim yet: nothing can be caught up.
+    assert hass.states.get("input_boolean.t").state == "off"
+
+    _zmanim(hass)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert hass.states.get("input_boolean.t").state == "on"
+
+
+async def test_catch_up_runs_at_most_once_per_setup(
+    hass, test_booleans, freezer, monkeypatch
+):
+    freezer.move_to("2026-08-15T08:30:00+00:00")
+    runs = []
+    original = ShabbatEngine.async_catch_up
+
+    async def counting(self):
+        runs.append(1)
+        return await original(self)
+
+    monkeypatch.setattr(ShabbatEngine, "async_catch_up", counting)
+
+    _zmanim(hass)
+    entry = await _entry_with(hass, [
+        Rule(id="on", profile=1, day="1", time=time(11, 0),
+             action=Action.ON, devices=("input_boolean.t",)),
+    ])
+    hass.states.async_set("input_boolean.t", "off")
+
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert len(runs) == 1
+
+    # jewish_calendar republishes (it does so routinely); catch-up must not
+    # run a second time and re-apply anything.
+    hass.states.async_set(CANDLE_SENSOR, "2026-08-14T15:44:01+00:00")
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert len(runs) == 1
+
+
+async def test_setup_completes_while_an_unavailable_device_is_retried(
+    hass, freezer
+):
+    """Unavailable devices force a call, retried 3x30s each.
+
+    Inline in setup that is ~12 minutes of blocked async_setup_entry for four
+    ACs before any of this integration's own entities exist.
+    """
+    freezer.move_to("2026-08-15T08:30:00+00:00")
+    gate = asyncio.Event()
+    reached = []
+
+    async def hanging_turn_on(call):
+        reached.append(call)
+        await gate.wait()
+
+    hass.services.async_register("fan", "turn_on", hanging_turn_on)
+    hass.states.async_set("fan.ac", "unavailable")
+    _zmanim(hass)
+
+    entry = await _entry_with(hass, [
+        Rule(id="on", profile=1, day="1", time=time(11, 0),
+             action=Action.ON, devices=("fan.ac",)),
+    ])
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    # The catch-up call is still in flight against the stuck device...
+    assert reached, "expected catch-up to have started the device call"
+    assert not gate.is_set()
+    # ...yet setup finished and this integration's entities exist.
+    assert hass.states.get("switch.shabbat_scheduler") is not None
+    assert hass.states.get("sensor.shabbat_scheduler_next_block") is not None
+
+    gate.set()
+    await hass.async_block_till_done(wait_background_tasks=True)

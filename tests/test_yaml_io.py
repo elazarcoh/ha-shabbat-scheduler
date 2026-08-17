@@ -39,6 +39,11 @@ def test_export_writes_hebrew_unescaped_in_raw_text():
     assert "\\u" not in text
 
 
+def test_export_orders_erev_before_numbered_days():
+    keys = list(yaml.safe_load(export_yaml({}, _rules()))["profiles"]["1_day"])
+    assert keys.index("erev") < keys.index("day_1")
+
+
 def test_import_honours_existing_id():
     text = """
 defaults: {}

@@ -1516,11 +1516,26 @@ def _rules():
 
 
 def test_export_groups_by_profile_and_day():
-    parsed = yaml.safe_load(export_yaml({"temperature": 26}, _rules()))
+    text = export_yaml({"temperature": 26}, _rules())
+    parsed = yaml.safe_load(text)
     assert parsed["defaults"] == {"temperature": 26}
     assert set(parsed["profiles"]["1_day"]) == {"erev", "day_1"}
     assert parsed["profiles"]["1_day"]["erev"][0]["at"] == "23:00:00"
     assert parsed["profiles"]["1_day"]["day_1"][0]["name"] == "בוקר שבת"
+    # Assert on the RAW text: safe_load decodes \uXXXX escapes, so parsing
+    # first would pass whether or not allow_unicode was set.
+    assert "בוקר שבת" in text
+    assert "\\u" not in text
+
+
+def test_export_orders_erev_before_numbered_days():
+    keys = list(yaml.safe_load(export_yaml({}, _rules()))["profiles"]["1_day"])
+    assert keys.index("erev") < keys.index("day_1")
+
+
+def test_round_trip_preserves_ids():
+    _defaults, rules = import_yaml(export_yaml({}, _rules()))
+    assert {r.id for r in rules} == {"a", "b"}
 
 
 def test_round_trip_preserves_rules():
@@ -1598,10 +1613,20 @@ def export_yaml(defaults: dict, rules: list[Rule]) -> str:
     """Render the rule set grouped by profile and day, for human review."""
     profiles: dict[str, dict[str, list[dict]]] = {}
 
-    for rule in sorted(rules, key=lambda r: (r.profile, r.day, r.time)):
+    # erev must rank before the numbered days: it is the evening *before*
+    # them. Sorting r.day as a plain string puts day_1..3 first, which
+    # inverts this file's whole reason for existing.
+    def _rank(rule: Rule) -> tuple:
+        return (rule.profile, 0 if rule.day == EREV else int(rule.day), rule.time)
+
+    for rule in sorted(rules, key=_rank):
         profile_key = f"{rule.profile}_day"
         day_key = _day_key(rule.day)
         entry: dict = {
+            # Exported so a round trip preserves rule identity. Switch
+            # entities derive their unique_id from it, and import replaces
+            # the whole set - regenerating ids would orphan every entity.
+            "id": rule.id,
             "at": rule.time.isoformat(),
             "action": rule.action.value,
         }

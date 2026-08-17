@@ -128,4 +128,53 @@ async def test_next_action_sensor_unknown_when_master_off(hass):
 
 async def test_last_run_sensor_exists(hass):
     await _setup(hass)
-    assert hass.states.get("sensor.shabbat_scheduler_last_run") is not None
+    state = hass.states.get("sensor.shabbat_scheduler_last_run")
+    assert state is not None
+    assert state.state == "unknown"
+
+
+async def test_last_run_sensor_reports_timestamp_after_a_run(hass, test_booleans):
+    entry = await _setup(hass)
+    hass.states.async_set("input_boolean.t", "off")
+    engine = hass.data[DOMAIN][entry.entry_id]["engine"]
+
+    await engine.async_apply_rule(
+        Rule(
+            id="r1", profile=1, day="1", time=time(11, 0),
+            action=Action.ON, devices=("input_boolean.t",),
+        )
+    )
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.shabbat_scheduler_last_run")
+    assert state.state != "unknown"
+    assert state.attributes["result_count"] == 1
+
+
+async def test_last_run_sensor_distinguishes_empty_run_from_never_ran(hass):
+    """A rule that genuinely ran but produced zero results (e.g. a CUSTOM
+    rule with no script configured) must still be distinguishable from a
+    sensor that has never run at all - that is the whole point of last_run.
+
+    Comparing against the never-ran baseline (rather than just asserting
+    != "unknown") matters: under the pre-fix len()-based implementation,
+    the never-ran state is "0" - not "unknown" - and an empty-results run
+    is also "0", so the two are silently identical. Only a direct
+    before/after comparison exposes that ambiguity.
+    """
+    entry = await _setup(hass)
+    never_ran_state = hass.states.get("sensor.shabbat_scheduler_last_run").state
+
+    engine = hass.data[DOMAIN][entry.entry_id]["engine"]
+    results = await engine.async_apply_rule(
+        Rule(
+            id="r1", profile=1, day="1", time=time(11, 0),
+            action=Action.CUSTOM, devices=(),
+        )
+    )
+    assert results == []  # confirms this is the ambiguous empty-results path
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.shabbat_scheduler_last_run")
+    assert state.state != never_ran_state
+    assert state.attributes["result_count"] == 0

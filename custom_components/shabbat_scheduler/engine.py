@@ -48,6 +48,7 @@ class ShabbatEngine:
         self.hass = hass
         self.store = store
         self.last_run: list[dict] = []
+        self.last_run_at: datetime | None = None
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._last_command: dict[str, datetime] = {}
         self._our_contexts: dict[str, deque[str]] = defaultdict(
@@ -67,6 +68,7 @@ class ShabbatEngine:
                 results.extend(await self._apply_device(rule, entity_id, force))
 
         self.last_run = results
+        self.last_run_at = dt_util.utcnow()
         self.hass.bus.async_fire(
             EVENT_RULE_APPLIED, {"rule_id": rule.id, "results": results}
         )
@@ -190,6 +192,7 @@ class ShabbatEngine:
                 results.extend(await self._apply_custom(item.rule))
 
         self.last_run = results
+        self.last_run_at = dt_util.utcnow()
         return results
 
     async def async_shutdown(self) -> None:

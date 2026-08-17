@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import DOMAIN, EVENT_RULE_APPLIED
 from .engine import ShabbatEngine
 
 
@@ -88,14 +88,28 @@ class NextActionSensor(_Base):
 class LastRunSensor(_Base):
     _attr_name = "Shabbat Scheduler Last Run"
     _attr_icon = "mdi:history"
+    _attr_should_poll = False
 
     def __init__(self, entry: ConfigEntry, engine: ShabbatEngine) -> None:
         super().__init__(entry, engine, "last_run")
 
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+
+        @callback
+        def _on_rule_applied(_event: Event) -> None:
+            self.async_write_ha_state()
+
+        self.async_on_remove(
+            self.hass.bus.async_listen(EVENT_RULE_APPLIED, _on_rule_applied)
+        )
+
     @property
     def native_value(self):
-        return len(self._engine.last_run)
+        last_run_at = self._engine.last_run_at
+        return last_run_at.isoformat() if last_run_at else None
 
     @property
     def extra_state_attributes(self) -> dict:
-        return {"results": self._engine.last_run}
+        results = self._engine.last_run
+        return {"results": results, "result_count": len(results)}

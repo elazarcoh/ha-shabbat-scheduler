@@ -2711,6 +2711,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unloaded:
         data = hass.data[DOMAIN].pop(entry.entry_id)
         await data["engine"].async_shutdown()
+        # Otherwise the handlers outlive the entry, still closing over a
+        # shut-down engine and store - and could rewrite .storage for an
+        # integration the user believes they removed.
+        for service in ("simulate", "set_dry_run", "export_yaml", "import_yaml"):
+            hass.services.async_remove(DOMAIN, service)
     return unloaded
 ```
 
@@ -3225,7 +3230,9 @@ Add to `custom_components/shabbat_scheduler/__init__.py`:
 
 ```python
 import voluptuous as vol
+import yaml
 from homeassistant.core import ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.util import dt as dt_util
 
 from .block import compute_block, find_conflicts, has_profile, merge_defaults, resolve_rules
@@ -3290,7 +3297,14 @@ Then, inside `async_setup_entry` before forwarding platforms:
         return {"yaml": export_yaml(store.defaults, store.rules)}
 
     async def _import_yaml(call: ServiceCall) -> None:
-        defaults, rules = import_yaml(call.data["yaml"])
+        # Parse before touching the store: a half-applied rule set is worse
+        # than a rejected one. Raw KeyError/ValueError/YAMLError would reach
+        # the user as a traceback, which is the same "cannot tell what is
+        # wrong" failure these services exist to cure.
+        try:
+            defaults, rules = import_yaml(call.data["yaml"])
+        except (KeyError, ValueError, yaml.YAMLError) as err:
+            raise ServiceValidationError(f"Could not parse rules: {err}") from err
         await store.async_replace_all(defaults, rules)
         await engine.async_refresh()
 

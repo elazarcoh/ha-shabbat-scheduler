@@ -1,0 +1,108 @@
+from datetime import time
+
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.shabbat_scheduler.const import DOMAIN
+from custom_components.shabbat_scheduler.models import Action, Rule
+from custom_components.shabbat_scheduler.store import RuleStore
+
+
+async def _setup(hass, rules=()):
+    await hass.config.async_set_time_zone("Asia/Jerusalem")
+    store = RuleStore(hass)
+    await store.async_load()
+    if rules:
+        await store.async_replace_all({}, list(rules))
+    entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry
+
+
+async def test_simulate_returns_resolved_rules(hass):
+    hass.states.async_set(
+        "sensor.jewish_calendar_upcoming_candle_lighting",
+        "2026-08-14T15:44:00+00:00",
+    )
+    hass.states.async_set(
+        "sensor.jewish_calendar_upcoming_havdalah", "2026-08-15T17:01:00+00:00"
+    )
+    await _setup(hass, [
+        Rule(id="r1", profile=1, day="1", time=time(11, 0),
+             action=Action.ON, devices=("climate.a",)),
+    ])
+
+    response = await hass.services.async_call(
+        DOMAIN, "simulate", {}, blocking=True, return_response=True
+    )
+    assert response["profile"] == 1
+    assert len(response["rules"]) == 1
+    assert response["rules"][0]["action"] == "on"
+
+
+async def test_simulate_reports_conflicts(hass):
+    hass.states.async_set(
+        "sensor.jewish_calendar_upcoming_candle_lighting",
+        "2026-08-14T15:44:00+00:00",
+    )
+    hass.states.async_set(
+        "sensor.jewish_calendar_upcoming_havdalah", "2026-08-15T17:01:00+00:00"
+    )
+    await _setup(hass, [
+        Rule(id="a", profile=1, day="1", time=time(18, 0),
+             action=Action.ON, devices=("climate.a",)),
+        Rule(id="b", profile=1, day="1", time=time(18, 0),
+             action=Action.OFF, devices=("climate.a",)),
+    ])
+
+    response = await hass.services.async_call(
+        DOMAIN, "simulate", {}, blocking=True, return_response=True
+    )
+    assert len(response["conflicts"]) == 1
+
+
+async def test_simulate_warns_when_profile_missing(hass):
+    hass.states.async_set(
+        "sensor.jewish_calendar_upcoming_candle_lighting",
+        "2026-08-14T15:44:00+00:00",
+    )
+    hass.states.async_set(
+        "sensor.jewish_calendar_upcoming_havdalah", "2026-08-15T17:01:00+00:00"
+    )
+    await _setup(hass, [
+        Rule(id="r1", profile=3, day="1", time=time(11, 0), action=Action.ON),
+    ])
+
+    response = await hass.services.async_call(
+        DOMAIN, "simulate", {}, blocking=True, return_response=True
+    )
+    assert response["warnings"]
+
+
+async def test_set_dry_run(hass):
+    await _setup(hass)
+    await hass.services.async_call(
+        DOMAIN, "set_dry_run", {"enabled": True}, blocking=True
+    )
+    store = RuleStore(hass)
+    await store.async_load()
+    assert store.dry_run is True
+
+
+async def test_yaml_export_then_import(hass):
+    await _setup(hass, [
+        Rule(id="r1", profile=1, day="1", time=time(11, 0),
+             action=Action.ON, devices=("climate.a",)),
+    ])
+    exported = await hass.services.async_call(
+        DOMAIN, "export_yaml", {}, blocking=True, return_response=True
+    )
+    assert "profiles" in exported["yaml"]
+
+    await hass.services.async_call(
+        DOMAIN, "import_yaml", {"yaml": exported["yaml"]}, blocking=True
+    )
+    store = RuleStore(hass)
+    await store.async_load()
+    assert len(store.rules) == 1

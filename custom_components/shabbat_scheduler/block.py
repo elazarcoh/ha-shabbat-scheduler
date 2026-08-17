@@ -41,8 +41,13 @@ def merge_defaults(defaults: dict, rule: Rule) -> Rule:
 
 
 def has_profile(rules: list[Rule], length: int) -> bool:
-    """True when at least one rule is authored for this block length."""
-    return any(rule.profile == length for rule in rules)
+    """True when at least one ENABLED rule is authored for this block length.
+
+    Disabled rules used to count, so a profile whose rules were all switched
+    off passed the check and then scheduled nothing - with no missing-profile
+    notification to say so.
+    """
+    return any(rule.profile == length and rule.enabled for rule in rules)
 
 
 def resolve_rules(

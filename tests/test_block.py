@@ -146,3 +146,21 @@ def test_has_profile():
     rules = [Rule(id="a", profile=2, day="1", time=time(11, 0), action=Action.ON)]
     assert has_profile(rules, 2) is True
     assert has_profile(rules, 1) is False
+
+
+def test_has_profile_ignores_disabled_rules():
+    """All-disabled is the same as absent, as far as "will anything run?" goes.
+
+    Otherwise the profile check passes, nothing is scheduled, and the
+    missing-profile notification never fires.
+    """
+    rules = [
+        Rule(id="a", profile=2, day="1", time=time(11, 0),
+             action=Action.ON, enabled=False),
+    ]
+    assert has_profile(rules, 2) is False
+
+    rules.append(
+        Rule(id="b", profile=2, day="1", time=time(12, 0), action=Action.ON)
+    )
+    assert has_profile(rules, 2) is True

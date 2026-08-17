@@ -399,33 +399,48 @@ class ShabbatEngine:
 
         data = {"entity_id": entity_id, **call.data}
         for attempt in range(1, RETRY_ATTEMPTS + 1):
-            # Stamped before each attempt - see the note in Task 9. Stamping
-            # after a successful call makes every later reading look stale.
+            # Stamped BEFORE each attempt, deliberately: the entity's own
+            # `last_updated` is written during the awaited call, so a stamp
+            # taken afterwards is always later than that write and the
+            # staleness guard would then report the reading stale forever -
+            # forcing a real service call on every later apply, which is the
+            # re-asserting behaviour this integration exists to avoid.
             self._last_command[entity_id] = dt_util.utcnow()
             try:
                 await self.hass.services.async_call(
                     call.domain, call.service, data,
                     blocking=True, context=self._new_context(entity_id),
                 )
-            except Exception:  # noqa: BLE001 - one device must not abort the rest
-                _LOGGER.warning(
-                    "%s: %s.%s failed (attempt %s/%s)",
-                    entity_id, call.domain, call.service, attempt, RETRY_ATTEMPTS,
-                )
+            except Exception as err:  # noqa: BLE001 - one device must not abort the rest
+                # The reason matters: this log line and the notification below
+                # are the only forensic surface for a Shabbat-night failure,
+                # when nobody can investigate live. Without it a missing
+                # service, a timeout and a cloud auth error look identical.
                 if attempt < RETRY_ATTEMPTS:
+                    _LOGGER.warning(
+                        "%s: %s.%s failed (attempt %s/%s): %s: %s",
+                        entity_id, call.domain, call.service, attempt,
+                        RETRY_ATTEMPTS, type(err).__name__, err,
+                    )
                     await asyncio.sleep(RETRY_DELAY_SECONDS)
                     continue
+
+                _LOGGER.error(
+                    "%s: %s.%s failed after %s attempts: %s: %s",
+                    entity_id, call.domain, call.service, RETRY_ATTEMPTS,
+                    type(err).__name__, err, exc_info=True,
+                )
+                reason = f"{type(err).__name__}: {err}" if str(err) else type(err).__name__
                 persistent_notification.async_create(
                     self.hass,
                     f"{entity_id}: {call.domain}.{call.service} failed after "
-                    f"{RETRY_ATTEMPTS} attempts.",
+                    f"{RETRY_ATTEMPTS} attempts. Reason: {reason}",
                     title="Shabbat Scheduler",
+                    notification_id=f"shabbat_scheduler_fail_{entity_id}_{call.service}",
                 )
                 result["outcome"] = "failed"
+                result["reason"] = reason
                 return result
 
             result["outcome"] = "changed"
             return result
-
-        result["outcome"] = "failed"
-        return result

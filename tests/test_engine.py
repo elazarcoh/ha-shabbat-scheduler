@@ -783,3 +783,50 @@ async def test_unsupported_fan_mode_is_logged_with_entity_and_mode(
     assert results[0]["attribute"] == "fan_mode"
     assert "climate.ac" in caplog.text
     assert "quiet" in caplog.text
+
+
+# --- Final review I4: a failure must record WHY --------------------------
+
+
+async def test_failure_records_the_exception_and_a_reason(hass, engine, caplog):
+    """The log line and the notification are the only forensic surface.
+
+    On a Shabbat night nobody can investigate live; "failed after 3 attempts"
+    cannot distinguish a missing service from a timeout from a cloud auth
+    error.
+    """
+    hass.states.async_set("switch.t", "off")
+
+    async def always_fail(_call):
+        raise RuntimeError("cloud auth expired")
+
+    hass.services.async_register("switch", "turn_on", always_fail)
+
+    with patch("custom_components.shabbat_scheduler.engine.asyncio.sleep"):
+        results = await engine.async_apply_rule(_rule(devices=("switch.t",)))
+
+    assert results[0]["outcome"] == "failed"
+    assert "cloud auth expired" in results[0]["reason"]
+
+    message = next(iter(hass.data["persistent_notification"].values()))["message"]
+    assert "cloud auth expired" in message
+    assert "RuntimeError" in message
+
+    assert "cloud auth expired" in caplog.text
+    assert "Traceback" in caplog.text  # exc_info on the final failure
+
+
+# --- Final review minor: an all-disabled profile must notify --------------
+
+
+async def test_all_disabled_rules_notify_like_a_missing_profile(hass, engine):
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.store.async_set_enabled(True)
+    await engine.store.async_replace_all({}, [
+        Rule(id="r", profile=1, day="1", time=time(11, 0), action=Action.ON,
+             devices=("input_boolean.t",), enabled=False),
+    ])
+    await engine.async_refresh()
+
+    assert engine.upcoming() == []
+    assert "shabbat_scheduler_no_profile" in hass.data["persistent_notification"]

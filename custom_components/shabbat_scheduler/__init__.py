@@ -11,7 +11,7 @@ from .const import CANDLE_SENSOR, DOMAIN, HAVDALAH_SENSOR
 from .engine import ShabbatEngine
 from .store import RuleStore
 
-PLATFORMS = [Platform.SWITCH]
+PLATFORMS = [Platform.SWITCH, Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

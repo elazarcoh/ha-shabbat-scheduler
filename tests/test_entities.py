@@ -96,3 +96,36 @@ async def test_rule_switch_toggle_persists(hass):
     reloaded = RuleStore(hass)
     await reloaded.async_load()
     assert reloaded.rules[0].enabled is False
+
+
+async def test_next_block_sensor_reports_length(hass):
+    hass.states.async_set(
+        "sensor.jewish_calendar_upcoming_candle_lighting",
+        "2026-08-14T15:44:00+00:00",
+    )
+    hass.states.async_set(
+        "sensor.jewish_calendar_upcoming_havdalah", "2026-08-15T17:01:00+00:00"
+    )
+    await _setup(hass)
+    state = hass.states.get("sensor.shabbat_scheduler_next_block")
+    assert state is not None
+    assert state.state == "1"
+
+
+async def test_next_action_sensor_unknown_when_master_off(hass):
+    hass.states.async_set(
+        "sensor.jewish_calendar_upcoming_candle_lighting",
+        "2026-08-14T15:44:00+00:00",
+    )
+    hass.states.async_set(
+        "sensor.jewish_calendar_upcoming_havdalah", "2026-08-15T17:01:00+00:00"
+    )
+    await _setup(hass, [
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON),
+    ])
+    assert hass.states.get("sensor.shabbat_scheduler_next_action").state == "unknown"
+
+
+async def test_last_run_sensor_exists(hass):
+    await _setup(hass)
+    assert hass.states.get("sensor.shabbat_scheduler_last_run") is not None

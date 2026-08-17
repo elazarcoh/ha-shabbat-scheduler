@@ -192,6 +192,12 @@ class ShabbatEngine:
         self.last_run = results
         return results
 
+    async def async_shutdown(self) -> None:
+        """Cancel every pending timer."""
+        for cancel in self._unsubscribes:
+            cancel()
+        self._unsubscribes = []
+
     async def _apply_custom(self, rule: Rule) -> list[dict]:
         if not rule.script:
             return []

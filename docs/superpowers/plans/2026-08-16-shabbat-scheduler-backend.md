@@ -2261,7 +2261,16 @@ Then add:
                 # never silently wiped.
                 self._block = compute_block(*zmanim)
             except ValueError:
+                # Loud silence: refusing to act is safe, doing it quietly is
+                # not. This mirrors the missing-profile notification below.
                 _LOGGER.warning("Ignoring implausible zmanim pair %s", zmanim)
+                persistent_notification.async_create(
+                    self.hass,
+                    "Candle lighting and havdalah do not form a valid period, "
+                    "so the Shabbat schedule is not running. Check "
+                    f"{CANDLE_SENSOR} and {HAVDALAH_SENSOR}.",
+                    title="Shabbat Scheduler",
+                )
 
         if self._block is None or not self.store.enabled:
             return

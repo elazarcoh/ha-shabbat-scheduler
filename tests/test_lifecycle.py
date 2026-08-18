@@ -138,3 +138,33 @@ async def test_an_unnamed_rule_falls_back_to_a_derived_name(
     await store.async_update("r1", time=time(20, 0))
     await hass.async_block_till_done()
     assert hass.states.get(entity_id).attributes["friendly_name"] == "1d 1 20:00 on"
+
+
+async def test_a_rule_change_refreshes_the_engine_exactly_once(hass):
+    """The reschedule-on-change listener must not feed itself.
+
+    `engine.async_refresh` writes the active block back to the store, and
+    if those writes ever start notifying, this listener refreshes, which
+    writes, which notifies... The store's async_set_active_block and
+    async_clear_active_block deliberately do not call _notify_change, and
+    this is what says so out loud.
+    """
+    entry = await _setup(hass)
+    engine = hass.data[DOMAIN][entry.entry_id]["engine"]
+    store = hass.data[DOMAIN][entry.entry_id]["store"]
+
+    calls = []
+    original = engine.async_refresh
+
+    async def _counting_refresh():
+        calls.append(1)
+        await original()
+
+    engine.async_refresh = _counting_refresh
+
+    await store.async_add(
+        Rule(id="one", profile=1, day="1", time=time(11, 0), action=Action.ON)
+    )
+    await hass.async_block_till_done()
+
+    assert calls == [1]

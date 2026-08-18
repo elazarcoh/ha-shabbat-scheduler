@@ -27,6 +27,7 @@ catch-up tests already use `freezer`/`freeze_time` in this suite.
 from datetime import date, time
 
 import pytest
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -181,3 +182,67 @@ async def test_a_restart_between_havdalah_and_the_tail_still_fires_it(
     async_fire_time_changed(hass, dt_util.parse_datetime("2026-08-15T20:00:00+00:00"))
     await hass.async_block_till_done()
     assert hass.states.get("input_boolean.salon").state == "off"
+
+
+async def test_a_card_can_drive_the_whole_loop(hass, hass_ws_client, jerusalem):
+    """Subscribe, create, see the push and the entity, delete, see both go."""
+    hass.states.async_set(
+        "sensor.jewish_calendar_upcoming_candle_lighting",
+        "2026-08-14T15:44:00+00:00",
+    )
+    hass.states.async_set(
+        "sensor.jewish_calendar_upcoming_havdalah", "2026-08-15T17:01:00+00:00"
+    )
+    entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    client = await hass_ws_client(hass)
+    await client.send_json({"id": 1, "type": "shabbat_scheduler/subscribe"})
+    assert (await client.receive_json())["success"]
+
+    await client.send_json(
+        {
+            "id": 2,
+            "type": "shabbat_scheduler/rules/create",
+            "rule": {
+                "profile": 1,
+                "day": "1",
+                "time": "11:00:00",
+                "action": "on",
+                "devices": ["input_boolean.salon"],
+                "name": "בוקר שבת",
+            },
+        }
+    )
+
+    pushed = await client.receive_json()
+    created = await client.receive_json()
+    if pushed["type"] != "event":  # ordering is not guaranteed
+        pushed, created = created, pushed
+
+    assert created["success"]
+    rule_id = created["result"]["rule"]["id"]
+    assert [r["id"] for r in pushed["event"]["rules"]] == [rule_id]
+
+    await hass.async_block_till_done()
+    registry = er.async_get(hass)
+    entity_id = registry.async_get_entity_id(
+        "switch", DOMAIN, f"{entry.entry_id}_rule_{rule_id}"
+    )
+    assert entity_id is not None
+
+    await client.send_json(
+        {"id": 3, "type": "shabbat_scheduler/rules/delete", "rule_id": rule_id}
+    )
+    while True:
+        msg = await client.receive_json()
+        if msg.get("id") == 3 and msg["type"] == "result":
+            assert msg["success"]
+            break
+
+    await hass.async_block_till_done()
+    assert registry.async_get_entity_id(
+        "switch", DOMAIN, f"{entry.entry_id}_rule_{rule_id}"
+    ) is None

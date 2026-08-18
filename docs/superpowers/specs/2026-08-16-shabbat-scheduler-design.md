@@ -123,11 +123,18 @@ so the common case stays short:
 
 ```yaml
 defaults:
-  temperature: 26
-  hvac_mode: cool
-  fan_mode: quiet
   devices: [climate.air_conditioner_2]
+  settings:
+    temperature: 26
+    hvac_mode: cool
+    fan_mode: quiet
 ```
+
+Only `devices` and `settings` are recognised at the top level — the climate
+values nest under `settings`. An earlier draft of this example showed them
+flat, which was wrong in a way nothing would have caught at authoring time:
+`merge_defaults` silently ignores unrecognised top-level keys, and
+`validate_defaults` rejects them as unknown fields.
 
 Per-rule values override per key (shallow merge). Nothing else is layered —
 there is no profile-level or day-level defaults tier, deliberately, to keep

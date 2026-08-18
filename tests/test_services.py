@@ -226,11 +226,11 @@ profiles:
 
 
 async def test_import_yaml_rebuilds_the_rule_switches(hass):
-    """Rule switches are static, built once at forward-setup.
+    """An import replaces the whole rule set.
 
-    An import replaces the whole rule set, so without a reload the new rules
-    have no switch and the deleted rules' switches linger, still toggleable
-    and attached to nothing.
+    The change fans out over `SIGNAL_RULES_CHANGED`, so the new rules get a
+    switch and the deleted rules' switches are removed - dynamically, with
+    no config-entry reload.
     """
     entry = await _setup(hass, [
         Rule(id="old", profile=1, day="1", time=time(11, 0),

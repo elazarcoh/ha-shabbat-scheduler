@@ -69,3 +69,28 @@ async def test_surviving_rule_keeps_its_entity_across_replace_all(hass):
 
     assert _switch_for(hass, entry, "keep") == before
     assert _switch_for(hass, entry, "added") is not None
+
+
+async def test_stale_registry_entry_from_before_the_session_is_purged(hass):
+    """A registry entry can be orphaned before this session even starts -
+    e.g. the store file was edited, or a rule removed, while HA was
+    stopped. The first `_sync()` call, made during setup, must still purge
+    it: a `known - current` diff cannot see it, because `known` is seeded
+    from `current` before that first diff is ever computed, so nothing
+    ever appears on the "known but no longer current" side for an entity
+    that was never added in this session to begin with.
+    """
+    await hass.config.async_set_time_zone("Asia/Jerusalem")
+    entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
+    entry.add_to_hass(hass)
+
+    registry = er.async_get(hass)
+    registry.async_get_or_create(
+        "switch", DOMAIN, f"{entry.entry_id}_rule_ghost", config_entry=entry
+    )
+    assert _switch_for(hass, entry, "ghost") is not None
+
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert _switch_for(hass, entry, "ghost") is None

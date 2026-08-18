@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+from dataclasses import replace
 from datetime import timedelta
 from typing import Any
 
@@ -12,6 +14,7 @@ from homeassistant.util import dt as dt_util
 
 from .block import compute_block, find_conflicts, has_profile, merge_defaults, resolve_rules
 from .const import DOMAIN
+from .rule_schema import RuleValidationError, changes_from_api, rule_from_api, validate_rule
 from .store import rule_to_dict
 
 
@@ -129,8 +132,118 @@ def ws_preview(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     )
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "shabbat_scheduler/rules/create",
+        vol.Required("rule"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_create(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    data = _entry_data(hass)
+    if data is None:
+        connection.send_error(msg["id"], "not_set_up", "Integration is not set up")
+        return
+    store = data["store"]
+    try:
+        rule = rule_from_api(msg["rule"], uuid.uuid4().hex)
+    except RuleValidationError as err:
+        connection.send_error(msg["id"], "invalid_rule", str(err))
+        return
+
+    await store.async_add(rule)
+    connection.send_result(
+        msg["id"],
+        {"rule": rule_to_dict(rule), "warnings": _conflict_warnings(store.rules)},
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "shabbat_scheduler/rules/update",
+        vol.Required("rule_id"): str,
+        vol.Required("changes"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_update(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    data = _entry_data(hass)
+    if data is None:
+        connection.send_error(msg["id"], "not_set_up", "Integration is not set up")
+        return
+    store = data["store"]
+    try:
+        changes = changes_from_api(msg["changes"])
+    except RuleValidationError as err:
+        connection.send_error(msg["id"], "invalid_rule", str(err))
+        return
+
+    existing = next((r for r in store.rules if r.id == msg["rule_id"]), None)
+    if existing is None:
+        connection.send_error(msg["id"], "not_found", f"No rule {msg['rule_id']}")
+        return
+
+    updated = replace(existing, **changes)
+    try:
+        validate_rule(updated)
+    except RuleValidationError as err:
+        connection.send_error(msg["id"], "invalid_rule", str(err))
+        return
+
+    try:
+        await store.async_update(msg["rule_id"], **changes)
+    except KeyError:
+        connection.send_error(msg["id"], "not_found", f"No rule {msg['rule_id']}")
+        return
+
+    connection.send_result(
+        msg["id"],
+        {"rule": rule_to_dict(updated), "warnings": _conflict_warnings(store.rules)},
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "shabbat_scheduler/rules/delete",
+        vol.Required("rule_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    data = _entry_data(hass)
+    if data is None:
+        connection.send_error(msg["id"], "not_set_up", "Integration is not set up")
+        return
+    await data["store"].async_delete(msg["rule_id"])
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "shabbat_scheduler/defaults/update",
+        vol.Required("defaults"): dict,
+    }
+)
+@websocket_api.async_response
+async def ws_defaults(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    data = _entry_data(hass)
+    if data is None:
+        connection.send_error(msg["id"], "not_set_up", "Integration is not set up")
+        return
+    store = data["store"]
+    await store.async_replace_all(msg["defaults"], store.rules)
+    connection.send_result(
+        msg["id"],
+        {"defaults": store.defaults, "warnings": _conflict_warnings(store.rules)},
+    )
+
+
 @callback
 def async_register(hass: HomeAssistant) -> None:
     """Register every websocket command for this integration."""
     websocket_api.async_register_command(hass, ws_list)
     websocket_api.async_register_command(hass, ws_preview)
+    websocket_api.async_register_command(hass, ws_create)
+    websocket_api.async_register_command(hass, ws_update)
+    websocket_api.async_register_command(hass, ws_delete)
+    websocket_api.async_register_command(hass, ws_defaults)

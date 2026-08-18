@@ -12,6 +12,7 @@ from datetime import time
 import yaml
 
 from .models import Action, EREV, Rule
+from .rule_schema import validate_defaults
 
 _OPTIONAL_FIELDS = (
     "name", "icon", "script", "color", "replay_on_restart", "variables",
@@ -104,7 +105,18 @@ def export_yaml(defaults: dict, rules: list[Rule]) -> str:
 def import_yaml(text: str) -> tuple[dict, list[Rule]]:
     """Parse a rule set. Ids are generated for entries that lack one."""
     data = yaml.safe_load(text) or {}
-    defaults = data.get("defaults") or {}
+    # Validated with exactly the same guard the websocket API uses, and
+    # BEFORE anything is returned to be persisted. An unvalidated
+    # `defaults` used to be written straight to .storage, after which
+    # merge_defaults raised TypeError on every subsequent setup - the
+    # integration could then never start again without hand-editing
+    # .storage, and nothing ran on Shabbat with nothing to explain why.
+    # RuleValidationError is a ValueError, which the import_yaml service
+    # already turns into a ServiceValidationError.
+    raw_defaults = data.get("defaults") or {}
+    if not isinstance(raw_defaults, dict):
+        raise ValueError(f"defaults must be a mapping, got {raw_defaults!r}")
+    defaults = validate_defaults(raw_defaults)
     rules: list[Rule] = []
 
     for profile_key, days in (data.get("profiles") or {}).items():

@@ -24,8 +24,14 @@ def test_export_groups_by_profile_and_day():
 
 
 def test_round_trip_preserves_rules():
-    defaults, rules = import_yaml(export_yaml({"temperature": 26}, _rules()))
-    assert defaults == {"temperature": 26}
+    # The nested form README documents. A flat `{"temperature": 26}` used to
+    # round-trip, but it never meant anything - merge_defaults only reads
+    # `devices` and `settings` - and import now rejects it rather than
+    # persisting a default that silently does nothing (final review C2).
+    defaults, rules = import_yaml(
+        export_yaml({"settings": {"temperature": 26}}, _rules())
+    )
+    assert defaults == {"settings": {"temperature": 26}}
     assert {(r.profile, r.day, r.time, r.action) for r in rules} == {
         (1, EREV, time(23, 0), Action.OFF),
         (1, "1", time(11, 0), Action.ON),
@@ -145,3 +151,45 @@ profiles:
 """
     _defaults, rules = import_yaml(text)
     assert [rule.action for rule in rules] == [Action.ON, Action.OFF]
+
+
+# --- Final review C2: unvalidated defaults used to brick the integration ---
+
+
+def test_import_rejects_a_non_mapping_settings_default():
+    """`settings: not_a_dict` used to be written straight to .storage.
+
+    merge_defaults then did `{**"not_a_dict"}` on every setup, so the entry
+    could never load again without hand-editing .storage - and nothing ran
+    on Shabbat with nothing to say why. Validated with the same guard the
+    websocket API uses, at the door.
+    """
+    with pytest.raises(ValueError):
+        import_yaml("defaults:\n  settings: not_a_dict\n")
+
+
+def test_import_rejects_a_bare_string_devices_default():
+    with pytest.raises(ValueError):
+        import_yaml("defaults:\n  devices: climate.a\n")
+
+
+def test_import_rejects_an_unknown_defaults_key():
+    """Only `devices` and `settings` mean anything to merge_defaults.
+
+    Anything else silently did nothing, which is worse than being told.
+    """
+    with pytest.raises(ValueError):
+        import_yaml("defaults:\n  temperature: 26\n")
+
+
+def test_import_rejects_a_non_mapping_defaults_block():
+    with pytest.raises(ValueError):
+        import_yaml("defaults: not_a_mapping\n")
+
+
+def test_import_keeps_a_valid_nested_defaults_block():
+    defaults, _rules = import_yaml(
+        "defaults:\n  devices: [climate.a]\n  settings: {temperature: 26}\n"
+    )
+    assert list(defaults["devices"]) == ["climate.a"]
+    assert defaults["settings"] == {"temperature": 26}

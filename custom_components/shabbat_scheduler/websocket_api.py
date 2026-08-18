@@ -14,7 +14,13 @@ from homeassistant.util import dt as dt_util
 
 from .block import compute_block, find_conflicts, has_profile, merge_defaults, resolve_rules
 from .const import DOMAIN
-from .rule_schema import RuleValidationError, changes_from_api, rule_from_api, validate_rule
+from .rule_schema import (
+    RuleValidationError,
+    changes_from_api,
+    rule_from_api,
+    validate_defaults,
+    validate_rule,
+)
 from .store import rule_to_dict
 
 
@@ -190,11 +196,7 @@ async def ws_update(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
         connection.send_error(msg["id"], "invalid_rule", str(err))
         return
 
-    try:
-        await store.async_update(msg["rule_id"], **changes)
-    except KeyError:
-        connection.send_error(msg["id"], "not_found", f"No rule {msg['rule_id']}")
-        return
+    await store.async_update(msg["rule_id"], **changes)
 
     connection.send_result(
         msg["id"],
@@ -231,7 +233,13 @@ async def ws_defaults(hass: HomeAssistant, connection, msg: dict[str, Any]) -> N
         connection.send_error(msg["id"], "not_set_up", "Integration is not set up")
         return
     store = data["store"]
-    await store.async_replace_all(msg["defaults"], store.rules)
+    try:
+        defaults = validate_defaults(msg["defaults"])
+    except RuleValidationError as err:
+        connection.send_error(msg["id"], "invalid_rule", str(err))
+        return
+
+    await store.async_replace_all(defaults, store.rules)
     connection.send_result(
         msg["id"],
         {"defaults": store.defaults, "warnings": _conflict_warnings(store.rules)},

@@ -16,14 +16,16 @@ _FIELDS = {
     "icon", "enabled", "script", "variables", "replay_on_restart", "color",
 }
 
+_DEFAULTS_FIELDS = {"devices", "settings"}
+
 
 class RuleValidationError(ValueError):
     """A rule as supplied cannot be built."""
 
 
-def _check_unknown_fields(data: dict) -> None:
+def _check_unknown_fields(data: dict, allowed: set[str] = _FIELDS) -> None:
     """Check for unknown fields in data."""
-    unknown = set(data) - _FIELDS
+    unknown = set(data) - allowed
     if unknown:
         raise RuleValidationError(f"unknown field(s): {sorted(unknown)}")
 
@@ -91,6 +93,19 @@ def validate_rule(rule: Rule) -> None:
     """Invariants that need the whole rule, not one field."""
     if rule.action is Action.CUSTOM and not rule.script:
         raise RuleValidationError("a custom action requires a script")
+
+
+def validate_defaults(data: dict) -> dict:
+    """Validate a defaults payload into coerced kwargs.
+
+    Shares the same 'devices'/'settings' shape guards as rule fields,
+    coerced via the same helpers used for rules - a bare string for
+    'devices' or a non-mapping 'settings' is rejected here rather than
+    persisted, so a malformed defaults payload cannot blow up later at
+    rule-resolution time.
+    """
+    _check_unknown_fields(data, _DEFAULTS_FIELDS)
+    return {field: _coerce(field, value) for field, value in data.items()}
 
 
 def changes_from_api(data: dict) -> dict:

@@ -299,16 +299,62 @@ async def test_defaults_update_persists(hass, hass_ws_client):
         {
             "id": 1,
             "type": "shabbat_scheduler/defaults/update",
-            "defaults": {"temperature": 24},
+            "defaults": {"devices": ["climate.a"], "settings": {"temperature": 24}},
         }
     )
     msg = await client.receive_json()
     assert msg["success"]
-    assert msg["result"]["defaults"] == {"temperature": 24}
+    assert msg["result"]["defaults"] == {
+        "devices": ["climate.a"],
+        "settings": {"temperature": 24},
+    }
 
     reloaded = RuleStore(hass)
     await reloaded.async_load()
-    assert reloaded.defaults == {"temperature": 24}
+    assert list(reloaded.defaults["devices"]) == ["climate.a"]
+    assert reloaded.defaults["settings"] == {"temperature": 24}
+
+
+async def test_defaults_update_rejects_a_string_settings_payload(
+    hass, hass_ws_client
+):
+    """settings must be a mapping - the same guard rule fields already use."""
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {
+            "id": 1,
+            "type": "shabbat_scheduler/defaults/update",
+            "defaults": {"settings": "not_a_dict"},
+        }
+    )
+    msg = await client.receive_json()
+    assert not msg["success"]
+
+    reloaded = RuleStore(hass)
+    await reloaded.async_load()
+    assert reloaded.defaults == {}
+
+
+async def test_defaults_update_rejects_a_bare_string_devices_payload(
+    hass, hass_ws_client
+):
+    """devices must be a list/tuple, not a bare string - same guard as rules."""
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {
+            "id": 1,
+            "type": "shabbat_scheduler/defaults/update",
+            "defaults": {"devices": "climate.a"},
+        }
+    )
+    msg = await client.receive_json()
+    assert not msg["success"]
+
+    reloaded = RuleStore(hass)
+    await reloaded.async_load()
+    assert reloaded.defaults == {}
 
 
 async def test_update_to_custom_action_without_script_is_rejected(
@@ -338,3 +384,25 @@ async def test_update_to_custom_action_without_script_is_rejected(
         Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
              devices=("climate.a",)),
     ]
+
+
+async def test_update_succeeds_but_warns_on_a_conflict(hass, hass_ws_client):
+    await _setup(hass, [
+        Rule(id="a", profile=1, day="1", time=time(11, 0), action=Action.ON,
+             devices=("climate.a",)),
+        Rule(id="b", profile=1, day="1", time=time(12, 0), action=Action.OFF,
+             devices=("climate.a",)),
+    ])
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {
+            "id": 1,
+            "type": "shabbat_scheduler/rules/update",
+            "rule_id": "b",
+            "changes": {"time": "11:00:00"},
+        }
+    )
+    msg = await client.receive_json()
+
+    assert msg["success"]  # conflicts warn, they never reject
+    assert msg["result"]["warnings"]

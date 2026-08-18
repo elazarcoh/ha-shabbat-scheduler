@@ -94,3 +94,45 @@ async def test_stale_registry_entry_from_before_the_session_is_purged(hass):
     await hass.async_block_till_done()
 
     assert _switch_for(hass, entry, "ghost") is None
+
+
+async def test_renaming_a_rule_reaches_its_switch_without_a_restart(hass):
+    """Final review I7: RuleSwitch used to snapshot its name in __init__.
+
+    `_sync` only added and removed, so after `rules/update {"name": ...}`
+    the friendly name and the registry's original_name stayed stale until
+    a restart - and renaming is the card's primary affordance.
+    """
+    entry = await _setup(hass, [
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+             name="בוקר שבת", icon="mdi:candle"),
+    ])
+    entity_id = _switch_for(hass, entry, "r1")
+    assert hass.states.get(entity_id).attributes["friendly_name"] == "בוקר שבת"
+    assert hass.states.get(entity_id).attributes["icon"] == "mdi:candle"
+
+    store = hass.data[DOMAIN][entry.entry_id]["store"]
+    await store.async_update("r1", name="ערב שבת", icon="mdi:weather-night")
+    await hass.async_block_till_done()
+
+    state = hass.states.get(entity_id)
+    assert state.attributes["friendly_name"] == "ערב שבת"
+    assert state.attributes["icon"] == "mdi:weather-night"
+    # The registry's own copy follows too, so the entity list is not stale.
+    assert er.async_get(hass).async_get(entity_id).original_name == "ערב שבת"
+    # The entity_id itself deliberately does NOT move: it is the user's
+    # stable handle, and unique_id is what keeps it attached to the rule.
+    assert _switch_for(hass, entry, "r1") == entity_id
+
+
+async def test_an_unnamed_rule_falls_back_to_a_derived_name(hass):
+    entry = await _setup(hass, [
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON),
+    ])
+    entity_id = _switch_for(hass, entry, "r1")
+    assert hass.states.get(entity_id).attributes["friendly_name"] == "1d 1 11:00 on"
+
+    store = hass.data[DOMAIN][entry.entry_id]["store"]
+    await store.async_update("r1", time=time(20, 0))
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id).attributes["friendly_name"] == "1d 1 20:00 on"

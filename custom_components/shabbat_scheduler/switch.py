@@ -28,12 +28,13 @@ async def async_setup_entry(
     store: RuleStore = data["store"]
     engine: ShabbatEngine = data["engine"]
 
-    known: set[str] = set()
+    known: dict[str, RuleSwitch] = {}
     prefix = f"{entry.entry_id}_rule_"
 
     @callback
     def _sync() -> None:
-        """Add entities for new rules, remove those whose rule is gone.
+        """Add entities for new rules, remove those whose rule is gone, and
+        re-write the state of the ones that stayed.
 
         The registry scan (rather than a `known - current` diff) is what
         used to be a separate setup-time purge, folded in here so there is
@@ -43,6 +44,13 @@ async def async_setup_entry(
         restart - so it cannot by itself catch a registry entry orphaned
         before this session began (e.g. the store file was edited while
         HA was stopped). Scanning the registry directly still catches that.
+
+        The state re-write is what makes a rename visible: RuleSwitch reads
+        its name and icon from the live store, and Home Assistant refreshes
+        both the friendly name and the registry's `original_name` from
+        `entity.name` on every state write. Without it a renamed rule kept
+        its old name until a restart - and renaming is the card's primary
+        affordance.
         """
         current = {rule.id for rule in store.rules}
 
@@ -51,9 +59,18 @@ async def async_setup_entry(
             for rule in store.rules
             if rule.id not in known
         ]
+        for entity in new:
+            known[entity.rule_id] = entity
         if new:
             async_add_entities(new)
-        known.update(current)
+
+        for rule_id in current:
+            entity = known.get(rule_id)
+            # `entity_id` is only assigned once the platform has finished
+            # adding it, so this skips the ones just handed to
+            # async_add_entities above - they write their own first state.
+            if entity is not None and entity.entity_id:
+                entity.async_write_ha_state()
 
         registry = er.async_get(hass)
         for registered in er.async_entries_for_config_entry(registry, entry.entry_id):
@@ -62,7 +79,8 @@ async def async_setup_entry(
             rule_id = registered.unique_id[len(prefix):]
             if rule_id not in current:
                 registry.async_remove(registered.entity_id)
-        known.intersection_update(current)
+        for rule_id in [rule_id for rule_id in known if rule_id not in current]:
+            del known[rule_id]
 
     async_add_entities([MasterSwitch(entry, store, engine)])
     _sync()
@@ -115,18 +133,47 @@ class RuleSwitch(SwitchEntity):
         self._store = store
         self._engine = engine
         self._rule_id = rule.id
+        # unique_id is stable and derived from rule.id; entity_id follows
+        # the user-editable, often-Hebrew rule NAME and is not derivable
+        # from it. Anything looking a rule switch up - tests included -
+        # must go through the entity registry by unique_id. Confusing the
+        # two has caused two real bugs in this project already.
         self._attr_unique_id = f"{entry.entry_id}_rule_{rule.id}"
-        self._attr_name = rule.name or (
+        # Only a fallback for the window between the rule's deletion and
+        # the entity's removal; `name`/`icon` read the live store.
+        self._last_known = rule
+
+    @property
+    def rule_id(self) -> str:
+        return self._rule_id
+
+    def _current(self) -> Rule | None:
+        rule = next(
+            (rule for rule in self._store.rules if rule.id == self._rule_id), None
+        )
+        if rule is not None:
+            self._last_known = rule
+        return rule
+
+    @property
+    def name(self) -> str:
+        """Derived from the live store, so a rename shows on the next write.
+
+        Snapshotting this in __init__ meant `rules/update {"name": ...}`
+        never reached the entity: both the friendly name and the registry's
+        original_name stayed stale until a restart.
+        """
+        rule = self._current() or self._last_known
+        return rule.name or (
             f"{rule.profile}d {rule.day} {rule.time.strftime('%H:%M')} "
             f"{rule.action.value}"
         )
-        self._attr_icon = rule.icon or (
-            "mdi:power-plug" if rule.action.value == "on" else "mdi:power-plug-off"
-        )
 
-    def _current(self) -> Rule | None:
-        return next(
-            (rule for rule in self._store.rules if rule.id == self._rule_id), None
+    @property
+    def icon(self) -> str:
+        rule = self._current() or self._last_known
+        return rule.icon or (
+            "mdi:power-plug" if rule.action.value == "on" else "mdi:power-plug-off"
         )
 
     @property

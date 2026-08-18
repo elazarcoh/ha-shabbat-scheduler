@@ -1417,7 +1417,39 @@ async def test_all_calls_of_one_rule_share_the_events_context(hass, engine):
 
     assert len(set(contexts)) == 1
     assert contexts[0] == event_context[0]
+
+
+async def test_concurrent_rules_get_distinct_contexts(hass, engine):
+    """Two rules applied at once must not share or overwrite each other's."""
+    hass.states.async_set("input_boolean.t", "off")
+    hass.states.async_set("input_boolean.salon", "off")
+    seen: list[str] = []
+
+    @callback
+    def _event(event):
+        seen.append(event.context.id)
+
+    hass.bus.async_listen(EVENT_RULE_APPLIED, _event)
+
+    await asyncio.gather(
+        engine.async_apply_rule(
+            dataclasses.replace(
+                _rule(action=Action.ON, devices=("input_boolean.t",)), id="one"
+            )
+        ),
+        engine.async_apply_rule(
+            dataclasses.replace(
+                _rule(action=Action.OFF, devices=("input_boolean.salon",)), id="two"
+            )
+        ),
+    )
+    await hass.async_block_till_done()
+
+    assert len(seen) == 2
+    assert len(set(seen)) == 2
 ```
+
+Add `import asyncio` to the test file's imports if absent.
 
 Add these imports to the top of `tests/test_engine.py` if absent:
 
@@ -1450,7 +1482,6 @@ In `custom_components/shabbat_scheduler/engine.py`, rewrite `async_apply_rule`:
         device's own change back to this rule, the same way automations do.
         """
         context = Context()
-        self._context_for_rule = context
 
         self.hass.bus.async_fire(
             EVENT_RULE_APPLIED,
@@ -1465,34 +1496,57 @@ In `custom_components/shabbat_scheduler/engine.py`, rewrite `async_apply_rule`:
         )
 
         if rule.action is Action.CUSTOM:
-            results = await self._apply_custom(rule)
+            results = await self._apply_custom(rule, context)
         else:
             results = []
             for entity_id in rule.devices:
-                results.extend(await self._apply_device(rule, entity_id, force))
+                results.extend(
+                    await self._apply_device(rule, entity_id, force, context)
+                )
 
         self.last_run = results
         self.last_run_at = dt_util.utcnow()
-        self._context_for_rule = None
         return results
 ```
 
-Add `self._context_for_rule: Context | None = None` to `__init__`, and change
-`_new_context` to reuse the rule's context when there is one:
+The context is threaded through as a parameter rather than held on the engine.
+Two rules can be applied concurrently — the suite already exercises exactly
+that — and a single instance attribute would let one overwrite the other's
+context mid-flight, misattributing a device change to the wrong rule.
+
+Change the three signatures to carry it, and replace `_new_context` with a
+recorder:
 
 ```python
-    def _new_context(self, entity_id: str) -> Context:
-        """The context for a call to `entity_id`, remembered as ours.
+    async def _apply_custom(self, rule: Rule, context: Context) -> list[dict]:
+```
 
-        Within one rule application every call shares a single context, so
-        Home Assistant can attribute each device's change back to the rule.
-        Retaining our own context ids is separately what lets a future
-        enforcement feature tell "we changed it" from "a human changed it".
+```python
+    async def _apply_device(
+        self, rule: Rule, entity_id: str, force: bool, context: Context
+    ) -> list[dict]:
+```
+
+```python
+    async def _execute(self, entity_id: str, call, context: Context) -> dict:
+```
+
+```python
+    def _record_context(self, entity_id: str, context: Context) -> Context:
+        """Remember a context as ours, for the given entity.
+
+        Retaining our own context ids is what lets a future enforcement
+        feature tell "we changed it" from "a human changed it" when looking
+        at a state_changed event.
         """
-        context = self._context_for_rule or Context()
         self._our_contexts[entity_id].append(context.id)
         return context
 ```
+
+At each `hass.services.async_call` site inside `_execute` and `_apply_custom`,
+pass `context=self._record_context(entity_id, context)` — for `_apply_custom`
+use `rule.script` as the key, matching what it does today. Delete
+`_new_context`; `is_our_context` is unchanged.
 
 - [ ] **Step 4: Run the whole suite**
 

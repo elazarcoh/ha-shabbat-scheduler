@@ -1,4 +1,7 @@
+import dataclasses
 from datetime import date, datetime, time, timezone
+
+import pytest
 
 from custom_components.shabbat_scheduler.models import (
     Action,
@@ -51,3 +54,17 @@ def test_resolved_rule_and_conflict_construct():
         profile=1, day="1", time=time(11, 0), device="climate.a", rule_ids=("r1", "r2")
     )
     assert conflict.rule_ids == ("r1", "r2")
+
+
+def test_rule_is_frozen():
+    rule = Rule(id="r1", profile=1, day=EREV, time=time(23, 0), action=Action.OFF)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        rule.enabled = False
+
+
+def test_rule_replace_produces_a_new_rule():
+    rule = Rule(id="r1", profile=1, day=EREV, time=time(23, 0), action=Action.OFF)
+    updated = dataclasses.replace(rule, enabled=False)
+    assert updated.enabled is False
+    assert rule.enabled is True
+    assert updated is not rule

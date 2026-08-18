@@ -17,7 +17,7 @@ class Action(str, Enum):
     CUSTOM = "custom"
 
 
-@dataclass
+@dataclass(frozen=True)
 class Rule:
     """A single scheduled action within one block-length profile."""
 

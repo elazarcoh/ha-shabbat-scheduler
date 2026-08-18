@@ -12,13 +12,16 @@ ZMANIM = {
 }
 
 
-async def _setup(hass, rules=(), defaults=None):
+async def _setup(hass, rules=(), defaults=None, enabled=False):
     await hass.config.async_set_time_zone("Asia/Jerusalem")
     for entity_id, state in ZMANIM.items():
         hass.states.async_set(entity_id, state)
     store = RuleStore(hass)
     await store.async_load()
     await store.async_replace_all(defaults or {}, list(rules))
+    if enabled:
+        # Timers are only armed while the master switch is on.
+        await store.async_set_enabled(True)
     entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
     entry.add_to_hass(hass)
     await hass.config_entries.async_setup(entry.entry_id)
@@ -406,6 +409,92 @@ async def test_update_succeeds_but_warns_on_a_conflict(hass, hass_ws_client):
 
     assert msg["success"]  # conflicts warn, they never reject
     assert msg["result"]["warnings"]
+
+
+# --- Every mutation must reschedule the engine -------------------------
+#
+# Timers live only in ShabbatEngine._async_refresh. Nothing else calls it
+# unprompted until the zmanim sensors roll forward at havdalah, so a rule
+# created, deleted or retimed over the websocket used to leave the armed
+# timers describing the PREVIOUS rule set - silently never firing a new
+# rule, and still driving devices from deleted or retimed ones.
+#
+# 05:00Z on 15 Aug is 08:00 local, inside the block ZMANIM describes and
+# before both the 11:00 and 20:00 rule times used below.
+
+
+async def test_create_over_the_websocket_arms_a_timer(
+    hass, hass_ws_client, freezer
+):
+    # Client first: the access token is minted against the real clock and
+    # would look not-yet-issued once the freezer moves into the past.
+    client = await hass_ws_client(hass)
+    freezer.move_to("2026-08-15T05:00:00+00:00")
+    entry = await _setup(hass, enabled=True)
+    engine = hass.data[DOMAIN][entry.entry_id]["engine"]
+    assert engine.upcoming() == []
+
+    await client.send_json(
+        {"id": 1, "type": "shabbat_scheduler/rules/create", "rule": NEW_RULE}
+    )
+    msg = await client.receive_json()
+    assert msg["success"]
+    await hass.async_block_till_done()
+
+    rule_id = msg["result"]["rule"]["id"]
+    assert [item.rule.id for item in engine.upcoming()] == [rule_id]
+
+
+async def test_delete_over_the_websocket_disarms_its_timer(
+    hass, hass_ws_client, freezer
+):
+    client = await hass_ws_client(hass)
+    freezer.move_to("2026-08-15T05:00:00+00:00")
+    entry = await _setup(
+        hass,
+        [Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+              devices=("climate.a",))],
+        enabled=True,
+    )
+    engine = hass.data[DOMAIN][entry.entry_id]["engine"]
+    assert [item.rule.id for item in engine.upcoming()] == ["r1"]
+
+    await client.send_json(
+        {"id": 1, "type": "shabbat_scheduler/rules/delete", "rule_id": "r1"}
+    )
+    assert (await client.receive_json())["success"]
+    await hass.async_block_till_done()
+
+    assert engine.upcoming() == []
+
+
+async def test_update_over_the_websocket_moves_the_armed_time(
+    hass, hass_ws_client, freezer
+):
+    client = await hass_ws_client(hass)
+    freezer.move_to("2026-08-15T05:00:00+00:00")
+    entry = await _setup(
+        hass,
+        [Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+              devices=("climate.a",))],
+        enabled=True,
+    )
+    engine = hass.data[DOMAIN][entry.entry_id]["engine"]
+    assert [item.when.hour for item in engine.upcoming()] == [11]
+
+    await client.send_json(
+        {
+            "id": 1,
+            "type": "shabbat_scheduler/rules/update",
+            "rule_id": "r1",
+            "changes": {"time": "20:00:00"},
+        }
+    )
+    assert (await client.receive_json())["success"]
+    await hass.async_block_till_done()
+
+    assert [item.when.hour for item in engine.upcoming()] == [20]
+    assert [item.rule.time for item in engine.upcoming()] == [time(20, 0)]
 
 
 async def test_subscribe_pushes_on_change(hass, hass_ws_client):

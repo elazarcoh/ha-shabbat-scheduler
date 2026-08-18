@@ -38,7 +38,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     @callback
     def _rules_changed() -> None:
+        """The single choke point for "the rule set just changed".
+
+        Two things have to happen and BOTH have to happen for every mutation
+        path - the websocket CRUD commands, the rule switches, YAML import,
+        and anything added later. Fanning out the signal tells the entities
+        and any subscribed card; rescheduling is what makes the change real.
+
+        Rescheduling here rather than in each command is deliberate. Timers
+        are built only by `engine.async_refresh`, and nothing else calls it
+        unprompted until the zmanim sensors change at havdalah - a week away.
+        Without this a rule created for the coming Shabbat never fires, and
+        worse, a deleted or retimed rule keeps its old timer and drives the
+        appliance at a time the user can no longer see anywhere.
+
+        `async_refresh` is a coroutine and this is a sync callback (the
+        store's change-listener contract is `Callable[[], None]`, so it must
+        stay sync), hence the task. It cannot loop: refresh only writes the
+        active block via `async_set_active_block`/`async_clear_active_block`,
+        and those deliberately do not notify.
+        """
         async_dispatcher_send(hass, SIGNAL_RULES_CHANGED)
+        hass.async_create_task(engine.async_refresh())
 
     store.async_set_change_listener(_rules_changed)
 

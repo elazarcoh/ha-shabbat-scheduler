@@ -39,7 +39,7 @@ Settings → Devices & Services.
 | Entity | Purpose |
 |---|---|
 | `switch.shabbat_scheduler` | master on/off; off cancels every pending timer |
-| `switch.shabbat_rule_*` | one per rule |
+| one switch per rule | named after the rule, so its entity_id follows the rule's name rather than a fixed pattern — find it under Settings → Devices & Services → entities |
 | `sensor.shabbat_scheduler_next_block` | day count, with the resolved dates |
 | `sensor.shabbat_scheduler_next_action` | when the next rule fires |
 | `sensor.shabbat_scheduler_last_run` | when a rule last ran, and what it did |

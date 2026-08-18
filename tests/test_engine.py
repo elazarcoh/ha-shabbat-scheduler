@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import itertools
 from datetime import time
 from unittest.mock import patch
@@ -13,9 +14,10 @@ from homeassistant.components.climate import (
     HVACMode,
 )
 from homeassistant.const import EVENT_CALL_SERVICE
-from homeassistant.core import Context
+from homeassistant.core import Context, callback
 from homeassistant.setup import async_setup_component
 
+from custom_components.shabbat_scheduler.const import EVENT_RULE_APPLIED
 from custom_components.shabbat_scheduler.engine import ShabbatEngine
 from custom_components.shabbat_scheduler.models import Action, Rule
 from custom_components.shabbat_scheduler.store import RuleStore
@@ -1047,3 +1049,94 @@ async def test_all_disabled_rules_notify_like_a_missing_profile(hass, engine):
 
     assert engine.upcoming() == []
     assert "shabbat_scheduler_no_profile" in hass.data["persistent_notification"]
+
+
+# --- Task 8: self-describing event, fired before the calls, shared context -
+
+
+async def test_event_is_self_describing_and_fires_before_the_calls(hass, engine):
+    """The logbook renders historical events, so the payload must stand alone."""
+    hass.states.async_set("input_boolean.t", "off")
+    order: list[str] = []
+    events: list = []
+
+    @callback
+    def _event(event):
+        events.append(event)
+        order.append("event")
+
+    hass.bus.async_listen(EVENT_RULE_APPLIED, _event)
+
+    @callback
+    def _call(event):
+        order.append("call")
+
+    hass.bus.async_listen(EVENT_CALL_SERVICE, _call)
+
+    rule = _rule(action=Action.ON, devices=("input_boolean.t",))
+    rule = dataclasses.replace(rule, name="בוקר שבת")
+    await engine.async_apply_rule(rule)
+    await hass.async_block_till_done()
+
+    assert events[0].data["rule_id"] == rule.id
+    assert events[0].data["name"] == "בוקר שבת"
+    assert events[0].data["action"] == "on"
+    assert events[0].data["devices"] == ["input_boolean.t"]
+    assert order[0] == "event"  # must precede the calls, or attribution breaks
+
+
+async def test_all_calls_of_one_rule_share_the_events_context(hass, engine):
+    hass.states.async_set("input_boolean.t", "off")
+    hass.states.async_set("input_boolean.salon", "off")
+    contexts: list[str] = []
+    event_context: list[str] = []
+
+    @callback
+    def _event(event):
+        event_context.append(event.context.id)
+
+    hass.bus.async_listen(EVENT_RULE_APPLIED, _event)
+
+    @callback
+    def _call(event):
+        contexts.append(event.context.id)
+
+    hass.bus.async_listen(EVENT_CALL_SERVICE, _call)
+
+    await engine.async_apply_rule(
+        _rule(action=Action.ON, devices=("input_boolean.t", "input_boolean.salon"))
+    )
+    await hass.async_block_till_done()
+
+    assert len(set(contexts)) == 1
+    assert contexts[0] == event_context[0]
+
+
+async def test_concurrent_rules_get_distinct_contexts(hass, engine):
+    """Two rules applied at once must not share or overwrite each other's."""
+    hass.states.async_set("input_boolean.t", "off")
+    hass.states.async_set("input_boolean.salon", "off")
+    seen: list[str] = []
+
+    @callback
+    def _event(event):
+        seen.append(event.context.id)
+
+    hass.bus.async_listen(EVENT_RULE_APPLIED, _event)
+
+    await asyncio.gather(
+        engine.async_apply_rule(
+            dataclasses.replace(
+                _rule(action=Action.ON, devices=("input_boolean.t",)), id="one"
+            )
+        ),
+        engine.async_apply_rule(
+            dataclasses.replace(
+                _rule(action=Action.OFF, devices=("input_boolean.salon",)), id="two"
+            )
+        ),
+    )
+    await hass.async_block_till_done()
+
+    assert len(seen) == 2
+    assert len(set(seen)) == 2

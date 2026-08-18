@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, time
 
@@ -93,6 +94,7 @@ class RuleStore:
         self._enabled: bool = False
         self._dry_run: bool = False
         self._active_block: tuple[datetime, datetime] | None = None
+        self._on_change: Callable[[], None] | None = None
 
     @property
     def rules(self) -> list[Rule]:
@@ -118,6 +120,18 @@ class RuleStore:
         they are stored - `block.py` stays pure and out of the schema.
         """
         return self._active_block
+
+    def async_set_change_listener(self, listener: Callable[[], None]) -> None:
+        """Register the one callback fired after any rule-set change.
+
+        The store deliberately does not know about dispatchers or entities -
+        the caller decides what a change means.
+        """
+        self._on_change = listener
+
+    def _notify_change(self) -> None:
+        if self._on_change is not None:
+            self._on_change()
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
@@ -162,27 +176,35 @@ class RuleStore:
     async def async_set_enabled(self, value: bool) -> None:
         self._enabled = value
         await self.async_save()
+        self._notify_change()
 
     async def async_set_dry_run(self, value: bool) -> None:
         self._dry_run = value
         await self.async_save()
+        self._notify_change()
 
     async def async_add(self, rule: Rule) -> None:
         self._rules.append(rule)
         await self.async_save()
+        self._notify_change()
 
     async def async_update(self, rule_id: str, **changes) -> None:
+        if not any(rule.id == rule_id for rule in self._rules):
+            raise KeyError(rule_id)
         self._rules = [
             replace(rule, **changes) if rule.id == rule_id else rule
             for rule in self._rules
         ]
         await self.async_save()
+        self._notify_change()
 
     async def async_delete(self, rule_id: str) -> None:
         self._rules = [rule for rule in self._rules if rule.id != rule_id]
         await self.async_save()
+        self._notify_change()
 
     async def async_replace_all(self, defaults: dict, rules: list[Rule]) -> None:
         self._defaults = dict(defaults)
         self._rules = list(rules)
         await self.async_save()
+        self._notify_change()

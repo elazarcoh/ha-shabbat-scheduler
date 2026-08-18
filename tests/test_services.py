@@ -2,7 +2,6 @@ from datetime import time
 
 import pytest
 from homeassistant.exceptions import ServiceValidationError
-from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.shabbat_scheduler.const import DOMAIN
@@ -225,21 +224,18 @@ profiles:
     assert store.rules[0].day == "1"
 
 
-async def test_import_yaml_rebuilds_the_rule_switches(hass):
-    """Rule switches are static, built once at forward-setup.
+async def test_import_yaml_rebuilds_the_rule_switches(hass, rule_switch_entity_id):
+    """An import replaces the whole rule set.
 
-    An import replaces the whole rule set, so without a reload the new rules
-    have no switch and the deleted rules' switches linger, still toggleable
-    and attached to nothing.
+    The change fans out over `SIGNAL_RULES_CHANGED`, so the new rules get a
+    switch and the deleted rules' switches are removed - dynamically, with
+    no config-entry reload.
     """
     entry = await _setup(hass, [
         Rule(id="old", profile=1, day="1", time=time(11, 0),
              action=Action.ON, devices=("climate.a",)),
     ])
-    registry = er.async_get(hass)
-    assert registry.async_get_entity_id(
-        "switch", DOMAIN, f"{entry.entry_id}_rule_old"
-    ) is not None
+    assert rule_switch_entity_id(entry, "old") is not None
 
     await hass.services.async_call(
         DOMAIN, "import_yaml",
@@ -257,18 +253,52 @@ profiles:
     )
     await hass.async_block_till_done()
 
-    fresh = registry.async_get_entity_id(
-        "switch", DOMAIN, f"{entry.entry_id}_rule_fresh"
-    )
+    fresh = rule_switch_entity_id(entry, "fresh")
     assert fresh is not None
     assert hass.states.get(fresh) is not None
 
     # The switch for the rule that no longer exists is gone entirely - not
     # left behind as an "unavailable" orphan that looks broken.
-    assert registry.async_get_entity_id(
-        "switch", DOMAIN, f"{entry.entry_id}_rule_old"
-    ) is None
+    assert rule_switch_entity_id(entry, "old") is None
 
     store = RuleStore(hass)
     await store.async_load()
     assert [rule.id for rule in store.rules] == ["fresh"]
+
+
+async def test_import_yaml_rejects_malformed_defaults_and_persists_nothing(hass):
+    """Final review C2: bad defaults used to be persisted before the raise.
+
+    `import_yaml` wrote the whole rule set to .storage and only then called
+    engine.async_refresh(), which blew up inside merge_defaults - by which
+    point `.storage` already held `settings: not_a_dict` and EVERY later
+    setup of the entry raised the same TypeError. The only recovery was
+    hand-editing .storage. Validation now happens before anything is
+    written, and reports itself as a ServiceValidationError.
+    """
+    hass.states.async_set(
+        "sensor.jewish_calendar_upcoming_candle_lighting",
+        "2026-08-14T15:44:00+00:00",
+    )
+    hass.states.async_set(
+        "sensor.jewish_calendar_upcoming_havdalah", "2026-08-15T17:01:00+00:00"
+    )
+    await _setup(hass, [
+        Rule(id="r1", profile=1, day="1", time=time(11, 0),
+             action=Action.ON, devices=("climate.a",)),
+    ])
+
+    bad_yaml = """
+defaults:
+  settings: not_a_dict
+profiles: {}
+"""
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(
+            DOMAIN, "import_yaml", {"yaml": bad_yaml}, blocking=True
+        )
+
+    store = RuleStore(hass)
+    await store.async_load()
+    assert store.defaults == {}
+    assert [rule.id for rule in store.rules] == ["r1"]

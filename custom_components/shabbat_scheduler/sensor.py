@@ -7,7 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, EVENT_RULE_APPLIED
+from .const import DOMAIN, EVENT_RULE_COMPLETED
 from .engine import ShabbatEngine
 
 
@@ -97,11 +97,11 @@ class LastRunSensor(_Base):
         await super().async_added_to_hass()
 
         @callback
-        def _on_rule_applied(_event: Event) -> None:
+        def _on_rule_completed(_event: Event) -> None:
             self.async_write_ha_state()
 
         self.async_on_remove(
-            self.hass.bus.async_listen(EVENT_RULE_APPLIED, _on_rule_applied)
+            self.hass.bus.async_listen(EVENT_RULE_COMPLETED, _on_rule_completed)
         )
 
     @property

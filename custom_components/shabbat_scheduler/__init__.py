@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
-
 import voluptuous as vol
 import yaml
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.core import (
+    HomeAssistant,
+    ServiceCall,
+    ServiceResponse,
+    SupportsResponse,
+    callback,
+)
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 
-from .block import compute_block, find_conflicts, has_profile, merge_defaults, resolve_rules
-from .const import CANDLE_SENSOR, DOMAIN, HAVDALAH_SENSOR
+from . import websocket_api
+from .block import preview_payload
+from .const import CANDLE_SENSOR, DOMAIN, HAVDALAH_SENSOR, SIGNAL_RULES_CHANGED
 from .engine import ShabbatEngine
 from .store import RuleStore
 from .yaml_io import export_yaml, import_yaml
@@ -27,6 +33,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     store = RuleStore(hass)
     await store.async_load()
     engine = ShabbatEngine(hass, store)
+
+    @callback
+    def _rules_changed() -> None:
+        """The single choke point for "the rule set just changed".
+
+        Two things have to happen and BOTH have to happen for every mutation
+        path - the websocket CRUD commands, the rule switches, YAML import,
+        and anything added later. Fanning out the signal tells the entities
+        and any subscribed card; rescheduling is what makes the change real.
+
+        Rescheduling here rather than in each command is deliberate. Timers
+        are built only by `engine.async_refresh`, and nothing else calls it
+        unprompted until the zmanim sensors change at havdalah - a week away.
+        Without this a rule created for the coming Shabbat never fires, and
+        worse, a deleted or retimed rule keeps its old timer and drives the
+        appliance at a time the user can no longer see anywhere.
+
+        `async_refresh` is a coroutine and this is a sync callback (the
+        store's change-listener contract is `Callable[[], None]`, so it must
+        stay sync), hence the task. It cannot loop: refresh only writes the
+        active block via `async_set_active_block`/`async_clear_active_block`,
+        and those deliberately do not notify.
+        """
+        async_dispatcher_send(hass, SIGNAL_RULES_CHANGED)
+        hass.async_create_task(engine.async_refresh())
+
+    store.async_set_change_listener(_rules_changed)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "store": store,
@@ -72,52 +105,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     async def _simulate(call: ServiceCall) -> ServiceResponse:
-        block = engine.current_block
-        length = call.data.get("block_length")
-        if length is not None and block is not None:
-            # Re-derive a hypothetical block of the requested length.
-            block = compute_block(
-                block.candle_lighting,
-                block.candle_lighting.replace(hour=20, minute=0)
-                + timedelta(days=int(length)),
-            )
-        if block is None:
-            return {"profile": None, "rules": [], "conflicts": [], "warnings": [
-                "No block could be derived; is the Jewish Calendar integration set up?"
-            ]}
-
-        rules = [merge_defaults(store.defaults, r) for r in store.rules]
-        warnings: list[str] = []
-        if not has_profile(rules, block.length):
-            warnings.append(
-                f"No rules configured for a {block.length}-day block."
-            )
-
-        tz = dt_util.get_time_zone(hass.config.time_zone)
-        resolved = resolve_rules(rules, block, tz)
-        return {
-            "profile": block.length,
-            "rules": [
-                {
-                    "when": item.when.isoformat(),
-                    "rule_id": item.rule.id,
-                    "name": item.rule.name,
-                    "action": item.rule.action.value,
-                    "devices": list(item.rule.devices),
-                }
-                for item in resolved
-            ],
-            "conflicts": [
-                {
-                    "device": conflict.device,
-                    "time": conflict.time.isoformat(),
-                    "day": conflict.day,
-                    "rule_ids": list(conflict.rule_ids),
-                }
-                for conflict in find_conflicts(rules)
-            ],
-            "warnings": warnings,
-        }
+        # Literally the same call `preview` makes over the websocket. The
+        # two used to build this separately, with a comment claiming they
+        # "cannot drift apart" - they already had: this one returned
+        # bare-string warnings and conflicts with no kind/profile.
+        return preview_payload(
+            store.defaults,
+            store.rules,
+            engine.current_block,
+            dt_util.get_time_zone(hass.config.time_zone),
+            call.data.get("block_length"),
+        )
 
     async def _set_dry_run(call: ServiceCall) -> None:
         await store.async_set_dry_run(bool(call.data["enabled"]))
@@ -138,16 +136,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ) from err
         await store.async_replace_all(defaults, rules)
         await engine.async_refresh()
-        # Rule switches are built once, at forward-setup. An import replaces
-        # the whole rule set, so without this new rules would have no switch
-        # and deleted rules' switches would linger. Reloading rebuilds them.
-        #
-        # Scheduled, never awaited: awaiting a reload here would tear down
-        # the very service registration this call is running under. HA
-        # serialises reloads per entry, and nothing in setup imports YAML,
-        # so this cannot recurse or race with the import that triggered it -
-        # the store is already written before the reload is scheduled.
-        hass.config_entries.async_schedule_reload(entry.entry_id)
 
     hass.services.async_register(
         DOMAIN, "simulate", _simulate,
@@ -166,6 +154,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN, "import_yaml", _import_yaml,
         schema=vol.Schema({vol.Required("yaml"): str}),
     )
+
+    websocket_api.async_register(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

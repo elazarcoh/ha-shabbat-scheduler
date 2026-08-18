@@ -22,6 +22,7 @@ from .block import (
 from .const import (
     CANDLE_SENSOR,
     EVENT_RULE_APPLIED,
+    EVENT_RULE_COMPLETED,
     HAVDALAH_SENSOR,
     RETRY_ATTEMPTS,
     RETRY_DELAY_SECONDS,
@@ -72,18 +73,44 @@ class ShabbatEngine:
         self._refresh_lock = asyncio.Lock()
 
     async def async_apply_rule(self, rule: Rule, force: bool = False) -> list[dict]:
-        """Apply one rule, returning a per-attribute outcome report."""
+        """Apply one rule, returning a per-attribute outcome report.
+
+        The event is fired BEFORE the calls and carries everything needed to
+        describe itself. The logbook renders historical events, so a describe
+        function cannot look the rule up - it may have been renamed or deleted
+        by then. Firing first is also what lets Home Assistant attribute each
+        device's own change back to this rule, the same way automations do.
+        """
+        context = Context()
+
+        self.hass.bus.async_fire(
+            EVENT_RULE_APPLIED,
+            {
+                "rule_id": rule.id,
+                "name": rule.name,
+                "action": rule.action.value,
+                "devices": list(rule.devices),
+                "dry_run": self.store.dry_run,
+            },
+            context=context,
+        )
+
         if rule.action is Action.CUSTOM:
-            results = await self._apply_custom(rule)
+            results = await self._apply_custom(rule, context)
         else:
             results = []
             for entity_id in rule.devices:
-                results.extend(await self._apply_device(rule, entity_id, force))
+                results.extend(
+                    await self._apply_device(rule, entity_id, force, context)
+                )
 
         self.last_run = results
         self.last_run_at = dt_util.utcnow()
+        # Fired after the results exist, for consumers that need them.
+        # EVENT_RULE_APPLIED cannot carry them: it must precede the calls so
+        # Home Assistant can attribute each device's change back to this rule.
         self.hass.bus.async_fire(
-            EVENT_RULE_APPLIED, {"rule_id": rule.id, "results": results}
+            EVENT_RULE_COMPLETED, {"rule_id": rule.id, "results": results}
         )
         return results
 
@@ -358,7 +385,9 @@ class ShabbatEngine:
                     device, ", ".join(wanted.rule_ids),
                 )
                 continue
-            results.extend(await self._apply_device(wanted, device, force=False))
+            results.extend(
+                await self._apply_device(wanted, device, force=False, context=Context())
+            )
 
         # Custom rules are excluded above because desired_state_at ignores
         # them; replay them only where explicitly opted in, and only once
@@ -372,10 +401,13 @@ class ShabbatEngine:
                 and item.rule.replay_on_restart
                 and item.when <= now
             ):
-                results.extend(await self._apply_custom(item.rule))
+                results.extend(await self._apply_custom(item.rule, Context()))
 
         self.last_run = results
         self.last_run_at = dt_util.utcnow()
+        self.hass.bus.async_fire(
+            EVENT_RULE_COMPLETED, {"rule_id": None, "results": results}
+        )
         return results
 
     async def async_shutdown(self) -> None:
@@ -384,7 +416,7 @@ class ShabbatEngine:
             cancel()
         self._unsubscribes = []
 
-    async def _apply_custom(self, rule: Rule) -> list[dict]:
+    async def _apply_custom(self, rule: Rule, context: Context) -> list[dict]:
         if not rule.script:
             return []
         if self.store.dry_run:
@@ -397,7 +429,7 @@ class ShabbatEngine:
         await self.hass.services.async_call(
             "script", "turn_on",
             {"entity_id": rule.script, "variables": dict(rule.variables)},
-            blocking=True, context=self._new_context(rule.script),
+            blocking=True, context=self._record_context(rule.script, context),
         )
         return [
             {
@@ -407,7 +439,7 @@ class ShabbatEngine:
         ]
 
     async def _apply_device(
-        self, rule: Rule, entity_id: str, force: bool
+        self, rule: Rule, entity_id: str, force: bool, context: Context
     ) -> list[dict]:
         state = self.hass.states.get(entity_id)
         if state is None:
@@ -456,7 +488,7 @@ class ShabbatEngine:
                         }
                     )
                     continue
-                results.append(await self._execute(entity_id, call))
+                results.append(await self._execute(entity_id, call, context))
         return results
 
     def _is_stale(self, entity_id: str, last_updated: datetime) -> bool:
@@ -468,16 +500,13 @@ class ShabbatEngine:
         sent = self._last_command.get(entity_id)
         return sent is not None and last_updated < sent
 
-    def _new_context(self, entity_id: str) -> Context:
-        """Create a Context for a call to `entity_id` and remember it.
+    def _record_context(self, entity_id: str, context: Context) -> Context:
+        """Remember a context as ours, for the given entity.
 
         Retaining our own context ids is what lets a future enforcement
-        feature distinguish "this changed because WE changed it" from "a
-        human changed it" when looking at a state_changed event. Without
-        this, that distinction is impossible - which is the most likely
-        reason a previous, similar component ended up fighting the user.
+        feature tell "we changed it" from "a human changed it" when looking
+        at a state_changed event.
         """
-        context = Context()
         self._our_contexts[entity_id].append(context.id)
         return context
 
@@ -485,7 +514,7 @@ class ShabbatEngine:
         """Was `context` one the engine itself issued for `entity_id`?"""
         return context.id in self._our_contexts.get(entity_id, ())
 
-    async def _execute(self, entity_id: str, call) -> dict:
+    async def _execute(self, entity_id: str, call, context: Context) -> dict:
         result = {
             "entity_id": entity_id,
             "attribute": call.attribute,
@@ -509,7 +538,7 @@ class ShabbatEngine:
             try:
                 await self.hass.services.async_call(
                     call.domain, call.service, data,
-                    blocking=True, context=self._new_context(entity_id),
+                    blocking=True, context=self._record_context(entity_id, context),
                 )
             except Exception as err:  # noqa: BLE001 - one device must not abort the rest
                 # The reason matters: this log line and the notification below

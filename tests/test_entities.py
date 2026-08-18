@@ -65,29 +65,24 @@ async def test_master_switch_turns_on_and_persists(hass):
     assert reloaded.enabled is True
 
 
-async def test_one_switch_per_rule(hass):
+async def test_one_switch_per_rule(hass, rule_switch_entity_id):
     entry = await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
              action=Action.ON, name="בוקר שבת"),
     ])
-    registry = er.async_get(hass)
-    unique_id = f"{entry.entry_id}_rule_r1"
-    entity_id = registry.async_get_entity_id("switch", DOMAIN, unique_id)
+    entity_id = rule_switch_entity_id(entry, "r1")
     assert entity_id is not None
     assert hass.states.get(entity_id) is not None
 
-    entry_reg = registry.async_get(entity_id)
-    assert entry_reg.unique_id == unique_id
+    entry_reg = er.async_get(hass).async_get(entity_id)
+    assert entry_reg.unique_id == f"{entry.entry_id}_rule_r1"
 
 
-async def test_rule_switch_toggle_persists(hass):
+async def test_rule_switch_toggle_persists(hass, rule_switch_entity_id):
     entry = await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON),
     ])
-    registry = er.async_get(hass)
-    entity_id = registry.async_get_entity_id(
-        "switch", DOMAIN, f"{entry.entry_id}_rule_r1"
-    )
+    entity_id = rule_switch_entity_id(entry, "r1")
     assert entity_id is not None
     await hass.services.async_call(
         "switch", "turn_off", {"entity_id": entity_id}, blocking=True

@@ -1347,12 +1347,32 @@ git commit -m "feat: websocket subscription so the card never polls"
 
 **Files:**
 - Modify: `custom_components/shabbat_scheduler/engine.py`
+- Modify: `custom_components/shabbat_scheduler/const.py`
+- Modify: `custom_components/shabbat_scheduler/sensor.py`
 - Test: `tests/test_engine.py`
+
+**Why `sensor.py` changes here.** `LastRunSensor` is push-based: it listens for
+`EVENT_RULE_APPLIED` and snapshots `engine.last_run` / `last_run_at`
+synchronously inside that callback. That worked only because the event used to
+fire *after* the results existed. Moving it before the calls — which logbook
+attribution requires — would leave that snapshot permanently stale.
+
+Both requirements are legitimate, so they get **two** signals:
+`EVENT_RULE_APPLIED` fires **before** (self-describing, for attribution and the
+logbook row), and a new `EVENT_RULE_COMPLETED` fires **after** (carrying the
+results, for the sensor). Only the former is described to the logbook, so no
+duplicate row appears.
+
+This also closes a latent gap: `async_catch_up` sets `last_run` but fired no
+event at all, so the sensor never reflected a restart catch-up. It now fires
+`EVENT_RULE_COMPLETED` too.
 
 **Interfaces:**
 - Consumes: `EVENT_RULE_APPLIED`.
 - Produces:
+  - `EVENT_RULE_COMPLETED = "shabbat_scheduler_rule_completed"` in `const.py`.
   - `EVENT_RULE_APPLIED` is fired **before** the service calls, carrying `{rule_id, name, action, devices, dry_run}`.
+  - `EVENT_RULE_COMPLETED` is fired **after**, carrying `{rule_id, results}`; `LastRunSensor` listens for this instead.
   - One `Context` per rule application, passed to every service call for that rule, so Home Assistant can attribute each device's change back to the rule.
   - `is_our_context(entity_id, context)` keeps working.
 
@@ -1417,7 +1437,39 @@ async def test_all_calls_of_one_rule_share_the_events_context(hass, engine):
 
     assert len(set(contexts)) == 1
     assert contexts[0] == event_context[0]
+
+
+async def test_concurrent_rules_get_distinct_contexts(hass, engine):
+    """Two rules applied at once must not share or overwrite each other's."""
+    hass.states.async_set("input_boolean.t", "off")
+    hass.states.async_set("input_boolean.salon", "off")
+    seen: list[str] = []
+
+    @callback
+    def _event(event):
+        seen.append(event.context.id)
+
+    hass.bus.async_listen(EVENT_RULE_APPLIED, _event)
+
+    await asyncio.gather(
+        engine.async_apply_rule(
+            dataclasses.replace(
+                _rule(action=Action.ON, devices=("input_boolean.t",)), id="one"
+            )
+        ),
+        engine.async_apply_rule(
+            dataclasses.replace(
+                _rule(action=Action.OFF, devices=("input_boolean.salon",)), id="two"
+            )
+        ),
+    )
+    await hass.async_block_till_done()
+
+    assert len(seen) == 2
+    assert len(set(seen)) == 2
 ```
+
+Add `import asyncio` to the test file's imports if absent.
 
 Add these imports to the top of `tests/test_engine.py` if absent:
 
@@ -1450,7 +1502,6 @@ In `custom_components/shabbat_scheduler/engine.py`, rewrite `async_apply_rule`:
         device's own change back to this rule, the same way automations do.
         """
         context = Context()
-        self._context_for_rule = context
 
         self.hass.bus.async_fire(
             EVENT_RULE_APPLIED,
@@ -1465,34 +1516,81 @@ In `custom_components/shabbat_scheduler/engine.py`, rewrite `async_apply_rule`:
         )
 
         if rule.action is Action.CUSTOM:
-            results = await self._apply_custom(rule)
+            results = await self._apply_custom(rule, context)
         else:
             results = []
             for entity_id in rule.devices:
-                results.extend(await self._apply_device(rule, entity_id, force))
+                results.extend(
+                    await self._apply_device(rule, entity_id, force, context)
+                )
 
         self.last_run = results
         self.last_run_at = dt_util.utcnow()
-        self._context_for_rule = None
+        # Fired after the results exist, for consumers that need them.
+        # EVENT_RULE_APPLIED cannot carry them: it must precede the calls so
+        # Home Assistant can attribute each device's change back to this rule.
+        self.hass.bus.async_fire(
+            EVENT_RULE_COMPLETED, {"rule_id": rule.id, "results": results}
+        )
         return results
 ```
 
-Add `self._context_for_rule: Context | None = None` to `__init__`, and change
-`_new_context` to reuse the rule's context when there is one:
+Add `EVENT_RULE_COMPLETED = "shabbat_scheduler_rule_completed"` to `const.py`
+and import it in `engine.py`.
+
+In `async_catch_up`, after it sets `self.last_run` and `self.last_run_at`, fire
+the same event with `rule_id=None` — the sensor previously never reflected a
+restart catch-up at all:
 
 ```python
-    def _new_context(self, entity_id: str) -> Context:
-        """The context for a call to `entity_id`, remembered as ours.
+        self.hass.bus.async_fire(
+            EVENT_RULE_COMPLETED, {"rule_id": None, "results": results}
+        )
+```
 
-        Within one rule application every call shares a single context, so
-        Home Assistant can attribute each device's change back to the rule.
-        Retaining our own context ids is separately what lets a future
-        enforcement feature tell "we changed it" from "a human changed it".
+In `sensor.py`, change `LastRunSensor.async_added_to_hass` to listen for
+`EVENT_RULE_COMPLETED` instead of `EVENT_RULE_APPLIED`, leaving everything else
+about that entity — `_attr_should_poll = False`, the `async_on_remove`
+teardown, `native_value`, `extra_state_attributes` — exactly as it is.
+
+The context is threaded through as a parameter rather than held on the engine.
+Two rules can be applied concurrently — the suite already exercises exactly
+that — and a single instance attribute would let one overwrite the other's
+context mid-flight, misattributing a device change to the wrong rule.
+
+Change the three signatures to carry it, and replace `_new_context` with a
+recorder:
+
+```python
+    async def _apply_custom(self, rule: Rule, context: Context) -> list[dict]:
+```
+
+```python
+    async def _apply_device(
+        self, rule: Rule, entity_id: str, force: bool, context: Context
+    ) -> list[dict]:
+```
+
+```python
+    async def _execute(self, entity_id: str, call, context: Context) -> dict:
+```
+
+```python
+    def _record_context(self, entity_id: str, context: Context) -> Context:
+        """Remember a context as ours, for the given entity.
+
+        Retaining our own context ids is what lets a future enforcement
+        feature tell "we changed it" from "a human changed it" when looking
+        at a state_changed event.
         """
-        context = self._context_for_rule or Context()
         self._our_contexts[entity_id].append(context.id)
         return context
 ```
+
+At each `hass.services.async_call` site inside `_execute` and `_apply_custom`,
+pass `context=self._record_context(entity_id, context)` — for `_apply_custom`
+use `rule.script` as the key, matching what it does today. Delete
+`_new_context`; `is_our_context` is unchanged.
 
 - [ ] **Step 4: Run the whole suite**
 
@@ -1593,12 +1691,29 @@ async def test_describe_marks_a_dry_run(hass):
     assert "dry run" in result["message"].lower()
 
 
-async def test_logbook_component_picks_up_the_platform(hass):
-    """The platform must be discoverable, not merely importable."""
-    assert await async_setup_component(hass, LOGBOOK_DOMAIN, {LOGBOOK_DOMAIN: {}})
-    await hass.async_block_till_done()
-    assert LOGBOOK_DOMAIN in hass.config.components
+def test_only_the_applied_event_is_described(hass):
+    """EVENT_RULE_COMPLETED must NOT be described.
+
+    It fires after every rule application to carry results to the last-run
+    sensor. Describing it too would put a second, duplicate row in the
+    logbook for every single rule that fires.
+    """
+    described = {}
+    async_describe_events(hass, lambda d, e, f: described.__setitem__(e, f))
+    assert set(described) == {EVENT_RULE_APPLIED}
+    assert EVENT_RULE_COMPLETED not in described
 ```
+
+Import `EVENT_RULE_COMPLETED` alongside the others, and drop the
+`async_setup_component` / `LOGBOOK_DOMAIN` imports.
+
+**Deliberately not tested:** that Home Assistant discovers `logbook.py` by
+convention. Booting the real `logbook` component pulls in `frontend`, which
+requires the `home-assistant-frontend` package — tens of megabytes of
+JavaScript — and the resulting assertion (`LOGBOOK_DOMAIN in
+hass.config.components`) would test Home Assistant's own component loading
+rather than this integration's code. The describe function's behaviour is
+covered directly by the tests above.
 
 - [ ] **Step 2: Run test to verify it fails**
 

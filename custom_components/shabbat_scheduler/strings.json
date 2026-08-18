@@ -1,0 +1,37 @@
+{
+  "config": {
+    "abort": {
+      "single_instance_allowed": "Shabbat Scheduler is already set up. Only one instance is supported."
+    }
+  },
+  "services": {
+    "simulate": {
+      "name": "Simulate",
+      "description": "Resolve the schedule for a block without side effects.",
+      "fields": {
+        "block_length": {
+          "name": "Block length",
+          "description": "Days to simulate. Defaults to the upcoming block."
+        }
+      }
+    },
+    "set_dry_run": {
+      "name": "Set dry run",
+      "description": "When enabled, rules report what they would change but call no services.",
+      "fields": {
+        "enabled": { "name": "Enabled", "description": "Whether dry run is on." }
+      }
+    },
+    "export_yaml": {
+      "name": "Export YAML",
+      "description": "Return the whole rule set as YAML."
+    },
+    "import_yaml": {
+      "name": "Import YAML",
+      "description": "Replace the whole rule set from YAML.",
+      "fields": {
+        "yaml": { "name": "YAML", "description": "The rule set to import." }
+      }
+    }
+  }
+}

@@ -1,4 +1,4 @@
-from datetime import datetime, time, timezone
+from datetime import UTC, datetime, time, timezone
 
 from custom_components.shabbat_scheduler.const import STORAGE_KEY, STORAGE_VERSION
 from custom_components.shabbat_scheduler.models import Action, EREV, Rule
@@ -153,3 +153,60 @@ async def test_replace_all_swaps_defaults_and_rules(hass):
     )
     assert store.defaults == {"temperature": 26}
     assert [r.id for r in store.rules] == ["x"]
+
+
+import pytest
+
+
+async def test_change_listener_fires_on_add_update_delete(hass):
+    store = RuleStore(hass)
+    await store.async_load()
+    calls = []
+    store.async_set_change_listener(lambda: calls.append(1))
+
+    rule = Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON)
+    await store.async_add(rule)
+    await store.async_update("r1", enabled=False)
+    await store.async_delete("r1")
+    await store.async_replace_all({}, [rule])
+
+    assert len(calls) == 4
+
+
+async def test_change_listener_fires_for_enabled_and_dry_run(hass):
+    """The card renders both, so both must push."""
+    store = RuleStore(hass)
+    await store.async_load()
+    calls = []
+    store.async_set_change_listener(lambda: calls.append(1))
+
+    await store.async_set_enabled(True)
+    await store.async_set_dry_run(True)
+    assert len(calls) == 2
+
+
+async def test_change_listener_does_not_fire_for_active_block(hass):
+    """The block in force is engine bookkeeping, not user-visible state."""
+    store = RuleStore(hass)
+    await store.async_load()
+    calls = []
+    store.async_set_change_listener(lambda: calls.append(1))
+
+    await store.async_set_active_block(
+        datetime(2026, 8, 14, 18, 44, tzinfo=UTC),
+        datetime(2026, 8, 15, 20, 1, tzinfo=UTC),
+    )
+    assert calls == []
+
+    # Clearing must be just as silent. The change listener now reschedules
+    # the engine, and clearing runs at the END of a block - so a notify
+    # here would fire a refresh from inside a refresh, during Shabbat.
+    await store.async_clear_active_block()
+    assert calls == []
+
+
+async def test_update_of_unknown_rule_raises(hass):
+    store = RuleStore(hass)
+    await store.async_load()
+    with pytest.raises(KeyError):
+        await store.async_update("nope", enabled=False)

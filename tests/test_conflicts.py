@@ -1,7 +1,13 @@
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
-from custom_components.shabbat_scheduler.block import compute_block, desired_state_at, find_conflicts
+from custom_components.shabbat_scheduler.block import (
+    compute_block,
+    conflict_warnings,
+    desired_state_at,
+    find_conflicts,
+    preview_payload,
+)
 from custom_components.shabbat_scheduler.models import Action, Conflict, Rule
 
 
@@ -134,3 +140,64 @@ def test_custom_rules_never_define_desired_state():
     ]
     when = datetime(2026, 8, 15, 12, 0, tzinfo=TZ)
     assert desired_state_at(rules, _block(), when, "climate.a", TZ) is None
+
+
+# --- The one preview resolution, shared by `preview` and `simulate` ------
+
+TZ = ZoneInfo("Asia/Jerusalem")
+BLOCK = compute_block(
+    datetime(2026, 8, 14, 18, 44, tzinfo=TZ),
+    datetime(2026, 8, 15, 20, 1, tzinfo=TZ),
+)
+
+
+def test_preview_payload_resolves_the_block():
+    payload = preview_payload({}, [_rule("a", Action.ON)], BLOCK, TZ)
+    assert payload["profile"] == 1
+    assert [item["rule_id"] for item in payload["rules"]] == ["a"]
+    assert payload["conflicts"] == []
+    assert payload["warnings"] == []
+
+
+def test_preview_payload_reports_no_block():
+    payload = preview_payload({}, [_rule("a", Action.ON)], None, TZ)
+    assert payload["profile"] is None
+    assert [w["kind"] for w in payload["warnings"]] == ["no_block"]
+
+
+def test_preview_payload_warns_when_no_profile_matches():
+    payload = preview_payload({}, [_rule("a", Action.ON, profile=3)], BLOCK, TZ)
+    assert [w["kind"] for w in payload["warnings"]] == ["no_profile"]
+
+
+def test_preview_payload_finds_conflicts_through_the_defaults():
+    """Devices from `defaults` are merged in before conflicts are looked for."""
+    payload = preview_payload(
+        {"devices": ["climate.a"]},
+        [_rule("a", Action.ON, devices=()), _rule("b", Action.OFF, devices=())],
+        BLOCK,
+        TZ,
+    )
+    assert [c["device"] for c in payload["conflicts"]] == ["climate.a"]
+    assert payload["conflicts"][0]["kind"] == "conflict"
+    assert payload["conflicts"][0]["profile"] == 1
+
+
+def test_preview_payload_honours_a_hypothetical_block_length():
+    payload = preview_payload(
+        {},
+        [_rule("a", Action.ON), _rule("c", Action.ON, profile=3)],
+        BLOCK,
+        TZ,
+        block_length=3,
+    )
+    assert payload["profile"] == 3
+    assert [item["rule_id"] for item in payload["rules"]] == ["c"]
+
+
+def test_conflict_warnings_merges_the_defaults():
+    warnings = conflict_warnings(
+        {"devices": ["climate.a"]},
+        [_rule("a", Action.ON, devices=()), _rule("b", Action.OFF, devices=())],
+    )
+    assert [w["device"] for w in warnings] == ["climate.a"]

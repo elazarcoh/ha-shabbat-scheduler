@@ -6,13 +6,16 @@
 
 **Architecture:** All scheduling logic lives in pure functions (`block.py`, `device_ops.py`) with zero Home Assistant imports, so it is unit-testable in milliseconds. A thin engine layer executes those decisions against HA, serialising commands per device and stamping every call with an HA `Context`. Rules persist in HA `.storage`; YAML is an import/export view only.
 
-**Tech Stack:** Python 3.13, Home Assistant 2026.8.1, `uv` for dependency management, `pytest` + `pytest-homeassistant-custom-component` + `pytest-asyncio`, `PyYAML`.
+**Tech Stack:** Python 3.14 (uv-managed), Home Assistant 2026.8.1, `uv` for dependency management, `pytest` + `pytest-homeassistant-custom-component` + `pytest-asyncio`, `PyYAML`.
 
 ## Global Constraints
 
 Every task's requirements implicitly include this section.
 
-- Target Home Assistant **2026.8.1**, Python **3.13**.
+- Target Home Assistant **2026.8.1**, Python **3.14** (uv-managed, not the
+  system 3.13.5). Home Assistant raised its Python floor to `>=3.14.2` at
+  release 2026.3.0, so 2026.8.1 cannot be installed on 3.13 — verified against
+  PyPI metadata. Obtain the interpreter with `uv python install 3.14`.
 - `.storage` is the **source of truth**. YAML is import/export only — never a live-watched source.
 - **Fire once, never re-assert.** No enforcement in v1. A rule acts at its moment and then leaves the device alone.
 - **No implicit precedence.** Overlapping rules are surfaced as warnings, never silently resolved. Saving with conflicts is always permitted.
@@ -82,10 +85,29 @@ tests/
 
 ```bash
 cd /home/rpi4/ha-shabbat-scheduler
-uv init --name shabbat-scheduler --no-package .
+# HA 2026.8.1 requires Python >=3.14.2; the system interpreter is 3.13.5.
+uv python install 3.14
+uv init --name shabbat-scheduler --no-package --python 3.14 .
 uv add --dev pytest pytest-asyncio pytest-homeassistant-custom-component
 uv add pyyaml
 ```
+
+Verify the resolved versions before continuing — a silent backtrack to an
+older Home Assistant is the failure mode to catch here:
+
+```bash
+uv run python -c "import homeassistant, sys; print(sys.version.split()[0], homeassistant.__version__)"
+```
+
+Expected: a `3.14.x` interpreter and `homeassistant` `2026.8.1` or a later
+`2026.8.x` patch. If either is lower, stop and report rather than proceeding.
+
+`requires-python` must be `>=3.14.2`, not `>=3.14`. `uv.lock` resolves two
+branches: below 3.14.2 it pins `homeassistant==2026.2.3` (six months older,
+different API surface), and at/above it the intended `2026.8.x`. A loose floor
+lets a future `uv sync` on a 3.14.0/3.14.1 interpreter silently take the old
+branch. Commit `.python-version` as well, so the interpreter is pinned rather
+than merely constrained.
 
 Then replace the generated `pyproject.toml` `[project]` section body so it reads:
 
@@ -94,7 +116,7 @@ Then replace the generated `pyproject.toml` `[project]` section body so it reads
 name = "shabbat-scheduler"
 version = "0.1.0"
 description = "Home Assistant integration scheduling appliances across Shabbat and Chag"
-requires-python = ">=3.13"
+requires-python = ">=3.14.2"
 dependencies = ["pyyaml"]
 
 [tool.pytest.ini_options]
@@ -1494,11 +1516,26 @@ def _rules():
 
 
 def test_export_groups_by_profile_and_day():
-    parsed = yaml.safe_load(export_yaml({"temperature": 26}, _rules()))
+    text = export_yaml({"temperature": 26}, _rules())
+    parsed = yaml.safe_load(text)
     assert parsed["defaults"] == {"temperature": 26}
     assert set(parsed["profiles"]["1_day"]) == {"erev", "day_1"}
     assert parsed["profiles"]["1_day"]["erev"][0]["at"] == "23:00:00"
     assert parsed["profiles"]["1_day"]["day_1"][0]["name"] == "בוקר שבת"
+    # Assert on the RAW text: safe_load decodes \uXXXX escapes, so parsing
+    # first would pass whether or not allow_unicode was set.
+    assert "בוקר שבת" in text
+    assert "\\u" not in text
+
+
+def test_export_orders_erev_before_numbered_days():
+    keys = list(yaml.safe_load(export_yaml({}, _rules()))["profiles"]["1_day"])
+    assert keys.index("erev") < keys.index("day_1")
+
+
+def test_round_trip_preserves_ids():
+    _defaults, rules = import_yaml(export_yaml({}, _rules()))
+    assert {r.id for r in rules} == {"a", "b"}
 
 
 def test_round_trip_preserves_rules():
@@ -1576,10 +1613,20 @@ def export_yaml(defaults: dict, rules: list[Rule]) -> str:
     """Render the rule set grouped by profile and day, for human review."""
     profiles: dict[str, dict[str, list[dict]]] = {}
 
-    for rule in sorted(rules, key=lambda r: (r.profile, r.day, r.time)):
+    # erev must rank before the numbered days: it is the evening *before*
+    # them. Sorting r.day as a plain string puts day_1..3 first, which
+    # inverts this file's whole reason for existing.
+    def _rank(rule: Rule) -> tuple:
+        return (rule.profile, 0 if rule.day == EREV else int(rule.day), rule.time)
+
+    for rule in sorted(rules, key=_rank):
         profile_key = f"{rule.profile}_day"
         day_key = _day_key(rule.day)
         entry: dict = {
+            # Exported so a round trip preserves rule identity. Switch
+            # entities derive their unique_id from it, and import replaces
+            # the whole set - regenerating ids would orphan every entity.
+            "id": rule.id,
             "at": rule.time.isoformat(),
             "action": rule.action.value,
         }
@@ -1765,10 +1812,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime
 
 from homeassistant.core import Context, HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from .const import EVENT_RULE_APPLIED
 from .device_ops import plan_calls
@@ -1887,17 +1935,23 @@ class ShabbatEngine:
             return result
 
         data = {"entity_id": entity_id, **call.data}
+        # Stamp BEFORE issuing: the entity's own last_updated is set during
+        # the awaited call, so stamping afterwards would make every reading
+        # look stale forever and force a re-apply on every pass - which is
+        # exactly the re-assertion behaviour this design exists to avoid.
+        # Stamping first also correctly forces on failure, since we cannot
+        # know whether a failed call landed.
+        self._last_command[entity_id] = dt_util.utcnow()
         try:
             await self.hass.services.async_call(
                 call.domain, call.service, data,
-                blocking=True, context=self._new_context(),
+                blocking=True, context=self._new_context(entity_id),
             )
         except Exception:  # noqa: BLE001 - one device must not abort the rest
             _LOGGER.exception("%s: %s.%s failed", entity_id, call.domain, call.service)
             result["outcome"] = "failed"
             return result
 
-        self._last_command[entity_id] = datetime.now(tz=None).astimezone()
         result["outcome"] = "changed"
         return result
 ```
@@ -2008,10 +2062,13 @@ from .const import EVENT_RULE_APPLIED, RETRY_ATTEMPTS, RETRY_DELAY_SECONDS
 
         data = {"entity_id": entity_id, **call.data}
         for attempt in range(1, RETRY_ATTEMPTS + 1):
+            # Stamped before each attempt - see the note in Task 9. Stamping
+            # after a successful call makes every later reading look stale.
+            self._last_command[entity_id] = dt_util.utcnow()
             try:
                 await self.hass.services.async_call(
                     call.domain, call.service, data,
-                    blocking=True, context=self._new_context(),
+                    blocking=True, context=self._new_context(entity_id),
                 )
             except Exception:  # noqa: BLE001 - one device must not abort the rest
                 _LOGGER.warning(
@@ -2030,7 +2087,6 @@ from .const import EVENT_RULE_APPLIED, RETRY_ATTEMPTS, RETRY_DELAY_SECONDS
                 result["outcome"] = "failed"
                 return result
 
-            self._last_command[entity_id] = datetime.now(tz=None).astimezone()
             result["outcome"] = "changed"
             return result
 
@@ -2205,7 +2261,16 @@ Then add:
                 # never silently wiped.
                 self._block = compute_block(*zmanim)
             except ValueError:
+                # Loud silence: refusing to act is safe, doing it quietly is
+                # not. This mirrors the missing-profile notification below.
                 _LOGGER.warning("Ignoring implausible zmanim pair %s", zmanim)
+                persistent_notification.async_create(
+                    self.hass,
+                    "Candle lighting and havdalah do not form a valid period, "
+                    "so the Shabbat schedule is not running. Check "
+                    f"{CANDLE_SENSOR} and {HAVDALAH_SENSOR}.",
+                    title="Shabbat Scheduler",
+                )
 
         if self._block is None or not self.store.enabled:
             return
@@ -2376,10 +2441,18 @@ from .models import Conflict
             results.extend(await self._apply_device(wanted, device, force=False))
 
         # Custom rules are excluded above because desired_state_at ignores
-        # them; replay them only where explicitly opted in.
-        for rule in rules:
-            if rule.action is Action.CUSTOM and rule.replay_on_restart:
-                results.extend(await self._apply_custom(rule))
+        # them; replay them only where explicitly opted in AND already passed.
+        # Resolve through the same path as everything else so profile
+        # matching, the enabled check and date binding stay consistent -
+        # otherwise a disabled script, a script from another profile, or one
+        # scheduled for later today all fire on every restart.
+        for item in resolve_rules(rules, self._block, tz):
+            if (
+                item.when <= now
+                and item.rule.action is Action.CUSTOM
+                and item.rule.replay_on_restart
+            ):
+                results.extend(await self._apply_custom(item.rule))
 
         self.last_run = results
         return results
@@ -2429,6 +2502,7 @@ Create `tests/test_entities.py`:
 from datetime import time
 
 from homeassistant.const import STATE_OFF, STATE_ON
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.shabbat_scheduler.const import DOMAIN
@@ -2492,26 +2566,35 @@ async def test_master_switch_turns_on_and_persists(hass):
     assert reloaded.enabled is True
 
 
+# entity_id is slugified from the entity NAME (a user-facing Hebrew rule
+# name here), not from unique_id - so resolve through the registry. unique_id
+# is the identity contract that matters: Task 8 preserves rule.id across YAML
+# round trips precisely so these entities are not orphaned.
+def _rule_switch_entity_id(hass, entry, rule_id):
+    registry = er.async_get(hass)
+    return registry.async_get_entity_id(
+        "switch", DOMAIN, f"{entry.entry_id}_rule_{rule_id}"
+    )
+
+
 async def test_one_switch_per_rule(hass):
-    await _setup(hass, [
+    entry = await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
              action=Action.ON, name="בוקר שבת"),
     ])
-    matching = [
-        state.entity_id for state in hass.states.async_all()
-        if state.entity_id.startswith("switch.") and "r1" in state.entity_id
-    ]
-    assert matching
+    entity_id = _rule_switch_entity_id(hass, entry, "r1")
+    assert entity_id is not None
+    assert hass.states.get(entity_id) is not None
+    # Pin the unique_id itself - this is what YAML id-preservation protects.
+    registry = er.async_get(hass)
+    assert registry.async_get(entity_id).unique_id == f"{entry.entry_id}_rule_r1"
 
 
 async def test_rule_switch_toggle_persists(hass):
-    await _setup(hass, [
+    entry = await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON),
     ])
-    entity_id = next(
-        state.entity_id for state in hass.states.async_all()
-        if state.entity_id.startswith("switch.") and "r1" in state.entity_id
-    )
+    entity_id = _rule_switch_entity_id(hass, entry, "r1")
     await hass.services.async_call(
         "switch", "turn_off", {"entity_id": entity_id}, blocking=True
     )
@@ -2628,6 +2711,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unloaded:
         data = hass.data[DOMAIN].pop(entry.entry_id)
         await data["engine"].async_shutdown()
+        # Otherwise the handlers outlive the entry, still closing over a
+        # shut-down engine and store - and could rewrite .storage for an
+        # integration the user believes they removed.
+        for service in ("simulate", "set_dry_run", "export_yaml", "import_yaml"):
+            hass.services.async_remove(DOMAIN, service)
     return unloaded
 ```
 
@@ -3142,7 +3230,9 @@ Add to `custom_components/shabbat_scheduler/__init__.py`:
 
 ```python
 import voluptuous as vol
+import yaml
 from homeassistant.core import ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.util import dt as dt_util
 
 from .block import compute_block, find_conflicts, has_profile, merge_defaults, resolve_rules
@@ -3207,7 +3297,14 @@ Then, inside `async_setup_entry` before forwarding platforms:
         return {"yaml": export_yaml(store.defaults, store.rules)}
 
     async def _import_yaml(call: ServiceCall) -> None:
-        defaults, rules = import_yaml(call.data["yaml"])
+        # Parse before touching the store: a half-applied rule set is worse
+        # than a rejected one. Raw KeyError/ValueError/YAMLError would reach
+        # the user as a traceback, which is the same "cannot tell what is
+        # wrong" failure these services exist to cure.
+        try:
+            defaults, rules = import_yaml(call.data["yaml"])
+        except (KeyError, ValueError, yaml.YAMLError) as err:
+            raise ServiceValidationError(f"Could not parse rules: {err}") from err
         await store.async_replace_all(defaults, rules)
         await engine.async_refresh()
 

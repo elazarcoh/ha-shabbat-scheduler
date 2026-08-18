@@ -1,0 +1,18 @@
+[project]
+name = "shabbat-scheduler"
+version = "0.1.0"
+description = "Home Assistant integration scheduling appliances across Shabbat and Chag"
+requires-python = ">=3.14.2"
+dependencies = ["pyyaml"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0",
+    "pytest-asyncio>=1.3.0",
+    "pytest-homeassistant-custom-component>=0.13.316",
+]

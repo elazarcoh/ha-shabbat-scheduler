@@ -31,7 +31,17 @@ def _entry_data(hass: HomeAssistant) -> dict | None:
     return entries[0] if entries else None
 
 
-def _conflict_warnings(rules) -> list[dict]:
+def _conflict_warnings(store) -> list[dict]:
+    """Conflict warnings for the whole rule set, defaults merged in.
+
+    Takes the store rather than a rule list precisely so no caller can
+    forget the merge: find_conflicts iterates `rule.devices`, so an
+    unmerged rule that gets its devices from `defaults` - the shape the
+    README documents as the common case - contributes no conflicts at all
+    and the card is told everything is fine. "Conflicts are warned, never
+    resolved" only holds if they are actually found.
+    """
+    rules = [merge_defaults(store.defaults, rule) for rule in store.rules]
     return [
         {
             "kind": "conflict",
@@ -52,7 +62,7 @@ def _state_payload(store) -> dict:
         "rules": [rule_to_dict(rule) for rule in store.rules],
         "enabled": store.enabled,
         "dry_run": store.dry_run,
-        "warnings": _conflict_warnings(store.rules),
+        "warnings": _conflict_warnings(store),
     }
 
 
@@ -133,12 +143,13 @@ def ws_preview(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
                 }
                 for item in resolve_rules(rules, block, tz)
             ],
-            "conflicts": _conflict_warnings(rules),
+            "conflicts": _conflict_warnings(store),
             "warnings": warnings,
         },
     )
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "shabbat_scheduler/rules/create",
@@ -161,10 +172,11 @@ async def ws_create(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
     await store.async_add(rule)
     connection.send_result(
         msg["id"],
-        {"rule": rule_to_dict(rule), "warnings": _conflict_warnings(store.rules)},
+        {"rule": rule_to_dict(rule), "warnings": _conflict_warnings(store)},
     )
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "shabbat_scheduler/rules/update",
@@ -201,10 +213,11 @@ async def ws_update(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
 
     connection.send_result(
         msg["id"],
-        {"rule": rule_to_dict(updated), "warnings": _conflict_warnings(store.rules)},
+        {"rule": rule_to_dict(updated), "warnings": _conflict_warnings(store)},
     )
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "shabbat_scheduler/rules/delete",
@@ -217,10 +230,17 @@ async def ws_delete(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
     if data is None:
         connection.send_error(msg["id"], "not_set_up", "Integration is not set up")
         return
-    await data["store"].async_delete(msg["rule_id"])
+    store = data["store"]
+    # Symmetric with ws_update: a delete of something that is not there is
+    # the card and the store disagreeing, and saying {"ok": True} hides it.
+    if not any(rule.id == msg["rule_id"] for rule in store.rules):
+        connection.send_error(msg["id"], "not_found", f"No rule {msg['rule_id']}")
+        return
+    await store.async_delete(msg["rule_id"])
     connection.send_result(msg["id"], {"ok": True})
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "shabbat_scheduler/defaults/update",
@@ -243,7 +263,7 @@ async def ws_defaults(hass: HomeAssistant, connection, msg: dict[str, Any]) -> N
     await store.async_replace_all(defaults, store.rules)
     connection.send_result(
         msg["id"],
-        {"defaults": store.defaults, "warnings": _conflict_warnings(store.rules)},
+        {"defaults": store.defaults, "warnings": _conflict_warnings(store)},
     )
 
 
@@ -254,12 +274,20 @@ def ws_subscribe(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     if data is None:
         connection.send_error(msg["id"], "not_set_up", "Integration is not set up")
         return
-    store = data["store"]
-
     @callback
     def _forward() -> None:
+        # Resolved per push, never captured. SIGNAL_RULES_CHANGED is global
+        # and this subscription outlives a config-entry reload, so a store
+        # captured at subscribe time would keep serving the DEAD store's
+        # contents while the CRUD commands - which resolve _entry_data
+        # freshly - write to the new one: the card would read one store and
+        # write another. Quiet when the entry is gone; the next
+        # subscribe/list reports not_set_up loudly enough.
+        current = _entry_data(hass)
+        if current is None:
+            return
         connection.send_message(
-            websocket_api.event_message(msg["id"], _state_payload(store))
+            websocket_api.event_message(msg["id"], _state_payload(current["store"]))
         )
 
     connection.subscriptions[msg["id"]] = async_dispatcher_connect(

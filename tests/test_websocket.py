@@ -1,5 +1,6 @@
 from datetime import time
 
+import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.shabbat_scheduler.const import DOMAIN
@@ -536,3 +537,205 @@ async def test_subscribe_stops_pushing_after_unsubscribe(hass, hass_ws_client):
     await client.send_json({"id": 3, "type": "shabbat_scheduler/rules/list"})
     msg = await client.receive_json()
     assert msg["id"] == 3  # no pushed event arrived in between
+
+
+# --- Final review I3: mutations are admin-only ---------------------------
+#
+# Every command used to be callable by any authenticated user, including a
+# read-only account. In a household with non-admin logins that means anyone
+# could rewrite or delete the schedule driving the air conditioning.
+
+MUTATIONS = [
+    {"type": "shabbat_scheduler/rules/create", "rule": NEW_RULE},
+    {
+        "type": "shabbat_scheduler/rules/update",
+        "rule_id": "r1",
+        "changes": {"enabled": False},
+    },
+    {"type": "shabbat_scheduler/rules/delete", "rule_id": "r1"},
+    {"type": "shabbat_scheduler/defaults/update", "defaults": {"devices": ["x.y"]}},
+]
+
+
+@pytest.mark.parametrize("mutation", MUTATIONS, ids=lambda m: m["type"])
+async def test_a_read_only_user_cannot_mutate(
+    hass, hass_ws_client, hass_read_only_access_token, mutation
+):
+    await _setup(hass, [
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+             devices=("climate.a",)),
+    ])
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+
+    await client.send_json({"id": 1, **mutation})
+    msg = await client.receive_json()
+
+    assert not msg["success"]
+    assert msg["error"]["code"] == "unauthorized"
+
+    # ...and nothing was written.
+    reloaded = RuleStore(hass)
+    await reloaded.async_load()
+    assert [rule.id for rule in reloaded.rules] == ["r1"]
+    assert reloaded.rules[0].enabled is True
+    assert reloaded.defaults == {}
+
+
+async def test_a_read_only_user_can_still_read(
+    hass, hass_ws_client, hass_read_only_access_token
+):
+    """Reading is what the card does for everyone; only writing is admin."""
+    await _setup(hass, [
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+             devices=("climate.a",)),
+    ])
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+
+    await client.send_json({"id": 1, "type": "shabbat_scheduler/rules/list"})
+    msg = await client.receive_json()
+    assert msg["success"]
+    assert [r["id"] for r in msg["result"]["rules"]] == ["r1"]
+
+    await client.send_json({"id": 2, "type": "shabbat_scheduler/preview"})
+    assert (await client.receive_json())["success"]
+
+    await client.send_json({"id": 3, "type": "shabbat_scheduler/subscribe"})
+    assert (await client.receive_json())["success"]
+
+
+# --- Final review I5: conflicts must be found through the defaults -------
+#
+# find_conflicts iterates rule.devices, so a rule whose devices come from
+# `defaults` - the shape the README documents as the common case - used to
+# contribute nothing, and the card was told the schedule was clean.
+
+CONFLICTING_PAIR = [
+    Rule(id="a", profile=1, day="1", time=time(18, 0), action=Action.ON),
+    Rule(id="b", profile=1, day="1", time=time(18, 0), action=Action.OFF),
+]
+DEFAULT_DEVICES = {"devices": ["climate.a"]}
+
+
+async def test_rules_list_finds_conflicts_when_devices_come_from_defaults(
+    hass, hass_ws_client
+):
+    await _setup(hass, CONFLICTING_PAIR, defaults=DEFAULT_DEVICES)
+    client = await hass_ws_client(hass)
+    await client.send_json({"id": 1, "type": "shabbat_scheduler/rules/list"})
+    msg = await client.receive_json()
+
+    assert msg["success"]
+    assert [w["device"] for w in msg["result"]["warnings"]] == ["climate.a"]
+
+
+async def test_create_finds_a_conflict_when_devices_come_from_defaults(
+    hass, hass_ws_client
+):
+    await _setup(hass, CONFLICTING_PAIR[:1], defaults=DEFAULT_DEVICES)
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {
+            "id": 1,
+            "type": "shabbat_scheduler/rules/create",
+            "rule": {"profile": 1, "day": "1", "time": "18:00:00", "action": "off"},
+        }
+    )
+    msg = await client.receive_json()
+
+    assert msg["success"]  # conflicts warn, they never reject
+    assert [w["device"] for w in msg["result"]["warnings"]] == ["climate.a"]
+
+
+async def test_update_finds_a_conflict_when_devices_come_from_defaults(
+    hass, hass_ws_client
+):
+    await _setup(
+        hass,
+        [
+            Rule(id="a", profile=1, day="1", time=time(18, 0), action=Action.ON),
+            Rule(id="b", profile=1, day="1", time=time(12, 0), action=Action.OFF),
+        ],
+        defaults=DEFAULT_DEVICES,
+    )
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {
+            "id": 1,
+            "type": "shabbat_scheduler/rules/update",
+            "rule_id": "b",
+            "changes": {"time": "18:00:00"},
+        }
+    )
+    msg = await client.receive_json()
+
+    assert msg["success"]
+    assert [w["device"] for w in msg["result"]["warnings"]] == ["climate.a"]
+
+
+async def test_defaults_update_finds_the_conflict_it_creates(hass, hass_ws_client):
+    """Pointing the defaults at a device is itself what creates the clash."""
+    await _setup(hass, CONFLICTING_PAIR)
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {
+            "id": 1,
+            "type": "shabbat_scheduler/defaults/update",
+            "defaults": DEFAULT_DEVICES,
+        }
+    )
+    msg = await client.receive_json()
+
+    assert msg["success"]
+    assert [w["device"] for w in msg["result"]["warnings"]] == ["climate.a"]
+
+
+# --- Final review M8: deleting an unknown id is an error -----------------
+
+
+async def test_delete_of_unknown_rule_errors(hass, hass_ws_client):
+    """Asymmetric with rules/update until now; {"ok": True} hid a desync."""
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {"id": 1, "type": "shabbat_scheduler/rules/delete", "rule_id": "nope"}
+    )
+    msg = await client.receive_json()
+
+    assert not msg["success"]
+    assert msg["error"]["code"] == "not_found"
+
+
+# --- Final review I4: a subscription must follow the live store ----------
+
+
+async def test_subscription_serves_the_new_store_after_a_reload(
+    hass, hass_ws_client
+):
+    """SIGNAL_RULES_CHANGED is global and the subscription outlives a reload.
+
+    Capturing the store at subscribe time meant pushes carried the OLD
+    store's contents while CRUD wrote to the new one - the card reading one
+    store and writing another.
+    """
+    entry = await _setup(hass)
+    client = await hass_ws_client(hass)
+    await client.send_json({"id": 1, "type": "shabbat_scheduler/subscribe"})
+    assert (await client.receive_json())["success"]
+
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    await client.send_json(
+        {"id": 2, "type": "shabbat_scheduler/rules/create", "rule": NEW_RULE}
+    )
+    pushed = created = None
+    while pushed is None or created is None:
+        msg = await client.receive_json()
+        if msg["type"] == "event":
+            pushed = msg
+        else:
+            created = msg
+
+    assert created["success"]
+    rule_id = created["result"]["rule"]["id"]
+    assert [r["id"] for r in pushed["event"]["rules"]] == [rule_id]

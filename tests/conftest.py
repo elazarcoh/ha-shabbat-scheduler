@@ -5,7 +5,36 @@ integrations are only loaded when `enable_custom_integrations` is requested.
 """
 
 import pytest
+from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
+
+from custom_components.shabbat_scheduler.const import DOMAIN
+
+
+@pytest.fixture
+def rule_switch_entity_id(hass):
+    """The entity_id of a rule's switch. The ONLY sanctioned way to find it.
+
+    A rule switch's `unique_id` is stable and derived from `rule.id`; its
+    `entity_id` is slugified from the rule's user-editable, often-Hebrew
+    NAME and cannot be constructed from the rule id. Guessing
+    `switch.<something>_rule_<id>` has produced two real bugs in this
+    project, so every test goes through the registry instead.
+
+    Returns None when no such entity is registered - which is exactly what
+    the add/remove tests assert on.
+
+    A fixture rather than an importable helper so it needs no import at
+    all: `tests/` is not a package, and there is then nowhere else for a
+    test to reach for a second, wronger way of doing this.
+    """
+
+    def _entity_id(entry, rule_id):
+        return er.async_get(hass).async_get_entity_id(
+            "switch", DOMAIN, f"{entry.entry_id}_rule_{rule_id}"
+        )
+
+    return _entity_id
 
 
 @pytest.fixture(autouse=True)

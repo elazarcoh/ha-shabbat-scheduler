@@ -12,6 +12,12 @@ async def test_describe_renders_a_named_rule(hass):
     described = {}
 
     def _capture(domain, event_type, describe):
+        # Pins the platform to THIS integration's domain: logbook only
+        # attributes a device's own state change back to a rule for event
+        # types registered under the domain that fires them, so a wrong
+        # domain here would silently cost the attribution the whole
+        # logbook.py module exists for.
+        assert domain == DOMAIN
         described[event_type] = describe
 
     async_describe_events(hass, _capture)
@@ -50,6 +56,11 @@ async def test_describe_handles_an_unnamed_rule(hass):
     )
     result = described[EVENT_RULE_APPLIED](event)
     assert result["message"]
+    # Not merely non-empty: an unnamed rule falls back to its id, and a
+    # regression that formatted the missing name instead would print the
+    # literal "None" into the family's logbook and still pass.
+    assert "None" not in result["message"]
+    assert "r1" in result["message"]
 
 
 async def test_describe_marks_a_dry_run(hass):

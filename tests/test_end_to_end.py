@@ -27,7 +27,6 @@ catch-up tests already use `freezer`/`freeze_time` in this suite.
 from datetime import date, time
 
 import pytest
-from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -184,7 +183,9 @@ async def test_a_restart_between_havdalah_and_the_tail_still_fires_it(
     assert hass.states.get("input_boolean.salon").state == "off"
 
 
-async def test_a_card_can_drive_the_whole_loop(hass, hass_ws_client, jerusalem):
+async def test_a_card_can_drive_the_whole_loop(
+    hass, hass_ws_client, jerusalem, rule_switch_entity_id
+):
     """Subscribe, create, see the push and the entity, delete, see both go."""
     hass.states.async_set(
         "sensor.jewish_calendar_upcoming_candle_lighting",
@@ -227,11 +228,7 @@ async def test_a_card_can_drive_the_whole_loop(hass, hass_ws_client, jerusalem):
     assert [r["id"] for r in pushed["event"]["rules"]] == [rule_id]
 
     await hass.async_block_till_done()
-    registry = er.async_get(hass)
-    entity_id = registry.async_get_entity_id(
-        "switch", DOMAIN, f"{entry.entry_id}_rule_{rule_id}"
-    )
-    assert entity_id is not None
+    assert rule_switch_entity_id(entry, rule_id) is not None
 
     await client.send_json(
         {"id": 3, "type": "shabbat_scheduler/rules/delete", "rule_id": rule_id}
@@ -243,6 +240,4 @@ async def test_a_card_can_drive_the_whole_loop(hass, hass_ws_client, jerusalem):
             break
 
     await hass.async_block_till_done()
-    assert registry.async_get_entity_id(
-        "switch", DOMAIN, f"{entry.entry_id}_rule_{rule_id}"
-    ) is None
+    assert rule_switch_entity_id(entry, rule_id) is None

@@ -21,44 +21,40 @@ async def _setup(hass, rules=()):
     return entry
 
 
-def _switch_for(hass, entry, rule_id):
-    return er.async_get(hass).async_get_entity_id(
-        "switch", DOMAIN, f"{entry.entry_id}_rule_{rule_id}"
-    )
-
-
-async def test_adding_a_rule_creates_its_switch(hass):
+async def test_adding_a_rule_creates_its_switch(hass, rule_switch_entity_id):
     entry = await _setup(hass)
     store = hass.data[DOMAIN][entry.entry_id]["store"]
-    assert _switch_for(hass, entry, "new") is None
+    assert rule_switch_entity_id(entry, "new") is None
 
     await store.async_add(
         Rule(id="new", profile=1, day="1", time=time(11, 0), action=Action.ON)
     )
     await hass.async_block_till_done()
 
-    entity_id = _switch_for(hass, entry, "new")
+    entity_id = rule_switch_entity_id(entry, "new")
     assert entity_id is not None
     assert hass.states.get(entity_id) is not None
 
 
-async def test_deleting_a_rule_removes_its_switch(hass):
+async def test_deleting_a_rule_removes_its_switch(hass, rule_switch_entity_id):
     entry = await _setup(hass, [
         Rule(id="gone", profile=1, day="1", time=time(11, 0), action=Action.ON),
     ])
-    assert _switch_for(hass, entry, "gone") is not None
+    assert rule_switch_entity_id(entry, "gone") is not None
 
     store = hass.data[DOMAIN][entry.entry_id]["store"]
     await store.async_delete("gone")
     await hass.async_block_till_done()
 
-    assert _switch_for(hass, entry, "gone") is None
+    assert rule_switch_entity_id(entry, "gone") is None
 
 
-async def test_surviving_rule_keeps_its_entity_across_replace_all(hass):
+async def test_surviving_rule_keeps_its_entity_across_replace_all(
+    hass, rule_switch_entity_id
+):
     keep = Rule(id="keep", profile=1, day="1", time=time(11, 0), action=Action.ON)
     entry = await _setup(hass, [keep])
-    before = _switch_for(hass, entry, "keep")
+    before = rule_switch_entity_id(entry, "keep")
 
     store = hass.data[DOMAIN][entry.entry_id]["store"]
     await store.async_replace_all({}, [
@@ -67,11 +63,13 @@ async def test_surviving_rule_keeps_its_entity_across_replace_all(hass):
     ])
     await hass.async_block_till_done()
 
-    assert _switch_for(hass, entry, "keep") == before
-    assert _switch_for(hass, entry, "added") is not None
+    assert rule_switch_entity_id(entry, "keep") == before
+    assert rule_switch_entity_id(entry, "added") is not None
 
 
-async def test_stale_registry_entry_from_before_the_session_is_purged(hass):
+async def test_stale_registry_entry_from_before_the_session_is_purged(
+    hass, rule_switch_entity_id
+):
     """A registry entry can be orphaned before this session even starts -
     e.g. the store file was edited, or a rule removed, while HA was
     stopped. The first `_sync()` call, made during setup, must still purge
@@ -88,15 +86,17 @@ async def test_stale_registry_entry_from_before_the_session_is_purged(hass):
     registry.async_get_or_create(
         "switch", DOMAIN, f"{entry.entry_id}_rule_ghost", config_entry=entry
     )
-    assert _switch_for(hass, entry, "ghost") is not None
+    assert rule_switch_entity_id(entry, "ghost") is not None
 
     await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    assert _switch_for(hass, entry, "ghost") is None
+    assert rule_switch_entity_id(entry, "ghost") is None
 
 
-async def test_renaming_a_rule_reaches_its_switch_without_a_restart(hass):
+async def test_renaming_a_rule_reaches_its_switch_without_a_restart(
+    hass, rule_switch_entity_id
+):
     """Final review I7: RuleSwitch used to snapshot its name in __init__.
 
     `_sync` only added and removed, so after `rules/update {"name": ...}`
@@ -107,7 +107,7 @@ async def test_renaming_a_rule_reaches_its_switch_without_a_restart(hass):
         Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
              name="בוקר שבת", icon="mdi:candle"),
     ])
-    entity_id = _switch_for(hass, entry, "r1")
+    entity_id = rule_switch_entity_id(entry, "r1")
     assert hass.states.get(entity_id).attributes["friendly_name"] == "בוקר שבת"
     assert hass.states.get(entity_id).attributes["icon"] == "mdi:candle"
 
@@ -122,14 +122,16 @@ async def test_renaming_a_rule_reaches_its_switch_without_a_restart(hass):
     assert er.async_get(hass).async_get(entity_id).original_name == "ערב שבת"
     # The entity_id itself deliberately does NOT move: it is the user's
     # stable handle, and unique_id is what keeps it attached to the rule.
-    assert _switch_for(hass, entry, "r1") == entity_id
+    assert rule_switch_entity_id(entry, "r1") == entity_id
 
 
-async def test_an_unnamed_rule_falls_back_to_a_derived_name(hass):
+async def test_an_unnamed_rule_falls_back_to_a_derived_name(
+    hass, rule_switch_entity_id
+):
     entry = await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON),
     ])
-    entity_id = _switch_for(hass, entry, "r1")
+    entity_id = rule_switch_entity_id(entry, "r1")
     assert hass.states.get(entity_id).attributes["friendly_name"] == "1d 1 11:00 on"
 
     store = hass.data[DOMAIN][entry.entry_id]["store"]

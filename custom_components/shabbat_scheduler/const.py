@@ -6,6 +6,7 @@ STORAGE_KEY = "shabbat_scheduler.rules"
 STORAGE_VERSION = 1
 
 EVENT_RULE_APPLIED = "shabbat_scheduler_rule_applied"
+SIGNAL_RULES_CHANGED = "shabbat_scheduler_rules_changed"
 
 RETRY_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 30

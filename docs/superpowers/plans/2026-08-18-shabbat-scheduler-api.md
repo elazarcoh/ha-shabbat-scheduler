@@ -1691,12 +1691,29 @@ async def test_describe_marks_a_dry_run(hass):
     assert "dry run" in result["message"].lower()
 
 
-async def test_logbook_component_picks_up_the_platform(hass):
-    """The platform must be discoverable, not merely importable."""
-    assert await async_setup_component(hass, LOGBOOK_DOMAIN, {LOGBOOK_DOMAIN: {}})
-    await hass.async_block_till_done()
-    assert LOGBOOK_DOMAIN in hass.config.components
+def test_only_the_applied_event_is_described(hass):
+    """EVENT_RULE_COMPLETED must NOT be described.
+
+    It fires after every rule application to carry results to the last-run
+    sensor. Describing it too would put a second, duplicate row in the
+    logbook for every single rule that fires.
+    """
+    described = {}
+    async_describe_events(hass, lambda d, e, f: described.__setitem__(e, f))
+    assert set(described) == {EVENT_RULE_APPLIED}
+    assert EVENT_RULE_COMPLETED not in described
 ```
+
+Import `EVENT_RULE_COMPLETED` alongside the others, and drop the
+`async_setup_component` / `LOGBOOK_DOMAIN` imports.
+
+**Deliberately not tested:** that Home Assistant discovers `logbook.py` by
+convention. Booting the real `logbook` component pulls in `frontend`, which
+requires the `home-assistant-frontend` package — tens of megabytes of
+JavaScript — and the resulting assertion (`LOGBOOK_DOMAIN in
+hass.config.components`) would test Home Assistant's own component loading
+rather than this integration's code. The describe function's behaviour is
+covered directly by the tests above.
 
 - [ ] **Step 2: Run test to verify it fails**
 

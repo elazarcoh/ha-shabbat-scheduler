@@ -21,6 +21,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 
+from . import websocket_api
 from .block import compute_block, find_conflicts, has_profile, merge_defaults, resolve_rules
 from .const import CANDLE_SENSOR, DOMAIN, HAVDALAH_SENSOR, SIGNAL_RULES_CHANGED
 from .engine import ShabbatEngine
@@ -169,6 +170,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN, "import_yaml", _import_yaml,
         schema=vol.Schema({vol.Required("yaml"): str}),
     )
+
+    websocket_api.async_register(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

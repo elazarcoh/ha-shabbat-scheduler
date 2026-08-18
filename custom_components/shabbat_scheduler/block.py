@@ -109,6 +109,96 @@ def find_conflicts(rules: list[Rule]) -> list[Conflict]:
     return conflicts
 
 
+def conflict_warnings(defaults: dict, rules: list[Rule]) -> list[dict]:
+    """Conflicts as plain data, with the defaults merged in FIRST.
+
+    The merge is not optional: find_conflicts iterates `rule.devices`, so a
+    rule taking its devices from `defaults` - the shape the README
+    documents as the common case - contributes nothing at all unmerged,
+    and every caller is then told a conflicting schedule is clean.
+    """
+    merged = [merge_defaults(defaults, rule) for rule in rules]
+    return [
+        {
+            "kind": "conflict",
+            "device": conflict.device,
+            "profile": conflict.profile,
+            "day": conflict.day,
+            "time": conflict.time.isoformat(),
+            "rule_ids": list(conflict.rule_ids),
+        }
+        for conflict in find_conflicts(merged)
+    ]
+
+
+def preview_payload(
+    defaults: dict,
+    rules: list[Rule],
+    block: Block | None,
+    tz: tzinfo,
+    block_length: int | None = None,
+) -> dict:
+    """What a block WOULD do: the one answer behind `preview` and `simulate`.
+
+    Both used to build this themselves, and a comment claimed they "cannot
+    drift apart" while they already had - the service returned bare-string
+    warnings and conflicts with no `kind`/`profile`, the websocket command
+    returned dicts with both. Now there is one implementation, so the claim
+    is true by construction rather than by everyone remembering.
+
+    Pure, and returns JSON-able data only, so it stays inside this module's
+    no-Home-Assistant boundary and is testable without an instance.
+    """
+    if block_length is not None and block is not None:
+        # A hypothetical block of the requested length, anchored on the
+        # real candle lighting.
+        block = compute_block(
+            block.candle_lighting,
+            block.candle_lighting.replace(hour=20, minute=0)
+            + timedelta(days=int(block_length)),
+        )
+
+    if block is None:
+        return {
+            "profile": None,
+            "rules": [],
+            "conflicts": [],
+            "warnings": [
+                {
+                    "kind": "no_block",
+                    "message": "No block could be derived from the "
+                    "Jewish Calendar sensors.",
+                }
+            ],
+        }
+
+    merged = [merge_defaults(defaults, rule) for rule in rules]
+    warnings: list[dict] = []
+    if not has_profile(merged, block.length):
+        warnings.append(
+            {
+                "kind": "no_profile",
+                "message": f"No enabled rules for a {block.length}-day block.",
+            }
+        )
+
+    return {
+        "profile": block.length,
+        "rules": [
+            {
+                "when": item.when.isoformat(),
+                "rule_id": item.rule.id,
+                "name": item.rule.name,
+                "action": item.rule.action.value,
+                "devices": list(item.rule.devices),
+            }
+            for item in resolve_rules(merged, block, tz)
+        ],
+        "conflicts": conflict_warnings(defaults, rules),
+        "warnings": warnings,
+    }
+
+
 def desired_state_at(
     rules: list[Rule],
     block: Block,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import replace
-from datetime import timedelta
 from typing import Any
 
 import voluptuous as vol
@@ -13,7 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.util import dt as dt_util
 
-from .block import compute_block, find_conflicts, has_profile, merge_defaults, resolve_rules
+from .block import conflict_warnings, preview_payload
 from .const import DOMAIN, SIGNAL_RULES_CHANGED
 from .rule_schema import (
     RuleValidationError,
@@ -32,27 +31,12 @@ def _entry_data(hass: HomeAssistant) -> dict | None:
 
 
 def _conflict_warnings(store) -> list[dict]:
-    """Conflict warnings for the whole rule set, defaults merged in.
+    """Conflict warnings for the whole rule set of `store`.
 
-    Takes the store rather than a rule list precisely so no caller can
-    forget the merge: find_conflicts iterates `rule.devices`, so an
-    unmerged rule that gets its devices from `defaults` - the shape the
-    README documents as the common case - contributes no conflicts at all
-    and the card is told everything is fine. "Conflicts are warned, never
-    resolved" only holds if they are actually found.
+    Takes the store, not a rule list, precisely so no caller can forget to
+    merge the defaults first - see block.conflict_warnings.
     """
-    rules = [merge_defaults(store.defaults, rule) for rule in store.rules]
-    return [
-        {
-            "kind": "conflict",
-            "device": conflict.device,
-            "profile": conflict.profile,
-            "day": conflict.day,
-            "time": conflict.time.isoformat(),
-            "rule_ids": list(conflict.rule_ids),
-        }
-        for conflict in find_conflicts(rules)
-    ]
+    return conflict_warnings(store.defaults, store.rules)
 
 
 def _state_payload(store) -> dict:
@@ -89,63 +73,17 @@ def ws_preview(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
         connection.send_error(msg["id"], "not_set_up", "Integration is not set up")
         return
     store, engine = data["store"], data["engine"]
-    block = engine.current_block
-    length = msg.get("block_length")
-    if length is not None and block is not None:
-        # Re-derive a hypothetical block of the requested length, mirroring
-        # the `simulate` service in __init__.py so the two cannot drift apart.
-        block = compute_block(
-            block.candle_lighting,
-            block.candle_lighting.replace(hour=20, minute=0)
-            + timedelta(days=int(length)),
-        )
-
-    if block is None:
-        connection.send_result(
-            msg["id"],
-            {
-                "profile": None,
-                "rules": [],
-                "conflicts": [],
-                "warnings": [
-                    {
-                        "kind": "no_block",
-                        "message": "No block could be derived from the "
-                        "Jewish Calendar sensors.",
-                    }
-                ],
-            },
-        )
-        return
-
-    rules = [merge_defaults(store.defaults, rule) for rule in store.rules]
-    warnings: list[dict] = []
-    if not has_profile(rules, block.length):
-        warnings.append(
-            {
-                "kind": "no_profile",
-                "message": f"No enabled rules for a {block.length}-day block.",
-            }
-        )
-
-    tz = dt_util.get_time_zone(hass.config.time_zone)
     connection.send_result(
         msg["id"],
-        {
-            "profile": block.length,
-            "rules": [
-                {
-                    "when": item.when.isoformat(),
-                    "rule_id": item.rule.id,
-                    "name": item.rule.name,
-                    "action": item.rule.action.value,
-                    "devices": list(item.rule.devices),
-                }
-                for item in resolve_rules(rules, block, tz)
-            ],
-            "conflicts": _conflict_warnings(store),
-            "warnings": warnings,
-        },
+        # The same call the `simulate` service makes, so the two answers
+        # are one implementation rather than two that agree by hand.
+        preview_payload(
+            store.defaults,
+            store.rules,
+            engine.current_block,
+            dt_util.get_time_zone(hass.config.time_zone),
+            msg.get("block_length"),
+        ),
     )
 
 

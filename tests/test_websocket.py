@@ -739,3 +739,40 @@ async def test_subscription_serves_the_new_store_after_a_reload(
     assert created["success"]
     rule_id = created["result"]["rule"]["id"]
     assert [r["id"] for r in pushed["event"]["rules"]] == [rule_id]
+
+
+# --- preview and simulate are one implementation -------------------------
+
+
+@pytest.mark.parametrize("length", [None, 3])
+async def test_preview_and_simulate_return_the_same_payload(
+    hass, hass_ws_client, length
+):
+    """A comment claimed they "cannot drift apart" while they already had.
+
+    They now share block.preview_payload, so this pins the claim instead of
+    trusting it.
+    """
+    await _setup(hass, [
+        Rule(id="a", profile=1, day="1", time=time(18, 0), action=Action.ON),
+        Rule(id="b", profile=1, day="1", time=time(18, 0), action=Action.OFF),
+        Rule(id="c", profile=3, day="1", time=time(11, 0), action=Action.ON),
+    ], defaults={"devices": ["climate.a"]})
+
+    service_data = {} if length is None else {"block_length": length}
+    from_service = await hass.services.async_call(
+        DOMAIN, "simulate", service_data, blocking=True, return_response=True
+    )
+
+    client = await hass_ws_client(hass)
+    command = {"id": 1, "type": "shabbat_scheduler/preview"}
+    if length is not None:
+        command["block_length"] = length
+    await client.send_json(command)
+    msg = await client.receive_json()
+
+    assert msg["success"]
+    assert msg["result"] == from_service
+    # ...and both actually found the conflict hiding behind the defaults.
+    if length is None:
+        assert [c["device"] for c in from_service["conflicts"]] == ["climate.a"]

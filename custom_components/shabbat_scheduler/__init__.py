@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
-
 import voluptuous as vol
 import yaml
 from homeassistant.config_entries import ConfigEntry
@@ -22,7 +20,7 @@ from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 
 from . import websocket_api
-from .block import compute_block, find_conflicts, has_profile, merge_defaults, resolve_rules
+from .block import preview_payload
 from .const import CANDLE_SENSOR, DOMAIN, HAVDALAH_SENSOR, SIGNAL_RULES_CHANGED
 from .engine import ShabbatEngine
 from .store import RuleStore
@@ -107,52 +105,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     async def _simulate(call: ServiceCall) -> ServiceResponse:
-        block = engine.current_block
-        length = call.data.get("block_length")
-        if length is not None and block is not None:
-            # Re-derive a hypothetical block of the requested length.
-            block = compute_block(
-                block.candle_lighting,
-                block.candle_lighting.replace(hour=20, minute=0)
-                + timedelta(days=int(length)),
-            )
-        if block is None:
-            return {"profile": None, "rules": [], "conflicts": [], "warnings": [
-                "No block could be derived; is the Jewish Calendar integration set up?"
-            ]}
-
-        rules = [merge_defaults(store.defaults, r) for r in store.rules]
-        warnings: list[str] = []
-        if not has_profile(rules, block.length):
-            warnings.append(
-                f"No rules configured for a {block.length}-day block."
-            )
-
-        tz = dt_util.get_time_zone(hass.config.time_zone)
-        resolved = resolve_rules(rules, block, tz)
-        return {
-            "profile": block.length,
-            "rules": [
-                {
-                    "when": item.when.isoformat(),
-                    "rule_id": item.rule.id,
-                    "name": item.rule.name,
-                    "action": item.rule.action.value,
-                    "devices": list(item.rule.devices),
-                }
-                for item in resolved
-            ],
-            "conflicts": [
-                {
-                    "device": conflict.device,
-                    "time": conflict.time.isoformat(),
-                    "day": conflict.day,
-                    "rule_ids": list(conflict.rule_ids),
-                }
-                for conflict in find_conflicts(rules)
-            ],
-            "warnings": warnings,
-        }
+        # Literally the same call `preview` makes over the websocket. The
+        # two used to build this separately, with a comment claiming they
+        # "cannot drift apart" - they already had: this one returned
+        # bare-string warnings and conflicts with no kind/profile.
+        return preview_payload(
+            store.defaults,
+            store.rules,
+            engine.current_block,
+            dt_util.get_time_zone(hass.config.time_zone),
+            call.data.get("block_length"),
+        )
 
     async def _set_dry_run(call: ServiceCall) -> None:
         await store.async_set_dry_run(bool(call.data["enabled"]))

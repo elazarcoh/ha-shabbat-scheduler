@@ -1347,12 +1347,32 @@ git commit -m "feat: websocket subscription so the card never polls"
 
 **Files:**
 - Modify: `custom_components/shabbat_scheduler/engine.py`
+- Modify: `custom_components/shabbat_scheduler/const.py`
+- Modify: `custom_components/shabbat_scheduler/sensor.py`
 - Test: `tests/test_engine.py`
+
+**Why `sensor.py` changes here.** `LastRunSensor` is push-based: it listens for
+`EVENT_RULE_APPLIED` and snapshots `engine.last_run` / `last_run_at`
+synchronously inside that callback. That worked only because the event used to
+fire *after* the results existed. Moving it before the calls — which logbook
+attribution requires — would leave that snapshot permanently stale.
+
+Both requirements are legitimate, so they get **two** signals:
+`EVENT_RULE_APPLIED` fires **before** (self-describing, for attribution and the
+logbook row), and a new `EVENT_RULE_COMPLETED` fires **after** (carrying the
+results, for the sensor). Only the former is described to the logbook, so no
+duplicate row appears.
+
+This also closes a latent gap: `async_catch_up` sets `last_run` but fired no
+event at all, so the sensor never reflected a restart catch-up. It now fires
+`EVENT_RULE_COMPLETED` too.
 
 **Interfaces:**
 - Consumes: `EVENT_RULE_APPLIED`.
 - Produces:
+  - `EVENT_RULE_COMPLETED = "shabbat_scheduler_rule_completed"` in `const.py`.
   - `EVENT_RULE_APPLIED` is fired **before** the service calls, carrying `{rule_id, name, action, devices, dry_run}`.
+  - `EVENT_RULE_COMPLETED` is fired **after**, carrying `{rule_id, results}`; `LastRunSensor` listens for this instead.
   - One `Context` per rule application, passed to every service call for that rule, so Home Assistant can attribute each device's change back to the rule.
   - `is_our_context(entity_id, context)` keeps working.
 
@@ -1506,8 +1526,32 @@ In `custom_components/shabbat_scheduler/engine.py`, rewrite `async_apply_rule`:
 
         self.last_run = results
         self.last_run_at = dt_util.utcnow()
+        # Fired after the results exist, for consumers that need them.
+        # EVENT_RULE_APPLIED cannot carry them: it must precede the calls so
+        # Home Assistant can attribute each device's change back to this rule.
+        self.hass.bus.async_fire(
+            EVENT_RULE_COMPLETED, {"rule_id": rule.id, "results": results}
+        )
         return results
 ```
+
+Add `EVENT_RULE_COMPLETED = "shabbat_scheduler_rule_completed"` to `const.py`
+and import it in `engine.py`.
+
+In `async_catch_up`, after it sets `self.last_run` and `self.last_run_at`, fire
+the same event with `rule_id=None` — the sensor previously never reflected a
+restart catch-up at all:
+
+```python
+        self.hass.bus.async_fire(
+            EVENT_RULE_COMPLETED, {"rule_id": None, "results": results}
+        )
+```
+
+In `sensor.py`, change `LastRunSensor.async_added_to_hass` to listen for
+`EVENT_RULE_COMPLETED` instead of `EVENT_RULE_APPLIED`, leaving everything else
+about that entity — `_attr_should_poll = False`, the `async_on_remove`
+teardown, `native_value`, `extra_state_attributes` — exactly as it is.
 
 The context is threaded through as a parameter rather than held on the engine.
 Two rules can be applied concurrently — the suite already exercises exactly

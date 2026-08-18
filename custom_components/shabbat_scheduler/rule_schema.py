@@ -65,6 +65,30 @@ def _action(value) -> Action:
         ) from err
 
 
+def _bool(field: str, value) -> bool:
+    """A real bool, never a truthy string.
+
+    `{"enabled": "false"}` - what a JS form binding yields when it forgets
+    to parse - used to sail through: the API echoed the rule as
+    `"false"`, a card rendered it off, and the engine RAN it, because a
+    non-empty string is truthy.
+    """
+    if not isinstance(value, bool):
+        raise RuleValidationError(
+            f"{field} must be true or false, got {value!r}"
+        )
+    return value
+
+
+def _text(field: str, value) -> str | None:
+    """A string or nothing. A dict here breaks entity creation."""
+    if value is None or isinstance(value, str):
+        return value
+    raise RuleValidationError(
+        f"{field} must be a string or null, got {value!r}"
+    )
+
+
 def _coerce(field: str, value):
     if field == "day":
         return _day(value)
@@ -86,6 +110,12 @@ def _coerce(field: str, value):
         if not isinstance(value, Mapping):
             raise RuleValidationError(f"variables must be a mapping, got {value!r}")
         return dict(value)
+    if field in ("enabled", "replay_on_restart"):
+        return _bool(field, value)
+    if field in ("name", "icon", "script", "color"):
+        return _text(field, value)
+    # Every rule field is now typed; only the defaults payload, which
+    # shares this helper for its own two keys, ever reaches here.
     return value
 
 

@@ -168,3 +168,70 @@ def test_variables_rejects_non_mapping():
     """Non-mapping values should be rejected with RuleValidationError."""
     with pytest.raises(RuleValidationError):
         rule_from_api({**VALID, "variables": "nope"}, "x")
+
+
+# --- Final review I6: the remaining seven fields were untyped ------------
+#
+# `_coerce` handled day/profile/time/action/devices/settings/variables and
+# returned everything else verbatim. All of the payloads below were
+# accepted. `{'enabled': 'false'}` is the dangerous one: a non-empty string
+# is truthy, so the API echoed the rule as "false", a card rendered it off,
+# and the engine RAN it. Plan 2b's card is the client, and a JS form
+# binding yielding "false" instead of false is an ordinary mistake.
+
+BADLY_TYPED = [
+    {"enabled": "false"},
+    {"enabled": "true"},
+    {"enabled": 1},
+    {"enabled": None},
+    {"replay_on_restart": "maybe"},
+    {"replay_on_restart": 0},
+    {"name": {"nested": "dict"}},
+    {"name": 42},
+    {"icon": 42},
+    {"icon": ["mdi:candle"]},
+    {"script": 7},
+    {"color": {"r": 1}},
+]
+
+
+@pytest.mark.parametrize("bad", BADLY_TYPED, ids=lambda b: repr(b))
+def test_badly_typed_fields_are_rejected_on_create(bad):
+    with pytest.raises(RuleValidationError) as err:
+        rule_from_api({**VALID, **bad}, "x")
+    assert next(iter(bad)) in str(err.value)
+
+
+@pytest.mark.parametrize("bad", BADLY_TYPED, ids=lambda b: repr(b))
+def test_badly_typed_fields_are_rejected_on_update(bad):
+    with pytest.raises(RuleValidationError) as err:
+        changes_from_api(bad)
+    assert next(iter(bad)) in str(err.value)
+
+
+def test_correctly_typed_optional_fields_are_accepted():
+    rule = rule_from_api(
+        {
+            **VALID,
+            "enabled": False,
+            "replay_on_restart": True,
+            "name": "בוקר שבת",
+            "icon": "mdi:candle",
+            "color": "#ff0000",
+        },
+        "x",
+    )
+    assert rule.enabled is False
+    assert rule.replay_on_restart is True
+    assert rule.name == "בוקר שבת"
+    assert rule.icon == "mdi:candle"
+    assert rule.color == "#ff0000"
+
+
+def test_nullable_text_fields_accept_none():
+    """The card clearing a name sends null, not the empty string."""
+    rule = rule_from_api(
+        {**VALID, "name": None, "icon": None, "color": None, "script": None}, "x"
+    )
+    assert rule.name is None
+    assert rule.icon is None

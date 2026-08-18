@@ -69,6 +69,7 @@ class ShabbatEngine:
         self._block: Block | None = None
         self._unsubscribes: list = []
         self._upcoming: list[ResolvedRule] = []
+        self._refresh_lock = asyncio.Lock()
 
     async def async_apply_rule(self, rule: Rule, force: bool = False) -> list[dict]:
         """Apply one rule, returning a per-attribute outcome report."""
@@ -127,13 +128,32 @@ class ShabbatEngine:
 
         Idempotent: it cancels every timer of the block in force and rebuilds
         them from that same block.
+
+        Serialised, because it now persists the block and therefore awaits
+        part-way through. Both zmanim sensors change at the same instant, so
+        two refreshes genuinely overlap; a second one entering that window
+        would cancel nothing (the first has already cancelled everything) and
+        then append a duplicate set of timers, firing every rule twice.
         """
+        async with self._refresh_lock:
+            await self._async_refresh()
+
+    async def _async_refresh(self) -> None:
         for cancel in self._unsubscribes:
             cancel()
         self._unsubscribes = []
         self._upcoming = []
 
         now = dt_util.now()
+
+        # Before looking at the sensors: the block that was in force when
+        # this process last ran may still have rules pending. The hold below
+        # only exists in memory, so without this a restart between havdalah
+        # and a last-day "23:00 off" would read the already-rolled-forward
+        # sensors, adopt NEXT week's block, and lose that rule in silence.
+        if self._block is None:
+            await self._restore_persisted_block(now)
+
         zmanim = self._read_zmanim()
         candidate: Block | None = None
 
@@ -194,6 +214,15 @@ class ShabbatEngine:
             else:
                 self._block = candidate
 
+        if self._block is not None:
+            # Persisted unconditionally, not only while it is held: the
+            # restart that has to be survived can land at any point inside
+            # the block, and only the two zmanim are stored, so this is a
+            # no-op write once the pair is unchanged.
+            await self.store.async_set_active_block(
+                self._block.candle_lighting, self._block.havdalah
+            )
+
         if self._block is None or not self.store.enabled:
             return
 
@@ -222,6 +251,45 @@ class ShabbatEngine:
                     self.hass, self._make_callback(item), item.when
                 )
             )
+
+    async def _restore_persisted_block(self, now: datetime) -> None:
+        """Re-adopt the pre-restart block, but only while it is still live.
+
+        "Still live" means the same test the in-memory hold uses: at least
+        one of its own resolved rules is not yet due. Once the tail is spent
+        the persisted pair is dropped, so it can never pin the engine to a
+        block that is over - the failure mode that would be worse than the
+        one this fixes.
+
+        Nothing here re-applies anything. Restoring only decides *which*
+        block async_refresh then works from; timers are still built solely
+        for rules whose time is in the future, and catch-up still applies at
+        most the single most recent already-passed rule per device.
+        """
+        pair = self.store.active_block
+        if pair is None:
+            return
+
+        tz = self._tz()
+        try:
+            block = compute_block(pair[0].astimezone(tz), pair[1].astimezone(tz))
+        except ValueError:
+            _LOGGER.warning("Discarding an implausible persisted block %s", pair)
+            await self.store.async_clear_active_block()
+            return
+
+        tail = self._tail_of(block)
+        if tail is None or now > tail:
+            await self.store.async_clear_active_block()
+            return
+
+        _LOGGER.debug(
+            "Restoring the block of %s across a restart; it still has rules "
+            "pending until %s",
+            block.erev_date,
+            tail,
+        )
+        self._block = block
 
     def _notify_zmanim_unreadable(self) -> None:
         """Say so when the zmanim sensors cannot be read at all.

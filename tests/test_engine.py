@@ -345,7 +345,11 @@ from datetime import timedelta
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
-from custom_components.shabbat_scheduler.const import CANDLE_SENSOR, HAVDALAH_SENSOR
+from custom_components.shabbat_scheduler.const import (
+    CANDLE_SENSOR,
+    EVENT_RULE_APPLIED,
+    HAVDALAH_SENSOR,
+)
 
 
 def _set_zmanim(hass, candle: str, havdalah: str):
@@ -760,6 +764,148 @@ async def test_the_hold_releases_itself_and_arms_the_next_block(
     )
     await hass.async_block_till_done()
     assert hass.states.get("input_boolean.t").state == "on"
+
+
+# --- Re-review: the hold must survive a restart inside its own window -----
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_a_restart_inside_the_hold_still_fires_the_pending_tail(
+    hass, jerusalem, test_booleans, freezer
+):
+    """A restart between havdalah and the tail used to lose the tail rule.
+
+    The hold lives only in memory. Restart HA at 21:00 with a 23:00 rule
+    still pending and `_block` starts as None, so setup reads the
+    already-rolled-forward sensors, adopts NEXT week's block, and catch-up
+    against a wholly-future block does nothing. The 23:00 OFF never fires
+    and the air conditioner runs the night, silently. The block in force
+    therefore has to outlive the process.
+    """
+    freezer.move_to("2026-08-15T05:00:00+00:00")
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+
+    store = RuleStore(hass)
+    await store.async_load()
+    await store.async_set_enabled(True)
+    await store.async_replace_all({}, [
+        Rule(id="late-off", profile=1, day="1", time=time(23, 0),
+             action=Action.OFF, devices=("input_boolean.t",)),
+    ])
+    engine = ShabbatEngine(hass, store)
+    hass.states.async_set("input_boolean.t", "on")
+    await engine.async_refresh()
+    assert engine.current_block.erev_date == date(2026, 8, 14)
+
+    # 20:01:30 local - havdalah passes, the sensors roll forward, the hold
+    # engages on the 14 Aug block.
+    freezer.move_to("2026-08-15T17:01:30+00:00")
+    _set_zmanim(hass, "2026-08-21T15:36:00+00:00", "2026-08-22T16:53:00+00:00")
+    await engine.async_refresh()
+    assert engine.current_block.erev_date == date(2026, 8, 14)
+
+    # 21:00 local - Home Assistant restarts. Every timer and all in-memory
+    # state is gone; only .storage survives, and the sensors read next week.
+    freezer.move_to("2026-08-15T18:00:00+00:00")
+    await engine.async_shutdown()
+
+    restarted_store = RuleStore(hass)
+    await restarted_store.async_load()
+    restarted = ShabbatEngine(hass, restarted_store)
+    await restarted.async_refresh()
+
+    assert restarted.current_block.erev_date == date(2026, 8, 14)
+    assert [item.rule.id for item in restarted.upcoming()] == ["late-off"]
+
+    # 23:00 local - the rule the restart nearly ate.
+    freezer.move_to("2026-08-15T20:00:00+00:00")
+    async_fire_time_changed(
+        hass, dt_util.parse_datetime("2026-08-15T20:00:00+00:00")
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get("input_boolean.t").state == "off"
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_a_restart_after_the_tail_adopts_the_next_block(
+    hass, jerusalem, test_booleans, freezer
+):
+    """The persisted block must not pin the engine to a spent block."""
+    freezer.move_to("2026-08-15T05:00:00+00:00")
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+
+    store = RuleStore(hass)
+    await store.async_load()
+    await store.async_set_enabled(True)
+    await store.async_replace_all({}, [
+        Rule(id="late-off", profile=1, day="1", time=time(23, 0),
+             action=Action.OFF, devices=("input_boolean.t",)),
+    ])
+    engine = ShabbatEngine(hass, store)
+    await engine.async_refresh()
+    assert store.active_block is not None
+    await engine.async_shutdown()
+
+    # Tuesday: the 14 Aug block's tail is days gone.
+    freezer.move_to("2026-08-18T05:00:00+00:00")
+    _set_zmanim(hass, "2026-08-21T15:36:00+00:00", "2026-08-22T16:53:00+00:00")
+    restarted_store = RuleStore(hass)
+    await restarted_store.async_load()
+    restarted = ShabbatEngine(hass, restarted_store)
+    await restarted.async_refresh()
+
+    assert restarted.current_block.erev_date == date(2026, 8, 21)
+    # ...and the spent block is not left lying in .storage forever.
+    assert restarted_store.active_block == (
+        restarted.current_block.candle_lighting,
+        restarted.current_block.havdalah,
+    )
+
+
+async def test_concurrent_refreshes_do_not_double_up_timers(
+    hass, engine, freezer
+):
+    """Persisting the block introduces an await mid-refresh.
+
+    Both zmanim sensors change at the same instant, so two `_zmanim_changed`
+    tasks - two `async_refresh` calls - can genuinely overlap. If the second
+    starts while the first is inside that await, it cancels nothing (the
+    first already cancelled every timer) and both then append their own set,
+    so every rule of the block fires twice.
+    """
+    freezer.move_to("2026-08-15T05:00:00+00:00")
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.store.async_set_enabled(True)
+    hass.states.async_set("input_boolean.t", "on")
+    await engine.store.async_replace_all({}, [
+        Rule(id="off", profile=1, day="1", time=time(11, 0),
+             action=Action.OFF, devices=("input_boolean.t",)),
+    ])
+
+    fired = []
+    hass.bus.async_listen(EVENT_RULE_APPLIED, lambda event: fired.append(event))
+
+    real_save = RuleStore.async_save
+
+    async def yielding_save(self):
+        # The mocked .storage in this test harness writes to a dict without
+        # ever yielding to the loop, so the overlap this test is about
+        # cannot occur unless the executor hop a real Store.async_save
+        # performs is put back.
+        await asyncio.sleep(0)
+        await real_save(self)
+
+    with patch.object(RuleStore, "async_save", yielding_save):
+        await asyncio.gather(engine.async_refresh(), engine.async_refresh())
+
+    freezer.move_to("2026-08-15T08:00:00+00:00")
+    async_fire_time_changed(
+        hass, dt_util.parse_datetime("2026-08-15T08:00:00+00:00")
+    )
+    await hass.async_block_till_done()
+
+    assert hass.states.get("input_boolean.t").state == "off"
+    assert len(fired) == 1
 
 
 # --- Final review I1: block dates must be derived in the LOCAL timezone ----

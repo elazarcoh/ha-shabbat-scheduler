@@ -24,8 +24,9 @@ tests/test_engine.py's `test_enabled_master_lists_upcoming_rules` and the
 catch-up tests already use `freezer`/`freeze_time` in this suite.
 """
 
-from datetime import time
+from datetime import date, time
 
+import pytest
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -121,5 +122,62 @@ async def test_manual_change_is_not_reverted(hass, jerusalem, test_booleans, fre
     # Time keeps moving; nothing else is scheduled for this block, so
     # nothing should touch the entity again.
     async_fire_time_changed(hass, dt_util.parse_datetime("2026-08-15T08:30:00+00:00"))
+    await hass.async_block_till_done()
+    assert hass.states.get("input_boolean.salon").state == "off"
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_a_restart_between_havdalah_and_the_tail_still_fires_it(
+    hass, jerusalem, test_booleans, freezer
+):
+    """The whole restart path, through real config entries.
+
+    Havdalah rolls the jewish_calendar sensors to next week while a last-day
+    "23:00 off" is still pending. Home Assistant then restarts at 21:00.
+    Everything in memory is lost, the sensors read next week, and catch-up
+    against a wholly-future block does nothing - so the air conditioner used
+    to run the night with nothing in the log. The block in force has to come
+    back out of .storage.
+    """
+    freezer.move_to("2026-08-15T05:00:00+00:00")
+
+    hass.states.async_set(CANDLE_SENSOR, "2026-08-14T15:44:00+00:00")
+    hass.states.async_set(HAVDALAH_SENSOR, "2026-08-15T17:01:00+00:00")
+    hass.states.async_set("input_boolean.salon", "on")
+
+    store = RuleStore(hass)
+    await store.async_load()
+    await store.async_replace_all(
+        {"devices": ["input_boolean.salon"]},
+        [Rule(id="late-off", profile=1, day="1", time=time(23, 0),
+              action=Action.OFF)],
+    )
+    await store.async_set_enabled(True)
+
+    entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    # 20:01:30 local - havdalah passes and both sensors roll forward.
+    freezer.move_to("2026-08-15T17:01:30+00:00")
+    hass.states.async_set(CANDLE_SENSOR, "2026-08-21T15:36:00+00:00")
+    hass.states.async_set(HAVDALAH_SENSOR, "2026-08-22T16:53:00+00:00")
+    await hass.async_block_till_done()
+
+    # 21:00 local - the restart, inside the hold's own window.
+    freezer.move_to("2026-08-15T18:00:00+00:00")
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    engine = hass.data[DOMAIN][entry.entry_id]["engine"]
+    assert engine.current_block.erev_date == date(2026, 8, 14)
+    assert [item.rule.id for item in engine.upcoming()] == ["late-off"]
+
+    # 23:00 local - the rule the restart used to eat.
+    freezer.move_to("2026-08-15T20:00:00+00:00")
+    async_fire_time_changed(hass, dt_util.parse_datetime("2026-08-15T20:00:00+00:00"))
     await hass.async_block_till_done()
     assert hass.states.get("input_boolean.salon").state == "off"

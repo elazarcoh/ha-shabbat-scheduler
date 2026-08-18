@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import time
+from datetime import datetime, time
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 from .const import STORAGE_KEY, STORAGE_VERSION
 from .models import Action, Rule
@@ -55,6 +56,33 @@ def rule_from_dict(data: dict) -> Rule:
     )
 
 
+def active_block_to_dict(pair: tuple[datetime, datetime]) -> dict:
+    """Serialise the zmanim pair that defines the block in force."""
+    return {
+        "candle_lighting": pair[0].isoformat(),
+        "havdalah": pair[1].isoformat(),
+    }
+
+
+def active_block_from_dict(data) -> tuple[datetime, datetime] | None:
+    """Deserialise that pair, tolerating absence and anything malformed.
+
+    Never raises: a `.storage` file written before this key existed, or one
+    hand-edited into nonsense, must degrade to "no persisted block" rather
+    than stop the integration loading.
+    """
+    if not isinstance(data, dict):
+        return None
+    try:
+        candle = dt_util.parse_datetime(str(data["candle_lighting"]))
+        havdalah = dt_util.parse_datetime(str(data["havdalah"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if candle is None or havdalah is None:
+        return None
+    return candle, havdalah
+
+
 class RuleStore:
     """Loads, mutates and persists the rule set."""
 
@@ -64,6 +92,7 @@ class RuleStore:
         self._defaults: dict = {}
         self._enabled: bool = False
         self._dry_run: bool = False
+        self._active_block: tuple[datetime, datetime] | None = None
 
     @property
     def rules(self) -> list[Rule]:
@@ -81,6 +110,15 @@ class RuleStore:
     def dry_run(self) -> bool:
         return self._dry_run
 
+    @property
+    def active_block(self) -> tuple[datetime, datetime] | None:
+        """The (candle lighting, havdalah) pair of the block in force.
+
+        The block itself is recomputable from these two instants, so only
+        they are stored - `block.py` stays pure and out of the schema.
+        """
+        return self._active_block
+
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
         self._rules = [rule_from_dict(item) for item in data.get("rules", [])]
@@ -88,16 +126,38 @@ class RuleStore:
         # Master switch defaults OFF so a fresh install cannot act.
         self._enabled = data.get("enabled", False)
         self._dry_run = data.get("dry_run", False)
+        # Added after v1 shipped; absent in every store written before it.
+        self._active_block = active_block_from_dict(data.get("active_block"))
 
     async def async_save(self) -> None:
-        await self._store.async_save(
-            {
-                "rules": [rule_to_dict(rule) for rule in self._rules],
-                "defaults": self._defaults,
-                "enabled": self._enabled,
-                "dry_run": self._dry_run,
-            }
-        )
+        data = {
+            "rules": [rule_to_dict(rule) for rule in self._rules],
+            "defaults": self._defaults,
+            "enabled": self._enabled,
+            "dry_run": self._dry_run,
+        }
+        # Written only when there is one, so a store that never has an
+        # active block keeps exactly the shape it has always had.
+        if self._active_block is not None:
+            data["active_block"] = active_block_to_dict(self._active_block)
+        await self._store.async_save(data)
+
+    async def async_set_active_block(
+        self, candle_lighting: datetime, havdalah: datetime
+    ) -> None:
+        """Remember the block in force so it survives a restart."""
+        pair = (candle_lighting, havdalah)
+        if pair == self._active_block:
+            return  # no write on every refresh
+        self._active_block = pair
+        await self.async_save()
+
+    async def async_clear_active_block(self) -> None:
+        """Forget it, once it can no longer be pending."""
+        if self._active_block is None:
+            return
+        self._active_block = None
+        await self.async_save()
 
     async def async_set_enabled(self, value: bool) -> None:
         self._enabled = value

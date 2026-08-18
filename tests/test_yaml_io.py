@@ -193,3 +193,72 @@ def test_import_keeps_a_valid_nested_defaults_block():
     )
     assert list(defaults["devices"]) == ["climate.a"]
     assert defaults["settings"] == {"temperature": 26}
+
+
+# --- The YAML door gets the same typing the API door got ---
+
+
+def test_import_rejects_a_quoted_false_for_enabled():
+    """`enabled: "false"` is a truthy STRING, and the rule used to run.
+
+    The quoted form is what you get from a careless hand-edit or a YAML
+    dumper that stringifies. It displayed as off in every UI and fired
+    anyway - the exact silent failure this project exists to avoid.
+    """
+    text = (
+        'profiles:\n  1_day:\n    day_1:\n'
+        '      - {id: r1, at: "11:00:00", action: "on", enabled: "false"}\n'
+    )
+    with pytest.raises(ValueError):
+        import_yaml(text)
+
+
+def test_import_rejects_a_custom_action_with_no_script():
+    """It used to import, and then do precisely nothing, forever."""
+    text = (
+        'profiles:\n  1_day:\n    day_1:\n'
+        '      - {id: r1, at: "11:00:00", action: custom}\n'
+    )
+    with pytest.raises(ValueError):
+        import_yaml(text)
+
+
+def test_import_rejects_a_misspelt_key():
+    """`temperture` used to be dropped in silence."""
+    text = (
+        'profiles:\n  1_day:\n    day_1:\n'
+        '      - {id: r1, at: "11:00:00", action: "on", temperture: 26}\n'
+    )
+    with pytest.raises(ValueError):
+        import_yaml(text)
+
+
+def test_import_rejects_a_non_string_name():
+    text = (
+        'profiles:\n  1_day:\n    day_1:\n'
+        '      - {id: r1, at: "11:00:00", action: "on", name: {a: b}}\n'
+    )
+    with pytest.raises(ValueError):
+        import_yaml(text)
+
+
+def test_import_rejects_a_rule_with_no_at():
+    text = 'profiles:\n  1_day:\n    day_1:\n      - {id: r1, action: "on"}\n'
+    with pytest.raises(ValueError):
+        import_yaml(text)
+
+
+def test_import_still_accepts_a_real_boolean_enabled():
+    _defaults, rules = import_yaml(
+        'profiles:\n  1_day:\n    day_1:\n'
+        '      - {id: r1, at: "11:00:00", action: "on", enabled: false}\n'
+    )
+    assert rules[0].enabled is False
+
+
+def test_import_still_accepts_unquoted_yaml_booleans_for_action():
+    """`action: on` parses as True. Hand-writing that must keep working."""
+    _defaults, rules = import_yaml(
+        'profiles:\n  1_day:\n    day_1:\n      - {id: r1, at: "11:00:00", action: on}\n'
+    )
+    assert rules[0].action is Action.ON

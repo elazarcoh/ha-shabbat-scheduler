@@ -7,12 +7,12 @@ because two writers with no reconciliation story is how this gets confusing.
 from __future__ import annotations
 
 import uuid
-from datetime import time
+from collections.abc import Mapping
 
 import yaml
 
 from .models import Action, EREV, Rule
-from .rule_schema import validate_defaults
+from .rule_schema import rule_from_api, validate_defaults
 
 _OPTIONAL_FIELDS = (
     "name", "icon", "script", "color", "replay_on_restart", "variables",
@@ -66,6 +66,39 @@ def _action_from_value(value) -> Action:
     if value is False:
         return Action.OFF
     return Action(str(value))
+
+
+def _rule_from_entry(entry, profile: int, day: str) -> Rule:
+    """Build one rule from a YAML entry, via the same guards the API uses.
+
+    This used to construct the Rule by hand, which meant the YAML door had
+    no typing behind it at all: a quoted `enabled: "false"` imported as a
+    truthy string, so the rule read as OFF everywhere it was displayed and
+    RAN anyway; `action: custom` with no script imported silently inert;
+    and a misspelt key was dropped without a word. Translating to the API
+    shape and handing it to rule_from_api means one set of rules for both
+    doors, and any new field is typed in one place.
+
+    Only the genuinely YAML-shaped parts are handled here: the `at` key
+    (the API calls it `time`), YAML 1.1's `on`/`off` booleans, and an id
+    that - unlike the API's - is preserved so a round trip keeps entities.
+    """
+    if not isinstance(entry, Mapping):
+        raise ValueError(f"each rule must be a mapping, got {entry!r}")
+    for required in ("at", "action"):
+        if required not in entry:
+            raise ValueError(f"a {_day_key(day)} rule is missing {required!r}")
+
+    payload = {
+        key: value for key, value in entry.items()
+        if key not in ("id", "at", "action")
+    }
+    payload["time"] = str(entry["at"])
+    payload["action"] = _action_from_value(entry["action"])
+    payload["profile"] = profile
+    payload["day"] = day
+
+    return rule_from_api(payload, entry.get("id") or uuid.uuid4().hex)
 
 
 def export_yaml(defaults: dict, rules: list[Rule]) -> str:
@@ -124,23 +157,6 @@ def import_yaml(text: str) -> tuple[dict, list[Rule]]:
         for day_key, entries in (days or {}).items():
             day = _day_from_key(day_key)
             for entry in entries or []:
-                rules.append(
-                    Rule(
-                        id=entry.get("id") or uuid.uuid4().hex,
-                        profile=profile,
-                        day=day,
-                        time=time.fromisoformat(str(entry["at"])),
-                        action=_action_from_value(entry["action"]),
-                        devices=tuple(entry.get("devices", ())),
-                        settings=dict(entry.get("settings", {})),
-                        name=entry.get("name"),
-                        icon=entry.get("icon"),
-                        enabled=entry.get("enabled", True),
-                        script=entry.get("script"),
-                        variables=dict(entry.get("variables", {})),
-                        replay_on_restart=entry.get("replay_on_restart", False),
-                        color=entry.get("color"),
-                    )
-                )
+                rules.append(_rule_from_entry(entry, profile, day))
 
     return defaults, rules

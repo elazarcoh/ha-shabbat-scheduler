@@ -25,8 +25,20 @@ def test_english_translation_matches_strings():
     )
 
 
+def _collect_key_paths(obj, prefix=()):
+    """Recursively collect all key paths in a nested dict structure."""
+    paths = set()
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            current_path = prefix + (key,)
+            paths.add(current_path)
+            paths.update(_collect_key_paths(value, current_path))
+    return paths
+
+
 def test_hebrew_translation_has_the_same_shape():
     strings = _load(COMPONENT / "strings.json")
     hebrew = _load(COMPONENT / "translations/he.json")
-    assert set(hebrew["config"]["abort"]) == set(strings["config"]["abort"])
-    assert set(hebrew["services"]) == set(strings["services"])
+    strings_paths = _collect_key_paths(strings)
+    hebrew_paths = _collect_key_paths(hebrew)
+    assert strings_paths == hebrew_paths

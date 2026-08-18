@@ -6,6 +6,7 @@ the websocket layer and YAML import.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import time
 
 from .models import Action, EREV, Rule
@@ -20,11 +21,18 @@ class RuleValidationError(ValueError):
     """A rule as supplied cannot be built."""
 
 
+def _check_unknown_fields(data: dict) -> None:
+    """Check for unknown fields in data."""
+    unknown = set(data) - _FIELDS
+    if unknown:
+        raise RuleValidationError(f"unknown field(s): {sorted(unknown)}")
+
+
 def _day(value) -> str:
     text = str(value)
     if text == EREV:
         return text
-    if text.isdigit() and 1 <= int(text) <= 3:
+    if text in ("1", "2", "3"):
         return text
     raise RuleValidationError(
         f"day must be {EREV!r} or '1'..'3', got {value!r}"
@@ -32,13 +40,11 @@ def _day(value) -> str:
 
 
 def _profile(value) -> int:
-    try:
-        number = int(value)
-    except (TypeError, ValueError) as err:
-        raise RuleValidationError(f"profile must be 1..3, got {value!r}") from err
-    if not 1 <= number <= 3:
-        raise RuleValidationError(f"profile must be 1..3, got {value!r}")
-    return number
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuleValidationError(f"profile must be an integer 1..3, got {value!r}")
+    if not 1 <= value <= 3:
+        raise RuleValidationError(f"profile must be an integer 1..3, got {value!r}")
+    return value
 
 
 def _time(value) -> time:
@@ -67,28 +73,38 @@ def _coerce(field: str, value):
     if field == "action":
         return _action(value)
     if field == "devices":
+        if isinstance(value, str):
+            raise RuleValidationError(f"devices must be a list or tuple, got {value!r}")
         return tuple(value or ())
-    if field in ("settings", "variables"):
-        return dict(value or {})
+    if field == "settings":
+        if not isinstance(value, Mapping):
+            raise RuleValidationError(f"settings must be a mapping, got {value!r}")
+        return dict(value)
+    if field == "variables":
+        if not isinstance(value, Mapping):
+            raise RuleValidationError(f"variables must be a mapping, got {value!r}")
+        return dict(value)
     return value
+
+
+def validate_rule(rule: Rule) -> None:
+    """Invariants that need the whole rule, not one field."""
+    if rule.action is Action.CUSTOM and not rule.script:
+        raise RuleValidationError("a custom action requires a script")
 
 
 def changes_from_api(data: dict) -> dict:
     """Validate a partial update into kwargs for dataclasses.replace."""
     if "id" in data:
         raise RuleValidationError("id cannot be changed")
-    unknown = set(data) - _FIELDS
-    if unknown:
-        raise RuleValidationError(f"unknown field(s): {sorted(unknown)}")
+    _check_unknown_fields(data)
     return {field: _coerce(field, value) for field, value in data.items()}
 
 
 def rule_from_api(data: dict, rule_id: str) -> Rule:
     """Build a validated Rule. Any client-supplied id is ignored."""
     payload = {key: value for key, value in data.items() if key != "id"}
-    unknown = set(payload) - _FIELDS
-    if unknown:
-        raise RuleValidationError(f"unknown field(s): {sorted(unknown)}")
+    _check_unknown_fields(payload)
 
     for required in ("profile", "day", "time", "action"):
         if required not in payload:
@@ -97,6 +113,5 @@ def rule_from_api(data: dict, rule_id: str) -> Rule:
     kwargs = {field: _coerce(field, value) for field, value in payload.items()}
     rule = Rule(id=rule_id, **kwargs)
 
-    if rule.action is Action.CUSTOM and not rule.script:
-        raise RuleValidationError("a custom action requires a script")
+    validate_rule(rule)
     return rule

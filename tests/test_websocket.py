@@ -406,3 +406,44 @@ async def test_update_succeeds_but_warns_on_a_conflict(hass, hass_ws_client):
 
     assert msg["success"]  # conflicts warn, they never reject
     assert msg["result"]["warnings"]
+
+
+async def test_subscribe_pushes_on_change(hass, hass_ws_client):
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    await client.send_json({"id": 1, "type": "shabbat_scheduler/subscribe"})
+
+    ack = await client.receive_json()
+    assert ack["success"]
+
+    store = RuleStore(hass)
+    await store.async_load()
+    entry_store = list(hass.data[DOMAIN].values())[0]["store"]
+    await entry_store.async_add(
+        Rule(id="pushed", profile=1, day="1", time=time(11, 0), action=Action.ON)
+    )
+    await hass.async_block_till_done()
+
+    event = await client.receive_json()
+    assert event["type"] == "event"
+    assert [r["id"] for r in event["event"]["rules"]] == ["pushed"]
+
+
+async def test_subscribe_stops_pushing_after_unsubscribe(hass, hass_ws_client):
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    await client.send_json({"id": 1, "type": "shabbat_scheduler/subscribe"})
+    assert (await client.receive_json())["success"]
+
+    await client.send_json({"id": 2, "type": "unsubscribe_events", "subscription": 1})
+    assert (await client.receive_json())["success"]
+
+    entry_store = list(hass.data[DOMAIN].values())[0]["store"]
+    await entry_store.async_add(
+        Rule(id="quiet", profile=1, day="1", time=time(11, 0), action=Action.ON)
+    )
+    await hass.async_block_till_done()
+
+    await client.send_json({"id": 3, "type": "shabbat_scheduler/rules/list"})
+    msg = await client.receive_json()
+    assert msg["id"] == 3  # no pushed event arrived in between

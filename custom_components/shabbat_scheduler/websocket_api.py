@@ -10,10 +10,11 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.util import dt as dt_util
 
 from .block import compute_block, find_conflicts, has_profile, merge_defaults, resolve_rules
-from .const import DOMAIN
+from .const import DOMAIN, SIGNAL_RULES_CHANGED
 from .rule_schema import (
     RuleValidationError,
     changes_from_api,
@@ -247,6 +248,27 @@ async def ws_defaults(hass: HomeAssistant, connection, msg: dict[str, Any]) -> N
 
 
 @callback
+@websocket_api.websocket_command({vol.Required("type"): "shabbat_scheduler/subscribe"})
+def ws_subscribe(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    data = _entry_data(hass)
+    if data is None:
+        connection.send_error(msg["id"], "not_set_up", "Integration is not set up")
+        return
+    store = data["store"]
+
+    @callback
+    def _forward() -> None:
+        connection.send_message(
+            websocket_api.event_message(msg["id"], _state_payload(store))
+        )
+
+    connection.subscriptions[msg["id"]] = async_dispatcher_connect(
+        hass, SIGNAL_RULES_CHANGED, _forward
+    )
+    connection.send_result(msg["id"])
+
+
+@callback
 def async_register(hass: HomeAssistant) -> None:
     """Register every websocket command for this integration."""
     websocket_api.async_register_command(hass, ws_list)
@@ -255,3 +277,4 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_update)
     websocket_api.async_register_command(hass, ws_delete)
     websocket_api.async_register_command(hass, ws_defaults)
+    websocket_api.async_register_command(hass, ws_subscribe)

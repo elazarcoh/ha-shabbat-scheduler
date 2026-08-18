@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import DOMAIN, SIGNAL_RULES_CHANGED
 from .engine import ShabbatEngine
 from .models import Rule
 from .store import RuleStore
@@ -27,20 +28,47 @@ async def async_setup_entry(
     store: RuleStore = data["store"]
     engine: ShabbatEngine = data["engine"]
 
-    # A YAML import replaces the whole rule set and reloads the entry, so
-    # rules can disappear between setups. Drop the registry entries of rules
-    # that no longer exist, otherwise their switches linger forever as
-    # "unavailable" and look like something is broken.
-    registry = er.async_get(hass)
-    live = {f"{entry.entry_id}_rule_{rule.id}" for rule in store.rules}
+    known: set[str] = set()
     prefix = f"{entry.entry_id}_rule_"
-    for registered in er.async_entries_for_config_entry(registry, entry.entry_id):
-        if registered.unique_id.startswith(prefix) and registered.unique_id not in live:
-            registry.async_remove(registered.entity_id)
 
-    entities: list[SwitchEntity] = [MasterSwitch(entry, store, engine)]
-    entities.extend(RuleSwitch(entry, store, engine, rule) for rule in store.rules)
-    async_add_entities(entities)
+    @callback
+    def _sync() -> None:
+        """Add entities for new rules, remove those whose rule is gone.
+
+        The registry scan (rather than a `known - current` diff) is what
+        used to be a separate setup-time purge, folded in here so there is
+        one mechanism instead of two. `known` only tracks which rules
+        already have a live entity object in *this* session - it starts
+        empty on every setup because entity instances never survive a
+        restart - so it cannot by itself catch a registry entry orphaned
+        before this session began (e.g. the store file was edited while
+        HA was stopped). Scanning the registry directly still catches that.
+        """
+        current = {rule.id for rule in store.rules}
+
+        new = [
+            RuleSwitch(entry, store, engine, rule)
+            for rule in store.rules
+            if rule.id not in known
+        ]
+        if new:
+            async_add_entities(new)
+        known.update(current)
+
+        registry = er.async_get(hass)
+        for registered in er.async_entries_for_config_entry(registry, entry.entry_id):
+            if not registered.unique_id.startswith(prefix):
+                continue
+            rule_id = registered.unique_id[len(prefix):]
+            if rule_id not in current:
+                registry.async_remove(registered.entity_id)
+        known.intersection_update(current)
+
+    async_add_entities([MasterSwitch(entry, store, engine)])
+    _sync()
+    entry.async_on_unload(
+        async_dispatcher_connect(hass, SIGNAL_RULES_CHANGED, _sync)
+    )
 
 
 class MasterSwitch(SwitchEntity):

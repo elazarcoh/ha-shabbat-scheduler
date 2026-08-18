@@ -7,6 +7,11 @@ from custom_components.shabbat_scheduler.const import DOMAIN
 from custom_components.shabbat_scheduler.models import Action, Rule
 from custom_components.shabbat_scheduler.store import RuleStore
 
+ZMANIM = {
+    "sensor.jewish_calendar_upcoming_candle_lighting": "2026-08-14T15:44:00+00:00",
+    "sensor.jewish_calendar_upcoming_havdalah": "2026-08-15T17:01:00+00:00",
+}
+
 
 async def _setup(hass, rules=()):
     await hass.config.async_set_time_zone("Asia/Jerusalem")
@@ -141,16 +146,35 @@ async def test_an_unnamed_rule_falls_back_to_a_derived_name(
 
 
 async def test_a_rule_change_refreshes_the_engine_exactly_once(hass):
-    """The reschedule-on-change listener must not feed itself.
+    """One rule change causes exactly one refresh, never a cascade.
 
-    `engine.async_refresh` writes the active block back to the store, and
-    if those writes ever start notifying, this listener refreshes, which
-    writes, which notifies... The store's async_set_active_block and
-    async_clear_active_block deliberately do not call _notify_change, and
-    this is what says so out loud.
+    `engine.async_refresh` writes the active block back to the store, so a
+    listener that both reschedules and is notified by that write-back could
+    feed itself. Two separate things stop it, and it is worth knowing which
+    does the work:
+
+    1. async_set_active_block / async_clear_active_block do not call
+       _notify_change at all. This is the real invariant, and
+       tests/test_store.py::test_change_listener_does_not_fire_for_active_block
+       is what proves it - inject a _notify_change there and THAT test fails.
+    2. async_set_active_block returns early when the block is unchanged,
+       which it is on any refresh triggered by a rule edit.
+
+    So this test does NOT catch a regression in (1) - measured, not
+    assumed: with a _notify_change injected after the equality guard it
+    still passes, because (2) short-circuits first; injected before the
+    guard, the suite hangs rather than fails. What it does pin is that the
+    listener fires the engine once per change, which is the property the
+    C1 fix is on the hook for.
+
+    The zmanim MUST be set even so, or the engine resolves no block and
+    the write-back never runs at all.
     """
+    for entity_id, state in ZMANIM.items():
+        hass.states.async_set(entity_id, state)
     entry = await _setup(hass)
     engine = hass.data[DOMAIN][entry.entry_id]["engine"]
+    assert engine.current_block is not None, "no block resolved; guard is vacuous"
     store = hass.data[DOMAIN][entry.entry_id]["store"]
 
     calls = []

@@ -198,6 +198,12 @@ async def test_change_listener_does_not_fire_for_active_block(hass):
     )
     assert calls == []
 
+    # Clearing must be just as silent. The change listener now reschedules
+    # the engine, and clearing runs at the END of a block - so a notify
+    # here would fire a refresh from inside a refresh, during Shabbat.
+    await store.async_clear_active_block()
+    assert calls == []
+
 
 async def test_update_of_unknown_rule_raises(hass):
     store = RuleStore(hass)

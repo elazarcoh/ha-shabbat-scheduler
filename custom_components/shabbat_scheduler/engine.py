@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict, deque
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from homeassistant.components import persistent_notification
 from homeassistant.core import Context, CoreState, HomeAssistant
@@ -45,6 +45,12 @@ _NOTIFY_NO_PROFILE = "shabbat_scheduler_no_profile"
 # no realistic burst of calls to one device evicts a context before anything
 # could plausibly ask about it.
 _CONTEXT_HISTORY_PER_DEVICE = 20
+
+# How long after a held block's last rule the candidate block is adopted.
+# Strictly greater than zero so the refresh it schedules is guaranteed to
+# fall on the far side of the hold condition (`now <= tail`) and can never
+# re-arm itself.
+_HOLD_RELEASE_GRACE = timedelta(seconds=1)
 
 
 class ShabbatEngine:
@@ -160,9 +166,30 @@ class ShabbatEngine:
             if tail is not None and now <= tail:
                 _LOGGER.debug(
                     "Zmanim rolled forward to %s, but the current block still "
-                    "has rules pending until %s; keeping it",
+                    "has rules pending until %s; keeping it until %s",
                     candidate.erev_date,
                     tail,
+                    tail + _HOLD_RELEASE_GRACE,
+                )
+                # Arm the release. Nothing else can do it: the tail rule
+                # fires on its own timer and does not refresh, and the
+                # zmanim sensors now hold NEXT week's values, so they will
+                # not change again until the next havdalah - and HA fires
+                # EVENT_STATE_REPORTED, not state_changed, when a state is
+                # re-published identically, so the state listener stays
+                # silent all week. Without this the candidate is never
+                # adopted, no timers exist for the block that is coming,
+                # and the entire next Shabbat is silently skipped.
+                #
+                # Cannot spin: this fires strictly after `tail`, so the
+                # refresh it triggers takes the adopt branch. It cannot
+                # stack either - async_refresh cancels every subscription
+                # before rebuilding, so at most one release timer exists,
+                # and async_shutdown cancels it with the rest.
+                self._unsubscribes.append(
+                    async_track_point_in_time(
+                        self.hass, self._release_hold, tail + _HOLD_RELEASE_GRACE
+                    )
                 )
             else:
                 self._block = candidate
@@ -225,6 +252,11 @@ class ShabbatEngine:
             title="Shabbat Scheduler",
             notification_id=_NOTIFY_ZMANIM,
         )
+
+    async def _release_hold(self, _now) -> None:
+        """Re-refresh once the held block's tail is spent, adopting the next."""
+        _LOGGER.debug("Held block's tail is spent; refreshing to adopt the next")
+        await self.async_refresh()
 
     def _make_callback(self, item: ResolvedRule):
         async def _fire(_now) -> None:

@@ -628,6 +628,9 @@ async def test_catch_up_declines_to_act_on_a_conflicting_pair(hass, engine):
 from datetime import date
 
 
+# The hold now arms a release timer (NEW-1) for `tail + 1s`; this test stops
+# at the tail itself, so that timer is legitimately still pending at teardown.
+@pytest.mark.parametrize("expected_lingering_timers", [True])
 async def test_rolled_forward_zmanim_keep_the_current_blocks_tail(
     hass, engine, freezer
 ):
@@ -689,6 +692,74 @@ async def test_next_block_is_adopted_once_the_tail_has_passed(
 
     assert engine.current_block.erev_date == date(2026, 8, 21)
     assert [item.rule.id for item in engine.upcoming()] == ["late-off"]
+
+
+# --- Re-review NEW-1: the hold must RELEASE ITSELF once the tail is spent --
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_the_hold_releases_itself_and_arms_the_next_block(
+    hass, engine, freezer
+):
+    """Holding the block is only half the fix; letting go is the other half.
+
+    Nothing else can release it. After havdalah the jewish_calendar sensors
+    hold NEXT week's values and do not change again until the next havdalah,
+    and HA fires EVENT_STATE_REPORTED (not state_changed) when a state is
+    re-published identically - so the zmanim listener never runs. The tail
+    rule fires on its own timer and async_apply_rule does not refresh. If
+    the hold does not expire by itself, `_block` stays a week old with no
+    timers for the block that is actually coming, and the WHOLE of the next
+    Shabbat is silently skipped.
+    """
+    freezer.move_to("2026-08-15T05:00:00+00:00")
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.store.async_set_enabled(True)
+    hass.states.async_set("input_boolean.t", "on")
+    await engine.store.async_replace_all({}, [
+        Rule(id="morning-on", profile=1, day="1", time=time(9, 0),
+             action=Action.ON, devices=("input_boolean.t",)),
+        Rule(id="late-off", profile=1, day="1", time=time(23, 0),
+             action=Action.OFF, devices=("input_boolean.t",)),
+    ])
+    await engine.async_refresh()
+    assert engine.current_block.erev_date == date(2026, 8, 14)
+
+    # 20:01:30 local - havdalah has just passed and the sensors rolled
+    # forward, so the listener refreshes and the hold must engage.
+    freezer.move_to("2026-08-15T17:01:30+00:00")
+    _set_zmanim(hass, "2026-08-21T15:36:00+00:00", "2026-08-22T16:53:00+00:00")
+    await engine.async_refresh()
+    assert engine.current_block.erev_date == date(2026, 8, 14)
+    assert [item.rule.id for item in engine.upcoming()] == ["late-off"]
+
+    # 23:00 local - the tail fires on its own timer, nothing else happens.
+    freezer.move_to("2026-08-15T20:00:00+00:00")
+    async_fire_time_changed(
+        hass, dt_util.parse_datetime("2026-08-15T20:00:00+00:00")
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get("input_boolean.t").state == "off"
+
+    # Moments later the hold is protecting nothing and must let go on its
+    # own - no restart, no switch toggle, no YAML import, no state change.
+    freezer.move_to("2026-08-15T20:00:05+00:00")
+    async_fire_time_changed(
+        hass, dt_util.parse_datetime("2026-08-15T20:00:01+00:00")
+    )
+    await hass.async_block_till_done()
+
+    assert engine.current_block.erev_date == date(2026, 8, 21)
+    assert [item.rule.id for item in engine.upcoming()] == [
+        "morning-on", "late-off"
+    ]
+
+    # ...and the next Shabbat genuinely happens: 09:00 local on 22 Aug.
+    async_fire_time_changed(
+        hass, dt_util.parse_datetime("2026-08-22T06:00:00+00:00")
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get("input_boolean.t").state == "on"
 
 
 # --- Final review I1: block dates must be derived in the LOCAL timezone ----

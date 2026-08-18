@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 import voluptuous as vol
@@ -9,7 +10,7 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
-from .block import find_conflicts, has_profile, merge_defaults, resolve_rules
+from .block import compute_block, find_conflicts, has_profile, merge_defaults, resolve_rules
 from .const import DOMAIN
 from .store import rule_to_dict
 
@@ -69,6 +70,15 @@ def ws_preview(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
         return
     store, engine = data["store"], data["engine"]
     block = engine.current_block
+    length = msg.get("block_length")
+    if length is not None and block is not None:
+        # Re-derive a hypothetical block of the requested length, mirroring
+        # the `simulate` service in __init__.py so the two cannot drift apart.
+        block = compute_block(
+            block.candle_lighting,
+            block.candle_lighting.replace(hour=20, minute=0)
+            + timedelta(days=int(length)),
+        )
 
     if block is None:
         connection.send_result(

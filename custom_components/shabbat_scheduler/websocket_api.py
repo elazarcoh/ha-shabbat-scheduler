@@ -250,6 +250,10 @@ def ws_subscribe(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
         hass, SIGNAL_RULES_CHANGED, _forward
     )
     connection.send_result(msg["id"])
+    # The current state, before any change happens. Without it a client
+    # must also call rules/list, and a change landing between the two
+    # calls is missed with nothing to re-report it.
+    _forward()
 
 
 @callback

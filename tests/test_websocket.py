@@ -507,6 +507,11 @@ async def test_subscribe_pushes_on_change(hass, hass_ws_client):
     ack = await client.receive_json()
     assert ack["success"]
 
+    # The initial snapshot is sent immediately after the subscribe response
+    snapshot = await client.receive_json()
+    assert snapshot["type"] == "event"
+    assert [r["id"] for r in snapshot["event"]["rules"]] == []
+
     store = RuleStore(hass)
     await store.async_load()
     entry_store = list(hass.data[DOMAIN].values())[0]["store"]
@@ -520,11 +525,31 @@ async def test_subscribe_pushes_on_change(hass, hass_ws_client):
     assert [r["id"] for r in event["event"]["rules"]] == ["pushed"]
 
 
+async def test_subscribe_pushes_the_current_state_immediately(hass, hass_ws_client):
+    """Otherwise a client needs list AND subscribe, and a change landing
+    between the two is lost silently and never re-reported."""
+    await _setup(hass, [
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON),
+    ])
+    client = await hass_ws_client(hass)
+
+    await client.send_json_auto_id({"type": "shabbat_scheduler/subscribe"})
+    assert (await client.receive_json())["success"] is True
+
+    pushed = await client.receive_json()
+    assert pushed["type"] == "event"
+    assert [rule["id"] for rule in pushed["event"]["rules"]] == ["r1"]
+    assert pushed["event"]["block"]["length"] == 1
+
+
 async def test_subscribe_stops_pushing_after_unsubscribe(hass, hass_ws_client):
     await _setup(hass)
     client = await hass_ws_client(hass)
     await client.send_json({"id": 1, "type": "shabbat_scheduler/subscribe"})
     assert (await client.receive_json())["success"]
+
+    # Receive and discard the initial snapshot sent by subscribe
+    await client.receive_json()
 
     await client.send_json({"id": 2, "type": "unsubscribe_events", "subscription": 1})
     assert (await client.receive_json())["success"]

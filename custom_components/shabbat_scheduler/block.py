@@ -33,6 +33,29 @@ def compute_block(candle_lighting: datetime, havdalah: datetime) -> Block:
     )
 
 
+def block_payload(block: Block | None) -> dict | None:
+    """The block as JSON-able data for the card.
+
+    Pure, and returns only strings and ints, so it stays inside this
+    module's no-Home-Assistant boundary and crosses a websocket intact.
+
+    `dates` is keyed exactly the way rules spell their `day` field -
+    'erev', then '1'..'n' - so the card can group rules by day without
+    knowing anything about how a block is derived.
+    """
+    if block is None:
+        return None
+    dates = {"erev": block.erev_date.isoformat()}
+    for index, day in enumerate(block.day_dates, start=1):
+        dates[str(index)] = day.isoformat()
+    return {
+        "length": block.length,
+        "candle_lighting": block.candle_lighting.isoformat(),
+        "havdalah": block.havdalah.isoformat(),
+        "dates": dates,
+    }
+
+
 def merge_defaults(defaults: dict, rule: Rule) -> Rule:
     """Fill unset keys from the global defaults, per key, without mutating."""
     devices = rule.devices or tuple(defaults.get("devices", ()))

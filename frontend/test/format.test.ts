@@ -3,6 +3,7 @@ import {
   actionColour,
   buildGroups,
   formatWarning,
+  isPreview,
   ruleBrief,
   unattachedWarnings,
   warningsForRule,
@@ -71,6 +72,62 @@ describe('buildGroups', () => {
 
   it('returns nothing when there is no block', () => {
     expect(buildGroups(state({ block: null }))).toEqual([]);
+  });
+});
+
+describe('buildGroups with a profile', () => {
+  const threeDayRule = rule({ id: 'chag', profile: 3, day: '2', time: '11:00:00' });
+
+  it('shows the current profile with real dates when it matches the block', () => {
+    const groups = buildGroups(state({ rules: [rule({ id: 'a', profile: 1, day: '1' })] }), 1);
+    expect(groups.map((g) => g.day)).toEqual(['erev', '1']);
+    expect(groups[1].date).toBe('2026-08-15');
+    expect(groups[1].marker?.kind).toBe('havdalah');
+  });
+
+  it('gives a preview profile the right number of days', () => {
+    const groups = buildGroups(state({ rules: [threeDayRule] }), 3);
+    expect(groups.map((g) => g.day)).toEqual(['erev', '1', '2', '3']);
+  });
+
+  it('drops dates and markers in preview, so nothing reads as a real date', () => {
+    const groups = buildGroups(state({ rules: [threeDayRule] }), 3);
+    for (const group of groups) {
+      expect(group.date).toBeNull();
+      expect(group.marker).toBeNull();
+    }
+  });
+
+  it('shows the selected profile rules, not the block-length ones', () => {
+    const groups = buildGroups(
+      state({ rules: [rule({ id: 'one', profile: 1, day: '1' }), threeDayRule] }),
+      3,
+    );
+    expect(groups.flatMap((g) => g.rules.map((r) => r.id))).toEqual(['chag']);
+  });
+
+  it('still works with no block at all, so the card is not a dead end', () => {
+    const groups = buildGroups(state({ block: null, rules: [threeDayRule] }), 3);
+    expect(groups.map((g) => g.day)).toEqual(['erev', '1', '2', '3']);
+    expect(groups[0].date).toBeNull();
+  });
+
+  it('defaults to the block length when no profile is given', () => {
+    const groups = buildGroups(state({ rules: [rule({ id: 'a', profile: 1, day: '1' })] }));
+    expect(groups.map((g) => g.day)).toEqual(['erev', '1']);
+    expect(groups[1].date).toBe('2026-08-15');
+  });
+});
+
+describe('isPreview', () => {
+  it('is false for the coming block length', () => {
+    expect(isPreview(state({}), 1)).toBe(false);
+  });
+  it('is true for any other length', () => {
+    expect(isPreview(state({}), 3)).toBe(true);
+  });
+  it('is true whenever there is no block to be current about', () => {
+    expect(isPreview(state({ block: null }), 1)).toBe(true);
   });
 });
 

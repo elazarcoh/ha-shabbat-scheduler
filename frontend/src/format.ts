@@ -15,10 +15,14 @@ function dayRank(day: string): number {
   return day === 'erev' ? -1 : Number(day);
 }
 
-function dayKeys(block: BlockData): string[] {
+function daysFor(length: number): string[] {
   const days = ['erev'];
-  for (let i = 1; i <= block.length; i += 1) days.push(String(i));
+  for (let i = 1; i <= length; i += 1) days.push(String(i));
   return days;
+}
+
+function dayKeys(block: BlockData): string[] {
+  return daysFor(block.length);
 }
 
 /**
@@ -37,34 +41,53 @@ export function orderedDates(block: BlockData): string[] {
     .filter((date): date is string => date !== undefined);
 }
 
+/** True when the selected length is not the one actually coming. */
+export function isPreview(state: CardState, profile: number): boolean {
+  return state.block === null || state.block.length !== profile;
+}
+
 /**
- * The timeline: one group per day of the block, in order, each carrying
- * its date, its rules ordered by time, and its zmanim marker if one
- * falls at its end.
+ * The timeline for one profile.
  *
- * Only rules matching the block's length are shown - rules are authored
- * per profile, and a 3-day chag's rules must not appear on a plain
- * Shabbat.
+ * With no `profile`, or one equal to the coming block's length, this is
+ * the real thing: real dates on the headings and the zmanim markers in
+ * place. For any other length it is a PREVIEW - the same rules, but no
+ * dates and no markers at all.
+ *
+ * Dropping the dates is deliberate. A hypothetical Chag's dates would be
+ * a guess that looks exactly like a real one, and this card exists
+ * because its user could not otherwise tell what was real.
+ *
+ * Only rules of the selected profile are shown: rules are authored per
+ * profile, and a 3-day Chag's rules must not appear on a plain Shabbat.
  */
-export function buildGroups(state: CardState): DayGroup[] {
+export function buildGroups(state: CardState, profile?: number): DayGroup[] {
   const { block } = state;
-  if (block === null) return [];
+  const length = profile ?? block?.length ?? null;
+  if (length === null) return [];
 
-  const lastDay = String(block.length);
-  return dayKeys(block).map((day) => {
-    const rules = state.rules
-      .filter((rule) => rule.profile === block.length && rule.day === day)
-      .sort((a, b) => a.time.localeCompare(b.time));
+  const preview = isPreview(state, length);
+  const lastDay = String(length);
 
-    let marker: DayGroup['marker'] = null;
-    if (day === 'erev') {
-      marker = { kind: 'candle_lighting', at: block.candle_lighting };
-    } else if (day === lastDay) {
-      marker = { kind: 'havdalah', at: block.havdalah };
-    }
+  return daysFor(length)
+    .map((day) => {
+      const rules = state.rules
+        .filter((rule) => rule.profile === length && rule.day === day)
+        .sort((a, b) => a.time.localeCompare(b.time));
 
-    return { day, date: block.dates[day] ?? null, rules, marker };
-  }).sort((a, b) => dayRank(a.day) - dayRank(b.day));
+      let marker: DayGroup['marker'] = null;
+      if (!preview && block !== null) {
+        if (day === 'erev') {
+          marker = { kind: 'candle_lighting', at: block.candle_lighting };
+        } else if (day === lastDay) {
+          marker = { kind: 'havdalah', at: block.havdalah };
+        }
+      }
+
+      const date = preview || block === null ? null : (block.dates[day] ?? null);
+      return { day, date, rules, marker };
+    })
+    .sort((a, b) => dayRank(a.day) - dayRank(b.day));
 }
 
 /**

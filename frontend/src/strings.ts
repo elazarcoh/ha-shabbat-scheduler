@@ -43,6 +43,8 @@ const STRINGS = {
     duplicate: 'Duplicate',
     read_only: 'You do not have permission to change the schedule.',
     will_conflict: 'This overlaps another rule. You can still save it — nothing is resolved for you.',
+    defaults_title: 'Shared defaults',
+    defaults_help: 'Rules inherit these unless they set their own.',
   },
   he: {
     erev: 'ערב',
@@ -83,6 +85,8 @@ const STRINGS = {
     duplicate: 'שכפול',
     read_only: 'אין לך הרשאה לשנות את הלוח.',
     will_conflict: 'הכלל חופף לכלל אחר. אפשר לשמור בכל זאת — שום דבר לא ייפתר עבורך.',
+    defaults_title: 'ברירות מחדל משותפות',
+    defaults_help: 'כללים יורשים אותן אלא אם הגדירו משלהם.',
   },
 } as const;
 

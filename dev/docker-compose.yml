@@ -3,7 +3,12 @@ services:
     image: ghcr.io/home-assistant/home-assistant:2026.8.2
     container_name: shabbat-scheduler-dev
     ports:
-      - "127.0.0.1:8124:8123"
+      # Deliberately bound to every interface so this throwaway instance can be
+      # reached from other devices on the LAN during development. It carries a
+      # known weak password and is not hardened in any way: keep it on a
+      # trusted network, and never point anything here at the production
+      # instance. Switch back to "127.0.0.1:8124:8123" to make it local-only.
+      - "0.0.0.0:8124:8123"
     volumes:
       - ./config:/config
       - ../custom_components/shabbat_scheduler:/config/custom_components/shabbat_scheduler:ro

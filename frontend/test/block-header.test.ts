@@ -14,7 +14,7 @@ async function render(props: Record<string, unknown>) {
     Record<string, unknown>;
   Object.assign(el, {
     block, enabled: false, dryRun: false, canWrite: true,
-    masterEntityId: 'switch.master', language: 'en', ...props,
+    masterEntityId: 'switch.master', language: 'en', selectedProfile: 1, ...props,
   });
   document.body.appendChild(el);
   await (el as unknown as { updateComplete: Promise<unknown> }).updateComplete;
@@ -69,5 +69,47 @@ describe('shabbat-block-header', () => {
     const el = await render({ masterEntityId: null });
     const master = el.shadowRoot!.querySelector('.master') as HTMLButtonElement;
     expect(master.disabled).toBe(true);
+  });
+});
+
+describe('profile chips', () => {
+  it('offers 1, 2 and 3 day chips', async () => {
+    const el = await render({ selectedProfile: 1 });
+    const chips = [...el.shadowRoot!.querySelectorAll('.chip')].map(
+      (c) => (c as HTMLElement).textContent!.trim(),
+    );
+    expect(chips).toEqual(['1d', '2d', '3d']);
+  });
+
+  it('marks the selected one', async () => {
+    const el = await render({ selectedProfile: 3 });
+    const active = el.shadowRoot!.querySelector('.chip.active') as HTMLElement;
+    expect(active.textContent!.trim()).toBe('3d');
+  });
+
+  it('reports a selection rather than changing itself', async () => {
+    const el = await render({ selectedProfile: 1 });
+    const listener = vi.fn();
+    el.addEventListener('profile-selected', listener);
+
+    (el.shadowRoot!.querySelectorAll('.chip')[2] as HTMLElement).click();
+
+    expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({ profile: 3 });
+    expect((el as unknown as { selectedProfile: number }).selectedProfile).toBe(1);
+  });
+
+  it('offers the defaults gear to a writer and not to a reader', async () => {
+    expect((await render({ canWrite: true })).shadowRoot!.querySelector('.gear'))
+      .not.toBeNull();
+    expect((await render({ canWrite: false })).shadowRoot!.querySelector('.gear'))
+      .toBeNull();
+  });
+
+  it('asks for the defaults dialog when the gear is used', async () => {
+    const el = await render({ canWrite: true });
+    const listener = vi.fn();
+    el.addEventListener('defaults-open', listener);
+    (el.shadowRoot!.querySelector('.gear') as HTMLElement).click();
+    expect(listener).toHaveBeenCalledOnce();
   });
 });

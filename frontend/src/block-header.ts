@@ -1,4 +1,4 @@
-import { LitElement, css, html } from 'lit';
+import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { orderedDates } from './format';
 import { t } from './strings';
@@ -12,6 +12,7 @@ export class ShabbatBlockHeader extends LitElement {
   @property({ type: Boolean }) canWrite = false;
   @property() masterEntityId: string | null = null;
   @property() language = 'en';
+  @property({ type: Number }) selectedProfile = 1;
 
   static override styles = css`
     .header {
@@ -41,6 +42,24 @@ export class ShabbatBlockHeader extends LitElement {
       border-color: transparent;
     }
     .none { color: var(--secondary-text-color, #666); }
+    .chips { display: flex; gap: 4px; }
+    .chip {
+      font: inherit;
+      font-size: 0.85em;
+      padding-block: 2px;
+      padding-inline: 8px;
+      border-radius: 10px;
+      border: 1px solid var(--divider-color, #e0e0e0);
+      background: var(--card-background-color, #fff);
+      color: inherit;
+      cursor: pointer;
+    }
+    .chip.active {
+      background: var(--primary-color, #03a9f4);
+      color: var(--text-primary-color, #fff);
+      border-color: transparent;
+    }
+    .gear { border: none; background: none; cursor: pointer; font-size: 1.1em; }
   `;
 
   private _dates(): string {
@@ -77,6 +96,29 @@ export class ShabbatBlockHeader extends LitElement {
                 <span class="dates">${this._dates()}</span>
               `}
         </div>
+        <div class="chips">
+          ${[1, 2, 3].map(
+            (profile) => html`
+              <button
+                class="chip ${this.selectedProfile === profile ? 'active' : ''}"
+                @click=${() =>
+                  this.dispatchEvent(
+                    new CustomEvent('profile-selected', { detail: { profile } }),
+                  )}
+              >
+                ${profile}d
+              </button>
+            `,
+          )}
+        </div>
+        ${this.canWrite
+          ? html`<button
+              class="gear"
+              @click=${() => this.dispatchEvent(new CustomEvent('defaults-open'))}
+            >
+              ⚙
+            </button>`
+          : nothing}
         <button
           class="master ${this.enabled ? 'active' : ''}"
           ?disabled=${!this.canWrite || this.masterEntityId === null}

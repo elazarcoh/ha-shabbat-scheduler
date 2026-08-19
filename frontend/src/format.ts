@@ -4,6 +4,8 @@ import type {
   CardState,
   DayGroup,
   Defaults,
+  DeviceOptions,
+  HassEntity,
   RuleData,
   WarningData,
 } from './types';
@@ -151,4 +153,81 @@ export function formatWarning(warning: WarningData, language?: string): string {
     return parts.join(' · ');
   }
   return warning.message ?? '';
+}
+
+function readList(entity: HassEntity, key: string): string[] | null {
+  const value = entity.attributes[key];
+  return Array.isArray(value) ? value.map(String) : null;
+}
+
+function readNumber(entity: HassEntity, key: string): number | null {
+  const value = entity.attributes[key];
+  return typeof value === 'number' ? value : null;
+}
+
+/**
+ * What the selected devices actually offer, read from their own state.
+ *
+ * The three units here disagree: the salon offers `quiet` and not
+ * `silent`, the AUX units the reverse. Offering a fixed list is how a
+ * rule gets saved with a fan mode its device rejects - discovered at
+ * 11:00 on Shabbat, when nobody can fix it. With several devices the
+ * intersection is the only honest answer: a mode only one of them
+ * supports cannot be applied to the others.
+ *
+ * A device that cannot be read is REPORTED, never silently treated as
+ * offering nothing - that would intersect every option away and present
+ * an empty form as though the device were the problem.
+ */
+export function deviceOptions(
+  states: Record<string, HassEntity | undefined>,
+  entityIds: string[],
+): DeviceOptions {
+  const unreadable: string[] = [];
+  const readable: HassEntity[] = [];
+
+  for (const id of entityIds) {
+    const entity = states[id];
+    if (
+      entity === undefined ||
+      entity.state === 'unavailable' ||
+      entity.state === 'unknown'
+    ) {
+      unreadable.push(id);
+      continue;
+    }
+    readable.push(entity);
+  }
+
+  const climates = readable.filter((entity) => readList(entity, 'hvac_modes') !== null);
+  if (climates.length === 0) {
+    return {
+      hvacModes: [], fanModes: [], minTemp: null, maxTemp: null,
+      tempStep: null, unreadable, climate: false, intersected: false,
+    };
+  }
+
+  const intersect = (key: string): string[] =>
+    climates
+      .map((entity) => readList(entity, key) ?? [])
+      .reduce((acc, list) => acc.filter((item) => list.includes(item)));
+
+  const bounds = (key: string, pick: (values: number[]) => number): number | null => {
+    const values = climates
+      .map((entity) => readNumber(entity, key))
+      .filter((value): value is number => value !== null);
+    return values.length ? pick(values) : null;
+  };
+
+  return {
+    hvacModes: intersect('hvac_modes'),
+    fanModes: intersect('fan_modes'),
+    // The narrowest range every device accepts.
+    minTemp: bounds('min_temp', (values) => Math.max(...values)),
+    maxTemp: bounds('max_temp', (values) => Math.min(...values)),
+    tempStep: bounds('target_temp_step', (values) => Math.max(...values)),
+    unreadable,
+    climate: true,
+    intersected: climates.length > 1,
+  };
 }

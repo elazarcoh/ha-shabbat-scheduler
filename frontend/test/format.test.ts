@@ -197,3 +197,87 @@ describe('formatWarning', () => {
     expect(formatWarning(conflict, 'en')).not.toBe(formatWarning(conflict, 'he'));
   });
 });
+
+import { deviceOptions } from '../src/format';
+import type { HassEntity } from '../src/types';
+
+// The real attributes of the three units this system drives.
+const SALON: HassEntity = {
+  state: 'off',
+  attributes: {
+    hvac_modes: ['off', 'heat_cool', 'cool', 'fan_only', 'dry', 'heat'],
+    fan_modes: ['auto', 'quiet', 'low', 'medlow', 'medium', 'medhigh', 'high', 'strong'],
+    min_temp: 16.0, max_temp: 31.0, target_temp_step: 0.5,
+  },
+};
+const KIDS: HassEntity = {
+  state: 'off',
+  attributes: {
+    hvac_modes: ['off', 'auto', 'cool', 'heat', 'dry', 'fan_only'],
+    fan_modes: ['auto', 'low', 'medium', 'high', 'turbo', 'silent'],
+    min_temp: 16, max_temp: 32, target_temp_step: 0.5,
+  },
+};
+const BOOLEAN: HassEntity = { state: 'off', attributes: {} };
+
+describe('deviceOptions', () => {
+  it('offers exactly what a single device declares', () => {
+    const o = deviceOptions({ 'climate.salon': SALON }, ['climate.salon']);
+    expect(o.fanModes).toContain('quiet');
+    expect(o.fanModes).not.toContain('silent');
+    expect(o.minTemp).toBe(16);
+    expect(o.maxTemp).toBe(31);
+    expect(o.climate).toBe(true);
+    expect(o.intersected).toBe(false);
+  });
+
+  it('intersects when devices disagree, dropping what only one offers', () => {
+    const o = deviceOptions(
+      { 'climate.salon': SALON, 'climate.kids': KIDS },
+      ['climate.salon', 'climate.kids'],
+    );
+    expect(o.fanModes).toEqual(['auto', 'low', 'medium', 'high']);
+    expect(o.fanModes).not.toContain('quiet');
+    expect(o.fanModes).not.toContain('silent');
+    expect(o.intersected).toBe(true);
+  });
+
+  it('narrows the temperature range to what every device accepts', () => {
+    const o = deviceOptions(
+      { 'climate.salon': SALON, 'climate.kids': KIDS },
+      ['climate.salon', 'climate.kids'],
+    );
+    expect(o.minTemp).toBe(16);
+    expect(o.maxTemp).toBe(31); // the salon's ceiling, not the kids' 32
+  });
+
+  it('reports a device it cannot read rather than pretending it offers nothing', () => {
+    const o = deviceOptions({ 'climate.salon': SALON }, ['climate.salon', 'climate.gone']);
+    expect(o.unreadable).toEqual(['climate.gone']);
+    // The readable device still contributes - an absent one must not
+    // intersect every option away to nothing.
+    expect(o.fanModes).toContain('quiet');
+  });
+
+  it('treats an unavailable entity as unreadable', () => {
+    const o = deviceOptions(
+      { 'climate.salon': { state: 'unavailable', attributes: {} } },
+      ['climate.salon'],
+    );
+    expect(o.unreadable).toEqual(['climate.salon']);
+    expect(o.climate).toBe(false);
+  });
+
+  it('says a non-climate device has no settings', () => {
+    const o = deviceOptions({ 'input_boolean.t': BOOLEAN }, ['input_boolean.t']);
+    expect(o.climate).toBe(false);
+    expect(o.fanModes).toEqual([]);
+    expect(o.unreadable).toEqual([]);
+  });
+
+  it('returns empty options for no devices at all', () => {
+    const o = deviceOptions({}, []);
+    expect(o.climate).toBe(false);
+    expect(o.intersected).toBe(false);
+  });
+});

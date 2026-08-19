@@ -10,6 +10,12 @@ export class ShabbatWarnings extends LitElement {
    * The rule ids currently shown on screen (across every visible day
    * group). A warning naming only rules outside this set has nowhere
    * else to appear, so it belongs in the banner - see `unattachedWarnings`.
+   *
+   * Defaults to `[]` deliberately: over-showing is the safe failure mode.
+   * Until a parent passes the real ids, every conflict naming a displayed
+   * rule will render twice - once on its row, once in this banner - since
+   * none of its rule_ids will ever match this empty set. Task 10 must wire
+   * the actual rendered rule ids in for that duplication to go away.
    */
   @property({ attribute: false }) displayedRuleIds: string[] = [];
   @property() language = 'en';

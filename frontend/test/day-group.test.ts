@@ -50,4 +50,13 @@ describe('shabbat-day-group', () => {
     expect(text).toContain('Havdalah');
     expect(text).toContain('20:01');
   });
+
+  it('shows the raw value when a marker timestamp cannot be parsed, rather than a blank', async () => {
+    const el = await render({
+      group: group({ marker: { kind: 'havdalah', at: 'not-a-timestamp' } }),
+    });
+    const text = el.shadowRoot!.textContent!;
+    expect(text).toContain('Havdalah');
+    expect(text).toContain('not-a-timestamp');
+  });
 });

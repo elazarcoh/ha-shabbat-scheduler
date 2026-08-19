@@ -21,6 +21,7 @@ export class ShabbatDayGroup extends LitElement {
   @property({ attribute: false }) defaults: Defaults = {};
   @property({ attribute: false }) warnings: WarningData[] = [];
   @property() language = 'en';
+  @property({ type: Boolean }) canWrite = false;
 
   static override styles = css`
     .heading {
@@ -45,6 +46,16 @@ export class ShabbatDayGroup extends LitElement {
       padding-inline: 4px;
       color: var(--secondary-text-color, #666);
       font-size: 0.9em;
+    }
+    .add {
+      font: inherit;
+      font-size: 0.9em;
+      background: none;
+      border: none;
+      color: var(--primary-color, #03a9f4);
+      padding-block: 6px;
+      padding-inline: 4px;
+      cursor: pointer;
     }
   `;
 
@@ -86,6 +97,17 @@ export class ShabbatDayGroup extends LitElement {
               `,
             )
           : html`<div class="empty">${t(this.language, 'no_rules')}</div>`}
+        ${this.canWrite
+          ? html`<button
+              class="add"
+              @click=${() =>
+                this.dispatchEvent(
+                  new CustomEvent('rule-add', { detail: { day: this.group.day } }),
+                )}
+            >
+              + ${t(this.language, 'add_rule')}
+            </button>`
+          : nothing}
         ${marker
           ? html`
               <div class="marker">

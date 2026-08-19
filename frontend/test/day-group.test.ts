@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import '../src/day-group';
 import type { DayGroup } from '../src/types';
 
@@ -9,7 +9,14 @@ const group = (over: Partial<DayGroup>): DayGroup => ({
 async function render(props: Record<string, unknown>) {
   const el = document.createElement('shabbat-day-group') as HTMLElement &
     Record<string, unknown>;
-  Object.assign(el, { defaults: {}, warnings: [], language: 'en', ...props });
+  Object.assign(el, {
+    group: group({}),
+    defaults: {},
+    warnings: [],
+    language: 'en',
+    canWrite: false,
+    ...props,
+  });
   document.body.appendChild(el);
   await (el as unknown as { updateComplete: Promise<unknown> }).updateComplete;
   return el;
@@ -58,5 +65,25 @@ describe('shabbat-day-group', () => {
     const text = el.shadowRoot!.textContent!;
     expect(text).toContain('Havdalah');
     expect(text).toContain('not-a-timestamp');
+  });
+
+  it('offers an add button that names its own day', async () => {
+    const el = await render({ group: group({ day: '1' }), canWrite: true });
+    const listener = vi.fn();
+    el.addEventListener('rule-add', listener);
+
+    (el.shadowRoot!.querySelector('.add') as HTMLElement).click();
+
+    expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({ day: '1' });
+  });
+
+  it('offers no add button to a read-only user', async () => {
+    const el = await render({ canWrite: false });
+    expect(el.shadowRoot!.querySelector('.add')).toBeNull();
+  });
+
+  it('still offers add on a day with no rules', async () => {
+    const el = await render({ group: group({ rules: [] }), canWrite: true });
+    expect(el.shadowRoot!.querySelector('.add')).not.toBeNull();
   });
 });

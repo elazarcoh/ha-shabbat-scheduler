@@ -393,12 +393,18 @@ describe('deviceOptions', () => {
 import { selectableDevices } from '../src/format';
 
 describe('selectableDevices', () => {
+  // Deliberately not alphabetical: 'switch.boiler' is inserted before
+  // 'climate.salon' and 'input_boolean.t' so an unsorted result would
+  // genuinely differ from a sorted one. With the old (alphabetical)
+  // insertion order, `Object.keys` already came out sorted, so both
+  // tests below passed whether or not `selectableDevices` sorted
+  // anything - that was the bug this fixture fixes.
   const states = {
-    'climate.salon': SALON,
-    'input_boolean.t': BOOLEAN,
     'switch.boiler': { state: 'off', attributes: {} },
     'sensor.temperature': { state: '21', attributes: {} },
+    'climate.salon': SALON,
     'light.kitchen': { state: 'off', attributes: {} },
+    'input_boolean.t': BOOLEAN,
   };
 
   it('offers only the domains this integration can drive', () => {

@@ -127,8 +127,27 @@ describe('shabbat-device-settings', () => {
     expect(el.devices).toEqual(['climate.salon']);
   });
 
-  it('re-offers options for the newly chosen device, not the old one', async () => {
-    const el = await render({ devices: ['climate.kids'] });
+  it('re-offers options for the device newly chosen through the picker', async () => {
+    // Starts on the salon (offers 'quiet', not 'silent') - distinct from
+    // the "offers the selected device's own fan modes" test above, which
+    // never touches the control at all. This one drives the actual
+    // <select class="devices">, takes what it reports, feeds it back in
+    // the way a real parent (rule-dialog) would via `devices-changed`,
+    // and checks the offered fan options moved to the newly-selected
+    // device's - proving the picker and the settings it drives are
+    // actually wired together, not just each independently correct for
+    // a fixed `devices` prop.
+    const el = await render({ devices: ['climate.salon'] });
+    const listener = vi.fn();
+    el.addEventListener('devices-changed', listener);
+
+    const select = el.shadowRoot!.querySelector('.devices') as HTMLSelectElement;
+    for (const option of select.options) option.selected = option.value === 'climate.kids';
+    select.dispatchEvent(new Event('change'));
+
+    el.devices = (listener.mock.calls[0][0] as CustomEvent).detail.devices;
+    await el.updateComplete;
+
     const fans = [...el.shadowRoot!.querySelectorAll('.fan option')].map(
       (o) => (o as HTMLOptionElement).value,
     );

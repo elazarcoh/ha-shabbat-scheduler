@@ -45,6 +45,7 @@ const STRINGS = {
     will_conflict: 'This overlaps another rule. You can still save it — nothing is resolved for you.',
     defaults_title: 'Shared defaults',
     defaults_help: 'Rules inherit these unless they set their own.',
+    inherits_devices: 'No devices set — inherits from the shared defaults:',
   },
   he: {
     erev: 'ערב',
@@ -87,6 +88,7 @@ const STRINGS = {
     will_conflict: 'הכלל חופף לכלל אחר. אפשר לשמור בכל זאת — שום דבר לא ייפתר עבורך.',
     defaults_title: 'ברירות מחדל משותפות',
     defaults_help: 'כללים יורשים אותן אלא אם הגדירו משלהם.',
+    inherits_devices: 'לא נבחרו מכשירים — יורש מברירות המחדל המשותפות:',
   },
 } as const;
 

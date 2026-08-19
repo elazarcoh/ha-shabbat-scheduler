@@ -159,4 +159,83 @@ describe('shabbat-rule-dialog', () => {
     expect((el.shadowRoot!.querySelector('.time') as HTMLInputElement).value)
       .toBe('22:00:00');
   });
+
+  const DEVICE_STATES = {
+    'climate.salon': { state: 'off', attributes: {
+      hvac_modes: ['off', 'cool'], fan_modes: ['auto', 'quiet'],
+      min_temp: 16, max_temp: 31, target_temp_step: 0.5,
+    } },
+    'climate.mamad': { state: 'off', attributes: {} },
+  };
+
+  function devicesSelect(el: HTMLElement & Record<string, any>): HTMLSelectElement {
+    const settings = el.shadowRoot!.querySelector('shabbat-device-settings') as HTMLElement &
+      Record<string, any>;
+    return settings.shadowRoot!.querySelector('.devices') as HTMLSelectElement;
+  }
+
+  it('never shows a rule\'s cleared devices as if the defaults were selected', async () => {
+    // existing.devices is ['climate.salon']; clearing it must leave the
+    // picker showing nothing selected, not silently redisplay the
+    // defaults' devices as though they were the rule's own choice.
+    const el = await render({
+      defaults: { devices: ['climate.mamad', 'climate.salon'] },
+      states: DEVICE_STATES,
+    });
+
+    const select = devicesSelect(el);
+    for (const option of select.options) option.selected = false;
+    select.dispatchEvent(new Event('change'));
+    await el.updateComplete;
+
+    const picked = [...devicesSelect(el).options].filter((o) => o.selected);
+    expect(picked).toEqual([]);
+
+    // Inheritance is now shown honestly, as a note, rather than by
+    // faking the picker's selection.
+    expect(el.shadowRoot!.textContent).toContain('climate.mamad');
+    expect(el.shadowRoot!.textContent).toContain('climate.salon');
+    expect(el.shadowRoot!.textContent).toContain('inherits');
+
+    // And what would actually be saved agrees with what is shown: [].
+    const listener = vi.fn();
+    el.addEventListener('dialog-save', listener);
+    (el.shadowRoot!.querySelector('.save') as HTMLElement).click();
+    expect((listener.mock.calls[0][0] as CustomEvent).detail.form.devices).toEqual([]);
+  });
+
+  it('shows a rule\'s own devices with no inheritance note', async () => {
+    const el = await render({
+      defaults: { devices: ['climate.mamad'] },
+      states: DEVICE_STATES,
+    });
+
+    const picked = [...devicesSelect(el).options]
+      .filter((o) => o.selected)
+      .map((o) => o.value);
+    expect(picked).toEqual(['climate.salon']);
+    expect(el.shadowRoot!.textContent).not.toContain('climate.mamad');
+  });
+
+  it('offers settings for the inherited devices even while the picker is empty', async () => {
+    // The picker must show the truth (nothing selected), but the settings
+    // beneath it must still reflect what will actually run: the inherited
+    // devices from defaults.
+    const el = await render({
+      rule: { ...existing, devices: [] },
+      defaults: { devices: ['climate.salon'] },
+      states: DEVICE_STATES,
+    });
+
+    const picked = [...devicesSelect(el).options].filter((o) => o.selected);
+    expect(picked).toEqual([]);
+
+    const settings = el.shadowRoot!.querySelector('shabbat-device-settings') as HTMLElement &
+      Record<string, any>;
+    expect(settings.shadowRoot!.querySelector('.hvac')).not.toBeNull();
+    const fans = [...settings.shadowRoot!.querySelectorAll('.fan option')].map(
+      (o) => (o as HTMLOptionElement).value,
+    );
+    expect(fans).toContain('quiet');
+  });
 });

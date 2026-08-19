@@ -7,7 +7,18 @@ import type { DeviceOptions, HassEntity } from './types';
 @customElement('shabbat-device-settings')
 export class ShabbatDeviceSettings extends LitElement {
   @property({ attribute: false }) states: Record<string, HassEntity | undefined> = {};
+  /** The rule's actual saved selection. Always shown in the picker as-is. */
   @property({ attribute: false }) devices: string[] = [];
+  /**
+   * The devices this rule will actually run against once inheritance is
+   * applied - `devices` itself when the rule has its own, otherwise the
+   * caller's merged-in defaults. Used only to compute what settings to
+   * offer, never to decide what the picker shows: an empty `devices`
+   * must still render as empty, or the picker would misrepresent what a
+   * save sends. Defaults to `devices` so callers with no inheritance
+   * concept (the defaults dialog itself) need not think about it.
+   */
+  @property({ attribute: false }) effectiveDevices: string[] | null = null;
   @property({ attribute: false }) settings: Record<string, unknown> = {};
   @property({ type: Boolean }) disabled = false;
   @property() language = 'en';
@@ -36,7 +47,7 @@ export class ShabbatDeviceSettings extends LitElement {
   `;
 
   private get _options(): DeviceOptions {
-    return deviceOptions(this.states, this.devices);
+    return deviceOptions(this.states, this.effectiveDevices ?? this.devices);
   }
 
   private _emit(settings: Record<string, unknown>) {

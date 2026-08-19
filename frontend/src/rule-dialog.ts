@@ -155,6 +155,14 @@ export class ShabbatRuleDialog extends LitElement {
 
   override render() {
     const editing = this.rule !== null;
+    const inheritedDevices = this.defaults.devices ?? [];
+    // An empty `devices` on a rule means "inherit the shared defaults" -
+    // see `merge_defaults` in block.py. The picker must still show the
+    // rule's own (empty) selection, or clearing it would look like it
+    // snapped back to the defaults' devices when the pending save
+    // actually sends `[]`. This is only what the settings below are
+    // computed against, never what the picker displays.
+    const effectiveDevices = this._form.devices.length ? this._form.devices : inheritedDevices;
     return html`
       <div class="sheet" @click=${(event: Event) => {
         if (event.target === event.currentTarget) {
@@ -196,19 +204,25 @@ export class ShabbatRuleDialog extends LitElement {
             ${this._form.action === 'custom'
               ? this._text('script', t(this.language, 'script'))
               : html`
-                  <shabbat-device-settings
-                    .states=${this.states}
-                    .devices=${this._form.devices.length
-                      ? this._form.devices
-                      : (this.defaults.devices ?? [])}
-                    .settings=${this._form.settings}
-                    .disabled=${!this.canWrite}
-                    .language=${this.language}
-                    @settings-changed=${(event: Event) =>
-                      this._patch({ settings: (event as CustomEvent).detail.settings })}
-                    @devices-changed=${(event: Event) =>
-                      this._patch({ devices: (event as CustomEvent).detail.devices })}
-                  ></shabbat-device-settings>
+                  <div>
+                    ${!this._form.devices.length && inheritedDevices.length
+                      ? html`<div class="note">
+                          ${t(this.language, 'inherits_devices')} ${inheritedDevices.join(', ')}
+                        </div>`
+                      : nothing}
+                    <shabbat-device-settings
+                      .states=${this.states}
+                      .devices=${this._form.devices}
+                      .effectiveDevices=${effectiveDevices}
+                      .settings=${this._form.settings}
+                      .disabled=${!this.canWrite}
+                      .language=${this.language}
+                      @settings-changed=${(event: Event) =>
+                        this._patch({ settings: (event as CustomEvent).detail.settings })}
+                      @devices-changed=${(event: Event) =>
+                        this._patch({ devices: (event as CustomEvent).detail.devices })}
+                    ></shabbat-device-settings>
+                  </div>
                 `}
 
             <div class="field">

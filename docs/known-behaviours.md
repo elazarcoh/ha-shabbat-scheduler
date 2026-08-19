@@ -80,6 +80,37 @@ loses the 23:00 rule entirely, which is worse.
   consumer mutates them, but websocket CRUD in the follow-up plan must not
   either — consider making `Rule` frozen before that lands.
 
+## The card's static path outlives a reload
+
+Home Assistant offers no way to unregister a static path, so
+`/shabbat_scheduler/` stays served after the config entry is unloaded. The
+Lovelace *resource* is removed, so nothing references it. Re-registering the
+same static path does not actually raise on current Home Assistant (the http
+component patches `app._router.freeze` to a no-op at startup for exactly
+this kind of late/duplicate registration) — but that is not a contract this
+integration wants to depend on across versions, so it still guards against
+repeating the registration. The guard exists to skip pointless repeat work
+on every reload, not to dodge an exception. A served file nobody loads costs
+nothing either way.
+
+## The card is silent in YAML resource mode
+
+Lovelace in YAML resource mode owns its resource list and cannot be written
+to programmatically. In that mode the integration logs the line to add and
+carries on rather than failing setup — the scheduler must keep running even
+when its card cannot register itself.
+
+## A broken card can never take the scheduler down
+
+Frontend registration — serving the bundle, and adding the Lovelace
+resource — is wrapped in its own broad exception handler, separate from
+everything else `async_setup_entry` does. Any failure there, expected
+(no Lovelace, YAML resource mode) or not, is logged and swallowed; the
+config entry still loads and the engine still schedules. The card is a
+convenience for reading the schedule. The schedule itself drives real air
+conditioners on days nobody can operate them by hand, and nothing about
+rendering a Lovelace card is allowed to be the reason that stops.
+
 ## Deployment note
 
 Nothing here has been installed on the live instance. The integration ships

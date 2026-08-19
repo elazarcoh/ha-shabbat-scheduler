@@ -44,6 +44,30 @@ Settings → Devices & Services.
 | `sensor.shabbat_scheduler_next_action` | when the next rule fires |
 | `sensor.shabbat_scheduler_last_run` | when a rule last ran, and what it did |
 
+## The card
+
+Installing the integration also installs a Lovelace card. It is registered
+automatically — there is nothing to add to your resources.
+
+```yaml
+type: custom:shabbat-scheduler-card
+title: שעון שבת
+```
+
+It shows the coming block as a timeline: one group per day with its date,
+the candle-lighting and havdalah markers, and each rule's time, effect and
+devices. Conflicts appear on the rows they affect; a conflict whose rules
+are not currently on screen appears in the banner instead, so it cannot go
+unseen. Conflicts are only ever warned about, never auto-resolved — the same
+"no precedence" commitment above applies here too. The header carries the
+master switch and the dry-run toggle; both are disabled for non-admin users,
+who can still read the whole schedule.
+
+The card shows only the rules matching the coming block's length, because
+rules are authored per profile — a 3-day chag's rules are not shown on a
+plain Shabbat. Editing rules from the card comes in a later release; for now
+use the switch entities, or `import_yaml`.
+
 ## Services
 
 - `shabbat_scheduler.simulate` — resolve a block with no side effects. Answers

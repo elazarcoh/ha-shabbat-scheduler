@@ -119,3 +119,32 @@ async def test_setup_survives_yaml_resource_mode(hass):
     assert entry.state is ConfigEntryState.LOADED
     # And the scheduler itself is fully up, not merely 'not errored'.
     assert hass.data[DOMAIN][entry.entry_id]["engine"] is not None
+
+
+from pathlib import Path
+
+from custom_components.shabbat_scheduler.frontend import (
+    CARD_FILENAME,
+    CARD_VERSION,
+)
+
+WWW = Path("custom_components/shabbat_scheduler/www")
+
+
+def test_the_built_bundle_is_committed():
+    """A HACS user has no Node. The bundle must be in the repository."""
+    bundle = WWW / CARD_FILENAME
+    assert bundle.is_file()
+    assert bundle.stat().st_size > 1000
+
+
+def test_the_bundle_defines_the_card_element():
+    text = (WWW / CARD_FILENAME).read_text(encoding="utf-8")
+    assert "shabbat-scheduler-card" in text
+
+
+def test_the_bundle_version_matches_the_url_stamp():
+    """Otherwise the resource URL never changes and browsers keep serving
+    a stale card out of cache after an update."""
+    text = (WWW / CARD_FILENAME).read_text(encoding="utf-8")
+    assert CARD_VERSION in text

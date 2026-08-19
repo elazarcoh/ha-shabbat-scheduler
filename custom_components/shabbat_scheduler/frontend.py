@@ -26,24 +26,44 @@ _STATIC_REGISTERED = f"{DOMAIN}_static_registered"
 
 
 async def async_register_frontend(hass: HomeAssistant) -> None:
-    """Serve the bundle and make Lovelace load it."""
-    if not hass.data.get(_STATIC_REGISTERED):
-        await hass.http.async_register_static_paths(
-            [
-                StaticPathConfig(
-                    f"/{DOMAIN}",
-                    str(Path(__file__).parent / "www"),
-                    # The URL is version-stamped, so caching is safe and
-                    # keeps the bundle out of every page load.
-                    True,
-                )
-            ]
-        )
-        # A static path cannot be unregistered, so this survives a reload
-        # deliberately - registering it twice raises.
-        hass.data[_STATIC_REGISTERED] = True
+    """Serve the bundle and make Lovelace load it.
 
-    await _async_register_resource(hass)
+    Registration failures must never take the scheduler down with them -
+    this integration drives real appliances on a schedule nobody can
+    operate by hand, and a Lovelace/HTTP quirk must not be able to stop
+    that. The two anticipated degradations (no Lovelace, YAML resource
+    mode) log a warning and return from `_async_register_resource` below;
+    anything else - including from the static path call itself - is
+    caught here so `async_setup_entry` always completes.
+    """
+    try:
+        if not hass.data.get(_STATIC_REGISTERED):
+            await hass.http.async_register_static_paths(
+                [
+                    StaticPathConfig(
+                        f"/{DOMAIN}",
+                        str(Path(__file__).parent / "www"),
+                        # The URL is version-stamped, so caching is safe and
+                        # keeps the bundle out of every page load.
+                        True,
+                    )
+                ]
+            )
+            # A static path cannot be unregistered, so this flag survives a
+            # reload deliberately. Home Assistant does not actually raise on
+            # a repeat registration of the same path (the http component
+            # freezes and then re-opens its router for exactly this kind of
+            # late/duplicate call), so this guard is not here to avoid an
+            # exception - it is here so a reload does not redo pointless
+            # work every time the entry reloads.
+            hass.data[_STATIC_REGISTERED] = True
+
+        await _async_register_resource(hass)
+    except Exception:  # noqa: BLE001 - deliberately broad, see docstring
+        _LOGGER.exception(
+            "Failed to register the Shabbat Scheduler card; the schedule "
+            "itself is unaffected, only the Lovelace card is unavailable"
+        )
 
 
 async def _async_register_resource(hass: HomeAssistant) -> None:
@@ -80,11 +100,20 @@ async def async_unregister_frontend(hass: HomeAssistant) -> None:
 
     The static path stays: Home Assistant has no way to unregister one,
     and serving a file nobody references is harmless.
+
+    A failure to tidy up this resource must not fail the unload - the rest
+    of teardown (engine shutdown, service removal) still has to happen.
     """
-    data = hass.data.get(LOVELACE_DATA)
-    if data is None or data.resource_mode != "storage":
-        return
-    for item in data.resources.async_items():
-        if item["url"].startswith(CARD_URL):
-            await data.resources.async_delete_item(item["id"])
+    try:
+        data = hass.data.get(LOVELACE_DATA)
+        if data is None or data.resource_mode != "storage":
             return
+        for item in data.resources.async_items():
+            if item["url"].startswith(CARD_URL):
+                await data.resources.async_delete_item(item["id"])
+                return
+    except Exception:  # noqa: BLE001 - deliberately broad, see docstring
+        _LOGGER.exception(
+            "Failed to remove the Shabbat Scheduler card's Lovelace "
+            "resource; continuing unload"
+        )

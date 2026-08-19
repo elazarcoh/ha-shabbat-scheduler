@@ -142,7 +142,29 @@ describe('warning attachment', () => {
   });
 
   it('leaves warnings naming no rule for the banner', () => {
-    expect(unattachedWarnings([conflict, noProfile])).toEqual([noProfile]);
+    // conflict's rules ('a', 'b') are among the displayed ones here, so
+    // it is shown on those rows instead - see warningsForRule above.
+    expect(unattachedWarnings([conflict, noProfile], ['a', 'b'])).toEqual([noProfile]);
+  });
+
+  // CONFIRMED DEFECT: buildGroups only shows rules whose profile matches
+  // the current block length, but warnings are never filtered by profile.
+  // A conflict naming only rules that are not displayed must still reach
+  // the banner - otherwise it renders nowhere, and conflicts are never
+  // auto-resolved, so a hidden one would surface only when that chag
+  // actually arrived.
+  it('surfaces a conflict in the banner when none of the rules it names are displayed', () => {
+    const hiddenProfileConflict: WarningData = {
+      kind: 'conflict',
+      device: 'climate.salon',
+      profile: 3,
+      day: '1',
+      time: '11:00:00',
+      rule_ids: ['not-shown'],
+    };
+    expect(unattachedWarnings([hiddenProfileConflict], ['a', 'b'])).toEqual([
+      hiddenProfileConflict,
+    ]);
   });
 });
 

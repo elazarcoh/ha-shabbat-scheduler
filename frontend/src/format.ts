@@ -89,9 +89,25 @@ export function warningsForRule(
   return warnings.filter((warning) => warning.rule_ids?.includes(ruleId));
 }
 
-/** Warnings naming no rule at all, for the banner. */
-export function unattachedWarnings(warnings: WarningData[]): WarningData[] {
-  return warnings.filter((warning) => !warning.rule_ids?.length);
+/**
+ * Warnings that have nowhere else to go, for the banner.
+ *
+ * `buildGroups` only shows rules whose profile matches the current
+ * block length, but warnings are never filtered by profile. A warning
+ * naming no rule, or naming only rules that are not among the ones
+ * currently displayed, would otherwise be shown on no row and dropped
+ * here too - rendered nowhere. Conflicts are never auto-resolved, so a
+ * conflict nobody can see is exactly the failure this card exists to
+ * prevent; it must surface in the banner instead.
+ */
+export function unattachedWarnings(
+  warnings: WarningData[],
+  displayedRuleIds: string[],
+): WarningData[] {
+  const displayed = new Set(displayedRuleIds);
+  return warnings.filter(
+    (warning) => !warning.rule_ids?.some((id) => displayed.has(id)),
+  );
 }
 
 /** 'erev' -> 'Erev' / 'ערב'; '1' -> 'Day 1' / 'יום 1'. */

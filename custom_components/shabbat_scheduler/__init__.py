@@ -23,6 +23,7 @@ from . import websocket_api
 from .block import preview_payload
 from .const import CANDLE_SENSOR, DOMAIN, HAVDALAH_SENSOR, SIGNAL_RULES_CHANGED
 from .engine import ShabbatEngine
+from .frontend import async_register_frontend, async_unregister_frontend
 from .store import RuleStore
 from .yaml_io import export_yaml, import_yaml
 
@@ -68,6 +69,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     }
 
     await engine.async_refresh()
+
+    await async_register_frontend(hass)
 
     # Re-apply the current desired state after a restart, so a reboot part-way
     # through a block does not leave devices stranded.
@@ -179,4 +182,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await data["engine"].async_shutdown()
         for service in ("simulate", "set_dry_run", "export_yaml", "import_yaml"):
             hass.services.async_remove(DOMAIN, service)
+        await async_unregister_frontend(hass)
     return unloaded

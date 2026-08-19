@@ -171,3 +171,82 @@ def test_the_bundle_version_matches_the_url_stamp():
     text = (WWW / CARD_FILENAME).read_text(encoding="utf-8")
     assert f"const CARD_VERSION = '{CARD_VERSION}';" in text
     assert "customElements.define" in text
+
+
+# --- Final review I2: the committed bundle must match its source ---------
+#
+# The bundle is committed because a HACS user has no Node, and nothing
+# noticed when it stopped matching frontend/src. Edit a source, skip the
+# build, and every test stays green while the previous card ships - and
+# because the Lovelace resource URL is stamped with the hand-maintained
+# CARD_VERSION, the URL does not change either, so browsers keep serving
+# the stale copy out of cache. That is precisely what
+# test_the_resource_url_is_version_stamped exists to prevent.
+#
+# Rebuilding here was rejected: it is slow, and it needs Node on a machine
+# that may not have it. Mtimes were rejected too - `git clone` stamps every
+# file with the checkout time, so an mtime comparison says nothing at all
+# in a fresh clone, which is the one place this has to work.
+#
+# So `npm run build` records what it built from, and this recomputes the
+# same number in pure Python. THE FORMAT IS A CONTRACT with
+# frontend/bundle-manifest.mjs, which documents it in full; change one and
+# you must change the other.
+
+import hashlib
+import json
+
+SRC = ROOT / "frontend" / "src"
+MANIFEST = ROOT / "frontend" / "bundle-manifest.json"
+
+
+def _sha256(path: Path) -> str:
+    """SHA-256 of a file, with CRLF collapsed to LF.
+
+    Normalised so a Windows or `core.autocrlf` checkout does not read as
+    "every source file changed".
+    """
+    return hashlib.sha256(
+        path.read_bytes().replace(b"\r\n", b"\n")
+    ).hexdigest()
+
+
+def _sources_hash() -> tuple[str, int]:
+    files = sorted(
+        p.relative_to(SRC).as_posix() for p in SRC.rglob("*.ts")
+    )
+    digest = hashlib.sha256()
+    for rel in files:
+        digest.update(f"{rel} {_sha256(SRC / rel)}\n".encode())
+    return digest.hexdigest(), len(files)
+
+
+def test_the_committed_bundle_matches_the_committed_sources():
+    """The one guard against shipping a stale card.
+
+    Pure stdlib on purpose: it must pass in a fresh clone on a machine
+    with no Node, which is the situation of anyone installing via HACS or
+    running the suite in CI without the frontend toolchain.
+    """
+    assert MANIFEST.is_file(), (
+        "frontend/bundle-manifest.json is missing; run "
+        "`npm --prefix frontend run build`"
+    )
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+
+    sources, count = _sources_hash()
+    assert count > 0, "no TypeScript sources found; the check would be vacuous"
+    assert manifest["source_files"] == count, (
+        f"{count} source files but the manifest was built from "
+        f"{manifest['source_files']}; run `npm --prefix frontend run build`"
+    )
+    assert manifest["sources"] == sources, (
+        "frontend/src has changed since the bundle was last built. The "
+        "committed bundle is stale and the version-stamped resource URL "
+        "will not change, so browsers keep the old card cached. Run "
+        "`npm --prefix frontend run build` and commit the result."
+    )
+    assert manifest["bundle"] == _sha256(WWW / CARD_FILENAME), (
+        "the committed bundle is not the one this manifest was written "
+        "for. Run `npm --prefix frontend run build` and commit both."
+    )

@@ -97,9 +97,17 @@ export class ShabbatRuleDialog extends LitElement {
     // would throw away what the user has typed each time a push arrives -
     // and pushes arrive constantly, since `hass` is reassigned on every
     // state change in the whole system.
+    //
+    // The create key is keyed off the seed's *content*, not just whether
+    // one is present: the dialog instance persists across opens, so two
+    // different duplicates on the same day/profile ('new:1:1:seeded' both
+    // times) would otherwise be indistinguishable and the second duplicate
+    // would silently keep the first one's values. Keying on content is
+    // correct by construction - if two seeds are identical, skipping the
+    // reseed leaves the form showing exactly those values anyway.
     const key = this.rule
       ? `edit:${this.rule.id}`
-      : `new:${this.day}:${this.profile}:${this.seed ? 'seeded' : 'blank'}`;
+      : `new:${this.day}:${this.profile}:${JSON.stringify(this.seed)}`;
     if (this._seeded !== key) {
       this._seeded = key;
       if (this.rule) {

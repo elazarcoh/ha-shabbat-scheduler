@@ -105,4 +105,58 @@ describe('shabbat-rule-dialog', () => {
     // rule it was copied from.
     expect(el.shadowRoot!.querySelector('.delete')).toBeNull();
   });
+
+  it('reseeds when a different rule is duplicated for the same day and profile', async () => {
+    const other: RuleData = {
+      ...existing, id: 'r2', name: 'Evening', time: '22:00:00',
+      devices: ['climate.mamad'],
+    };
+    const el = await render({ rule: null, seed: ruleToForm(existing) });
+    expect((el.shadowRoot!.querySelector('.name') as HTMLInputElement).value)
+      .toBe('Morning');
+
+    // A second, unrelated duplicate opened on the same day/profile - same
+    // dialog instance, different rule copied. The key must tell them apart.
+    el.seed = ruleToForm(other);
+    await el.updateComplete;
+
+    expect((el.shadowRoot!.querySelector('.name') as HTMLInputElement).value)
+      .toBe('Evening');
+    expect((el.shadowRoot!.querySelector('.time') as HTMLInputElement).value)
+      .toBe('22:00:00');
+  });
+
+  it('does not reseed or discard typed input on an unrelated re-render while a create is open', async () => {
+    const el = await render({ rule: null, seed: null });
+    const name = el.shadowRoot!.querySelector('.name') as HTMLInputElement;
+    name.value = 'Typed by the user';
+    name.dispatchEvent(new Event('change'));
+    await el.updateComplete;
+
+    // Simulate an unrelated push arriving - e.g. `hass` reassigned elsewhere
+    // in the system, propagating a new `states` reference with the same
+    // day/profile/seed. This must not touch what the user has typed.
+    el.states = { ...el.states };
+    await el.updateComplete;
+
+    expect((el.shadowRoot!.querySelector('.name') as HTMLInputElement).value)
+      .toBe('Typed by the user');
+  });
+
+  it('still reseeds when switching from editing one rule to editing another', async () => {
+    const el = await render({ rule: existing });
+    expect((el.shadowRoot!.querySelector('.name') as HTMLInputElement).value)
+      .toBe('Morning');
+
+    const other: RuleData = {
+      ...existing, id: 'r2', name: 'Evening', time: '22:00:00',
+    };
+    el.rule = other;
+    await el.updateComplete;
+
+    expect((el.shadowRoot!.querySelector('.name') as HTMLInputElement).value)
+      .toBe('Evening');
+    expect((el.shadowRoot!.querySelector('.time') as HTMLInputElement).value)
+      .toBe('22:00:00');
+  });
 });

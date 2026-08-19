@@ -14,6 +14,7 @@ const STRINGS = {
     no_rules: 'No rules for this block.',
     disabled_rule: 'disabled',
     runs_script: 'runs',
+    conflict_prefix: 'Conflict',
   },
   he: {
     erev: 'ערב',
@@ -28,6 +29,7 @@ const STRINGS = {
     no_rules: 'אין כללים לבלוק הזה.',
     disabled_rule: 'מושבת',
     runs_script: 'מריץ',
+    conflict_prefix: 'התנגשות',
   },
 } as const;
 

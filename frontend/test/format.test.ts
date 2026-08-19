@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   actionColour,
   buildGroups,
+  formatWarning,
   ruleBrief,
   unattachedWarnings,
   warningsForRule,
 } from '../src/format';
-import type { CardState, RuleData } from '../src/types';
+import type { CardState, RuleData, WarningData } from '../src/types';
 
 const rule = (over: Partial<RuleData>): RuleData => ({
   id: 'r', profile: 1, day: '1', time: '11:00:00', action: 'on',
@@ -117,8 +118,19 @@ describe('actionColour', () => {
 });
 
 describe('warning attachment', () => {
-  const conflict = { kind: 'conflict', message: 'clash', rule_ids: ['a', 'b'] };
-  const noProfile = { kind: 'no_profile', message: 'nothing enabled' };
+  // Shaped exactly like block.conflict_warnings emits (block.py:135-154):
+  // no `message`, but device/profile/day/time and non-empty rule_ids.
+  const conflict: WarningData = {
+    kind: 'conflict',
+    device: 'climate.salon',
+    profile: 1,
+    day: '1',
+    time: '11:00:00',
+    rule_ids: ['a', 'b'],
+  };
+  // preview_payload's shape (a different websocket command) - included
+  // only to prove partitioning still works when a warning names no rule.
+  const noProfile: WarningData = { kind: 'no_profile', message: 'nothing enabled' };
 
   it('attaches a conflict to each rule it names', () => {
     expect(warningsForRule('a', [conflict, noProfile])).toEqual([conflict]);
@@ -131,5 +143,35 @@ describe('warning attachment', () => {
 
   it('leaves warnings naming no rule for the banner', () => {
     expect(unattachedWarnings([conflict, noProfile])).toEqual([noProfile]);
+  });
+});
+
+describe('formatWarning', () => {
+  // The real shape _conflict_warnings sends - no `message`, ever.
+  const conflict: WarningData = {
+    kind: 'conflict',
+    device: 'climate.salon',
+    profile: 1,
+    day: '1',
+    time: '11:00:00',
+    rule_ids: ['rule-a', 'rule-b'],
+  };
+
+  it('names the device and the time in English', () => {
+    const text = formatWarning(conflict, 'en');
+    expect(text).toContain('climate.salon');
+    expect(text).toContain('11:00:00');
+    expect(text).not.toContain('undefined');
+  });
+
+  it('names the device and the time in Hebrew', () => {
+    const text = formatWarning(conflict, 'he');
+    expect(text).toContain('climate.salon');
+    expect(text).toContain('11:00:00');
+    expect(text).not.toContain('undefined');
+  });
+
+  it('gives English and Hebrew visibly different text', () => {
+    expect(formatWarning(conflict, 'en')).not.toBe(formatWarning(conflict, 'he'));
   });
 });

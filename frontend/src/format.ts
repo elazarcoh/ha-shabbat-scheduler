@@ -1,3 +1,4 @@
+import { t } from './strings';
 import type {
   BlockData,
   CardState,
@@ -91,4 +92,31 @@ export function warningsForRule(
 /** Warnings naming no rule at all, for the banner. */
 export function unattachedWarnings(warnings: WarningData[]): WarningData[] {
   return warnings.filter((warning) => !warning.rule_ids?.length);
+}
+
+/** 'erev' -> 'Erev' / 'ערב'; '1' -> 'Day 1' / 'יום 1'. */
+function dayLabel(day: string, language: string | undefined): string {
+  return day === 'erev' ? t(language, 'erev') : `${t(language, 'day')} ${day}`;
+}
+
+/**
+ * A warning as prose a person can act on. The only warning this card's
+ * `_state_payload` ever sends is a conflict - see the comment on
+ * `WarningData` - which carries no `message`, so this is the sole place
+ * a conflict becomes human-readable text, naming the device and the
+ * time so the person who must resolve it (nothing here auto-resolves)
+ * knows exactly what to look at.
+ *
+ * Falls back to `message` for the `preview_payload` shape this card
+ * does not currently receive, so a stray warning still renders as
+ * something rather than nothing.
+ */
+export function formatWarning(warning: WarningData, language?: string): string {
+  if (warning.kind === 'conflict' && warning.device !== undefined && warning.time !== undefined) {
+    const parts = [t(language, 'conflict_prefix'), warning.device];
+    if (warning.day !== undefined) parts.push(dayLabel(warning.day, language));
+    parts.push(warning.time);
+    return parts.join(' · ');
+  }
+  return warning.message ?? '';
 }

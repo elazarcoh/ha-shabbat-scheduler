@@ -22,11 +22,27 @@ export interface Defaults {
   settings?: Record<string, unknown>;
 }
 
+/**
+ * This card's `_state_payload` (websocket_api.py) fills `warnings` from
+ * `_conflict_warnings` -> `block.conflict_warnings` (block.py:135-154),
+ * which emits exactly `{kind: "conflict", device, profile, day, time,
+ * rule_ids}` and NEVER a `message`. There is no `message` field on the
+ * warnings this card ever receives.
+ *
+ * `no_profile` and `no_block` do carry `message`, but they come from
+ * `preview_payload` (block.py), a different websocket command this card
+ * does not call. `message` is kept here, optional, only so a payload
+ * from that other command still typechecks if it is ever plumbed
+ * through - do not rely on it being present.
+ */
 export interface WarningData {
-  kind: string;                 // 'conflict' | 'no_profile' | 'no_block'
-  message: string;
-  rule_ids?: string[];
-  profile?: number;
+  kind: string;                 // 'conflict' from this card; 'no_profile' | 'no_block' from preview_payload only
+  device?: string;               // conflict: the device with two disagreeing rules
+  profile?: number;              // conflict: the block length the clash was found in
+  day?: string;                  // conflict: 'erev' | '1' | '2' | '3'
+  time?: string;                 // conflict: 'HH:MM:SS'
+  rule_ids?: string[];           // conflict: the rules that disagree
+  message?: string;              // preview_payload only - never present on a conflict from this card
 }
 
 export interface BlockData {

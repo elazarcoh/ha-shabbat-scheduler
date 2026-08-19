@@ -7,6 +7,7 @@ import type {
   DeviceOptions,
   HassEntity,
   RuleData,
+  RuleFormState,
   WarningData,
 } from './types';
 
@@ -253,4 +254,55 @@ export function deviceOptions(
     climate: true,
     intersected: climates.length > 1,
   };
+}
+
+const FORM_FIELDS = [
+  'day', 'time', 'action', 'devices', 'settings', 'name', 'icon',
+  'color', 'enabled', 'script', 'variables', 'replay_on_restart',
+] as const;
+
+export function ruleToForm(rule: RuleData): RuleFormState {
+  return {
+    day: rule.day,
+    time: rule.time,
+    action: rule.action,
+    devices: [...rule.devices],
+    settings: { ...rule.settings },
+    name: rule.name,
+    icon: rule.icon,
+    color: rule.color,
+    enabled: rule.enabled,
+    script: rule.script,
+    variables: { ...rule.variables },
+    replay_on_restart: rule.replay_on_restart,
+  };
+}
+
+/** Everything, plus the profile the day is being authored under. */
+export function formToCreate(
+  form: RuleFormState,
+  profile: number,
+): Record<string, unknown> {
+  return { ...form, profile };
+}
+
+/**
+ * Only the fields that genuinely differ.
+ *
+ * `changes_from_api` takes a partial, and sending the whole rule back
+ * would record an edit of every field in the logbook every time anyone
+ * saved anything. Compared by value, not reference - a devices array
+ * rebuilt from the same strings has not changed.
+ */
+export function formToChanges(
+  form: RuleFormState,
+  original: RuleData,
+): Record<string, unknown> {
+  const changes: Record<string, unknown> = {};
+  for (const field of FORM_FIELDS) {
+    const next = form[field];
+    const prev = (original as unknown as Record<string, unknown>)[field];
+    if (JSON.stringify(next) !== JSON.stringify(prev)) changes[field] = next;
+  }
+  return changes;
 }

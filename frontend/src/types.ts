@@ -17,6 +17,22 @@ export interface RuleData {
   color: string | null;
 }
 
+/** Everything the rule dialog edits. Mirrors RuleData minus `id` and `profile`. */
+export interface RuleFormState {
+  day: string;
+  time: string;
+  action: string;
+  devices: string[];
+  settings: Record<string, unknown>;
+  name: string | null;
+  icon: string | null;
+  color: string | null;
+  enabled: boolean;
+  script: string | null;
+  variables: Record<string, unknown>;
+  replay_on_restart: boolean;
+}
+
 export interface Defaults {
   devices?: string[];
   settings?: Record<string, unknown>;

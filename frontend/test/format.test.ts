@@ -258,6 +258,57 @@ describe('formatWarning', () => {
 import { deviceOptions } from '../src/format';
 import type { HassEntity } from '../src/types';
 
+import { formToChanges, formToCreate, ruleToForm } from '../src/format';
+
+const base = rule({
+  id: 'r1', profile: 1, day: '1', time: '11:00:00', action: 'on',
+  devices: ['climate.salon'], settings: { temperature: 26 }, name: 'Morning',
+});
+
+describe('ruleToForm / formToCreate / formToChanges', () => {
+  it('round-trips a rule through the form unchanged', () => {
+    expect(formToChanges(ruleToForm(base), base)).toEqual({});
+  });
+
+  it('sends only what changed', () => {
+    const form = { ...ruleToForm(base), time: '12:00:00' };
+    expect(formToChanges(form, base)).toEqual({ time: '12:00:00' });
+  });
+
+  it('detects a changed device list, not just a changed reference', () => {
+    const same = { ...ruleToForm(base), devices: ['climate.salon'] };
+    expect(formToChanges(same, base)).toEqual({});
+    const different = { ...ruleToForm(base), devices: ['climate.kids'] };
+    expect(formToChanges(different, base)).toEqual({ devices: ['climate.kids'] });
+  });
+
+  it('detects a changed setting value', () => {
+    const form = { ...ruleToForm(base), settings: { temperature: 24 } };
+    expect(formToChanges(form, base)).toEqual({ settings: { temperature: 24 } });
+  });
+
+  it('sends a cleared name as null rather than omitting it', () => {
+    const form = { ...ruleToForm(base), name: null };
+    expect(formToChanges(form, base)).toEqual({ name: null });
+  });
+
+  it('builds a create payload carrying the profile and every field', () => {
+    const payload = formToCreate(ruleToForm(base), 3);
+    expect(payload.profile).toBe(3);
+    expect(payload.day).toBe('1');
+    expect(payload.action).toBe('on');
+    expect(payload.devices).toEqual(['climate.salon']);
+    // A create must never carry an id - the server generates it.
+    expect(payload.id).toBeUndefined();
+  });
+
+  it('keeps enabled as a real boolean, never a string', () => {
+    const payload = formToCreate({ ...ruleToForm(base), enabled: false }, 1);
+    expect(payload.enabled).toBe(false);
+    expect(typeof payload.enabled).toBe('boolean');
+  });
+});
+
 // The real attributes of the three units this system drives.
 const SALON: HassEntity = {
   state: 'off',

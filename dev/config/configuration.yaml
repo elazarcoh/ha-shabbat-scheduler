@@ -1,3 +1,12 @@
+# Onboarding defaults time_zone to UTC, and the engine converts every zman
+# into Home Assistant's configured zone - so an unpinned dev instance shows
+# candle lighting three hours early and derives blocks against the wrong
+# local dates. Production runs Asia/Jerusalem; the Python suite pins it too
+# (the `jerusalem` fixture in tests/conftest.py exists for the same reason).
+# Pin it here so the throwaway instance matches what it is standing in for.
+homeassistant:
+  time_zone: Asia/Jerusalem
+
 default_config:
 
 input_boolean:

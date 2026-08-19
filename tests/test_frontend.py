@@ -128,7 +128,12 @@ from custom_components.shabbat_scheduler.frontend import (
     CARD_VERSION,
 )
 
-WWW = Path("custom_components/shabbat_scheduler/www")
+# Anchored to this file, not to the working directory: pytest is routinely
+# invoked from somewhere other than the repo root (an editor's test runner,
+# a CI step that cds into a subdirectory), and a cwd-relative path turns
+# every bundle test below into a confusing FileNotFoundError there.
+ROOT = Path(__file__).resolve().parent.parent
+WWW = ROOT / "custom_components" / "shabbat_scheduler" / "www"
 
 
 def test_the_built_bundle_is_committed():

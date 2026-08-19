@@ -53,9 +53,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         `async_refresh` is a coroutine and this is a sync callback (the
         store's change-listener contract is `Callable[[], None]`, so it must
-        stay sync), hence the task. It cannot loop: refresh only writes the
-        active block via `async_set_active_block`/`async_clear_active_block`,
-        and those deliberately do not notify.
+        stay sync), hence the task. It cannot loop. Two independent reasons:
+        refresh writes to the store only via `async_set_active_block` /
+        `async_clear_active_block`, which deliberately do not notify; and
+        `async_refresh` now dispatches SIGNAL_RULES_CHANGED itself when the
+        block changes, which cannot re-enter here either - this function is
+        the STORE's change listener, not a dispatcher subscriber. The signal
+        reaches only switch.py's `_sync` and the websocket subscribers,
+        neither of which writes to the store or refreshes.
+
+        The cost is that a rule edit which also moves the block (it can: the
+        hold decision reads the rule set's own tail) pushes the card twice.
+        Both pushes carry the same full snapshot, so that is a wasted frame,
+        not a wrong one.
         """
         async_dispatcher_send(hass, SIGNAL_RULES_CHANGED)
         hass.async_create_task(engine.async_refresh())

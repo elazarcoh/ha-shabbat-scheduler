@@ -64,6 +64,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "store": store,
         "engine": engine,
+        "entry_id": entry.entry_id,
     }
 
     await engine.async_refresh()

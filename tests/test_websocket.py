@@ -1,6 +1,7 @@
 from datetime import time
 
 import pytest
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.shabbat_scheduler.const import DOMAIN
@@ -776,3 +777,51 @@ async def test_preview_and_simulate_return_the_same_payload(
     # ...and both actually found the conflict hiding behind the defaults.
     if length is None:
         assert [c["device"] for c in from_service["conflicts"]] == ["climate.a"]
+
+
+async def test_list_carries_the_block_so_the_card_can_draw_dates(hass, hass_ws_client):
+    entry = await _setup(hass)
+    client = await hass_ws_client(hass)
+
+    await client.send_json_auto_id({"type": "shabbat_scheduler/rules/list"})
+    result = (await client.receive_json())["result"]
+
+    assert result["block"]["length"] == 1
+    assert result["block"]["dates"]["erev"] == "2026-08-14"
+    assert result["block"]["dates"]["1"] == "2026-08-15"
+    assert result["block"]["candle_lighting"].startswith("2026-08-14T")
+    assert result["block"]["havdalah"].startswith("2026-08-15T")
+
+
+async def test_block_is_null_when_the_zmanim_are_missing(hass, hass_ws_client):
+    """No Jewish Calendar sensors - the card must render a real message,
+    not an empty timeline it cannot explain."""
+    await hass.config.async_set_time_zone("Asia/Jerusalem")
+    store = RuleStore(hass)
+    await store.async_load()
+    entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": "shabbat_scheduler/rules/list"})
+    result = (await client.receive_json())["result"]
+
+    assert result["block"] is None
+
+
+async def test_list_carries_the_master_entity_id(hass, hass_ws_client):
+    entry = await _setup(hass)
+    client = await hass_ws_client(hass)
+
+    await client.send_json_auto_id({"type": "shabbat_scheduler/rules/list"})
+    result = (await client.receive_json())["result"]
+
+    registry = er.async_get(hass)
+    expected = registry.async_get_entity_id(
+        "switch", DOMAIN, f"{entry.entry_id}_master"
+    )
+    assert expected is not None
+    assert result["master_entity_id"] == expected
+    assert hass.states.get(result["master_entity_id"]) is not None

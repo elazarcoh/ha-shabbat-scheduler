@@ -9,10 +9,11 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.util import dt as dt_util
 
-from .block import conflict_warnings, preview_payload
+from .block import block_payload, conflict_warnings, preview_payload
 from .const import DOMAIN, SIGNAL_RULES_CHANGED
 from .rule_schema import (
     RuleValidationError,
@@ -39,15 +40,32 @@ def _conflict_warnings(store) -> list[dict]:
     return conflict_warnings(store.defaults, store.rules)
 
 
-def _state_payload(store) -> dict:
+def _state_payload(hass: HomeAssistant, data: dict) -> dict:
     """Everything the card renders. One shape, used by list and subscribe."""
+    store, engine = data["store"], data["engine"]
     return {
         "defaults": store.defaults,
         "rules": [rule_to_dict(rule) for rule in store.rules],
         "enabled": store.enabled,
         "dry_run": store.dry_run,
         "warnings": _conflict_warnings(store),
+        # The card draws dates and the zmanim markers from this, and picks
+        # which profile to show from its length. None when the Jewish
+        # Calendar sensors give us nothing to derive a block from.
+        "block": block_payload(engine.current_block),
+        # Resolved here rather than guessed by the card: a rule switch's
+        # entity_id is slugified from a user-editable, often-Hebrew name
+        # and cannot be constructed from a unique_id. Guessing it has
+        # caused two real bugs in this project already.
+        "master_entity_id": _master_entity_id(hass, data["entry_id"]),
     }
+
+
+def _master_entity_id(hass: HomeAssistant, entry_id: str) -> str | None:
+    """The master switch's entity_id, or None if it is not registered."""
+    return er.async_get(hass).async_get_entity_id(
+        "switch", DOMAIN, f"{entry_id}_master"
+    )
 
 
 @callback
@@ -57,7 +75,7 @@ def ws_list(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     if data is None:
         connection.send_error(msg["id"], "not_set_up", "Integration is not set up")
         return
-    connection.send_result(msg["id"], _state_payload(data["store"]))
+    connection.send_result(msg["id"], _state_payload(hass, data))
 
 
 @callback
@@ -225,7 +243,7 @@ def ws_subscribe(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
         if current is None:
             return
         connection.send_message(
-            websocket_api.event_message(msg["id"], _state_payload(current["store"]))
+            websocket_api.event_message(msg["id"], _state_payload(hass, current))
         )
 
     connection.subscriptions[msg["id"]] = async_dispatcher_connect(

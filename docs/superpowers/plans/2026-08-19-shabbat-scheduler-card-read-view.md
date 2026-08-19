@@ -618,6 +618,7 @@ git commit -m "feat: subscribe delivers the current state as its first message"
 ```python
 """The integration serves and registers its own card."""
 
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.components.lovelace.const import LOVELACE_DATA
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -674,7 +675,7 @@ async def test_the_resource_url_is_version_stamped(hass):
 async def test_setup_survives_yaml_resource_mode(hass):
     """In YAML mode resources cannot be created programmatically. That must
     degrade to a log line, not a failed setup that takes the scheduler down
-    with it."""
+    with it - the schedule matters more than the card."""
     await async_setup_component(hass, "lovelace", {})
     hass.data[LOVELACE_DATA].resource_mode = "yaml"
 
@@ -683,7 +684,9 @@ async def test_setup_survives_yaml_resource_mode(hass):
     await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    assert entry.state.recoverable is False or entry.state.name == "LOADED"
+    assert entry.state is ConfigEntryState.LOADED
+    # And the scheduler itself is fully up, not merely 'not errored'.
+    assert hass.data[DOMAIN][entry.entry_id]["engine"] is not None
 ```
 
 - [ ] **Step 2: Run them and watch them fail**
@@ -2386,12 +2389,95 @@ def seed_zmanim(token: str) -> None:
         _post(f"/api/states/{entity_id}", {"state": state}, token)
 
 
+def seed_rules(token: str) -> None:
+    """Two rules on erev and two on day 1, via the websocket API.
+
+    Uses the same websocket pattern as /home/rpi4/ha-claude-utils, pointed
+    at this container. Written through the API rather than into .storage so
+    the seed exercises the same validation a user would hit.
+    """
+    import asyncio
+
+    import websockets  # provided by the playwright dev dependency chain
+
+    rules = [
+        {"profile": 1, "day": "erev", "time": "22:30:00", "action": "on",
+         "devices": ["input_boolean.kids"], "name": "Kids night"},
+        {"profile": 1, "day": "erev", "time": "23:00:00", "action": "off",
+         "devices": ["input_boolean.salon"]},
+        {"profile": 1, "day": "1", "time": "11:00:00", "action": "on",
+         "devices": ["input_boolean.salon"], "name": "Shabbat morning"},
+        {"profile": 1, "day": "1", "time": "18:00:00", "action": "off",
+         "devices": ["input_boolean.salon"]},
+    ]
+
+    async def _send() -> None:
+        uri = BASE.replace("http://", "ws://") + "/api/websocket"
+        async with websockets.connect(uri) as socket:
+            await socket.recv()  # auth_required
+            await socket.send(json.dumps({"type": "auth", "access_token": token}))
+            await socket.recv()  # auth_ok
+            for index, rule in enumerate(rules, start=1):
+                await socket.send(json.dumps({
+                    "id": index,
+                    "type": "shabbat_scheduler/rules/create",
+                    "rule": rule,
+                }))
+                reply = json.loads(await socket.recv())
+                if not reply.get("success"):
+                    raise SystemExit(f"seeding rule {index} failed: {reply}")
+
+    asyncio.run(_send())
+
+
+def seed_dashboard(token: str) -> None:
+    """A single-view dashboard holding nothing but the card."""
+    import asyncio
+
+    import websockets
+
+    config = {
+        "views": [
+            {
+                "title": "Card",
+                "cards": [{"type": "custom:shabbat-scheduler-card"}],
+            }
+        ]
+    }
+
+    async def _send() -> None:
+        uri = BASE.replace("http://", "ws://") + "/api/websocket"
+        async with websockets.connect(uri) as socket:
+            await socket.recv()
+            await socket.send(json.dumps({"type": "auth", "access_token": token}))
+            await socket.recv()
+            await socket.send(json.dumps({
+                "id": 1,
+                "type": "lovelace/config/save",
+                "config": config,
+            }))
+            reply = json.loads(await socket.recv())
+            if not reply.get("success"):
+                raise SystemExit(f"saving the dashboard failed: {reply}")
+
+    asyncio.run(_send())
+
+
 if __name__ == "__main__":
     access_token = onboard()
     seed_zmanim(access_token)
+    seed_rules(access_token)
+    seed_dashboard(access_token)
     print(access_token)
     sys.exit(0)
 ```
+
+`seed_rules` needs the integration's config entry to exist first. Create it
+through the UI once (Settings → Devices & Services → Add Integration →
+Shabbat Scheduler) at `http://127.0.0.1:8124`, or add the config-entry
+creation to this script — either is fine, but the script must fail loudly
+rather than seed into a nonexistent entry. `websockets` is not currently a
+dependency: add it with `uv add --dev websockets` in Step 5.
 
 - [ ] **Step 4: Create `dev/README.md`**
 
@@ -2412,7 +2498,7 @@ plan is allowed to touch.
 - [ ] **Step 5: Add the Playwright dependency**
 
 ```bash
-uv add --dev playwright
+uv add --dev playwright websockets
 uv run playwright install chromium
 ```
 
@@ -2539,12 +2625,11 @@ def test_the_card_lays_out_right_to_left_in_hebrew(page, base_url):
 docker compose -f dev/docker-compose.yml up -d
 sleep 60
 export HA_DEV_TOKEN=$(uv run python dev/seed.py)
-# Add a dashboard view holding the card, then:
 uv run pytest e2e/ -q
 ```
 
-If a rule set is needed first, create it over the websocket API using the same
-tooling pattern as `/home/rpi4/ha-claude-utils` — pointed at **127.0.0.1:8124**.
+`seed.py` fabricates the zmanim, seeds four rules and writes the dashboard,
+so no manual UI step is needed beyond creating the config entry once.
 
 Expected: PASS. If the card does not appear, check that the Lovelace resource
 was registered (`lovelace/resources` over the websocket) before debugging the

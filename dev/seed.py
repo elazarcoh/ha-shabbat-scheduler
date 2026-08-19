@@ -110,6 +110,20 @@ def seed_rules(token: str) -> None:
     Uses the same websocket pattern as /home/rpi4/ha-claude-utils, pointed
     at this container. Written through the API rather than into .storage so
     the seed exercises the same validation a user would hit.
+
+    RuleStore.rules (custom_components/shabbat_scheduler/store.py) returns
+    rules in insertion order - async_add() appends, nothing sorts before
+    the websocket API hands them to the card - so the order these are
+    *created* in is exactly the order `state.rules` arrives in on the
+    frontend, before format.ts's buildGroups() sorts by time. The day-1
+    pair is therefore deliberately authored 18:00-before-11:00 (out of
+    time order): if buildGroups()'s `.sort((a, b) =>
+    a.time.localeCompare(b.time))` were ever removed, day 1 would render
+    18:00 above 11:00 and e2e/test_card_e2e.py's
+    test_the_card_shows_its_rules_in_time_order would catch it. With
+    erev's two rules already ascending (22:30, 23:00) and untouched, that
+    group alone would NOT have caught a missing sort - the day-1 order is
+    what makes the test adversarial rather than incidentally-passing.
     """
     import asyncio
 
@@ -120,10 +134,10 @@ def seed_rules(token: str) -> None:
          "devices": ["input_boolean.kids"], "name": "Kids night"},
         {"profile": 1, "day": "erev", "time": "23:00:00", "action": "off",
          "devices": ["input_boolean.salon"]},
-        {"profile": 1, "day": "1", "time": "11:00:00", "action": "on",
-         "devices": ["input_boolean.salon"], "name": "Shabbat morning"},
         {"profile": 1, "day": "1", "time": "18:00:00", "action": "off",
          "devices": ["input_boolean.salon"]},
+        {"profile": 1, "day": "1", "time": "11:00:00", "action": "on",
+         "devices": ["input_boolean.salon"], "name": "Shabbat morning"},
     ]
 
     async def _send() -> None:

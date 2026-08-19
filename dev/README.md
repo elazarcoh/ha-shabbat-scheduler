@@ -10,6 +10,13 @@ Port 8124, never 8123. This instance is disposable - `docker compose down -v`
 and re-seed whenever it gets confusing. It is the only Home Assistant this
 plan is allowed to touch.
 
+The port mapping is `127.0.0.1:8124:8123`, deliberately loopback-only. This
+container ships seeded, well-known credentials (`dev` / `devdevdev`) and
+onboards with no further hardening, so it must never be reachable from the
+LAN - only from this host. Do not change the mapping to a bare `"8124:8123"`
+(binds `0.0.0.0`, i.e. every interface including the home network) or add any
+other host-facing bind.
+
 The two zmanim sensors are fabricated directly via `POST /api/states`, not
 backed by a real integration, so they do not survive a container restart
 (`docker compose stop && start`, a host reboot, etc.) - only the rules and

@@ -3,7 +3,7 @@ services:
     image: ghcr.io/home-assistant/home-assistant:2026.8.2
     container_name: shabbat-scheduler-dev
     ports:
-      - "8124:8123"
+      - "127.0.0.1:8124:8123"
     volumes:
       - ./config:/config
       - ../custom_components/shabbat_scheduler:/config/custom_components/shabbat_scheduler:ro

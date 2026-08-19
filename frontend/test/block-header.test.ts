@@ -28,6 +28,15 @@ describe('shabbat-block-header', () => {
     expect(text).toContain('2026-08-15');
   });
 
+  it('orders the dates erev-first, not by object key enumeration', async () => {
+    const el = await render({});
+    const text = el.shadowRoot!.textContent!;
+    // erev (2026-08-14) precedes day 1 (2026-08-15); the raw `dates`
+    // object has integer-like keys ('1') enumerate before 'erev', so a
+    // naive Object.values(...).join(...) would render this backwards.
+    expect(text).toContain('2026-08-14 → 2026-08-15');
+  });
+
   it('says so when there is no block instead of rendering an empty header', async () => {
     const el = await render({ block: null });
     expect(el.shadowRoot!.textContent).toContain('No upcoming Shabbat');

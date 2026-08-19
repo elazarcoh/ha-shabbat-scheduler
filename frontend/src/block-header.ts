@@ -1,5 +1,6 @@
 import { LitElement, css, html } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
+import { orderedDates } from './format';
 import { t } from './strings';
 import type { BlockData } from './types';
 
@@ -44,8 +45,7 @@ export class ShabbatBlockHeader extends LitElement {
 
   private _dates(): string {
     if (this.block === null) return '';
-    const values = Object.values(this.block.dates);
-    return values.join(' → ');
+    return orderedDates(this.block).join(' → ');
   }
 
   // No optimistic update anywhere here: the control reports intent and

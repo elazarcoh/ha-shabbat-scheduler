@@ -20,6 +20,22 @@ function dayKeys(block: BlockData): string[] {
 }
 
 /**
+ * The block's dates in calendar order: erev, then day 1, day 2, ….
+ *
+ * `block.dates` is a plain object keyed 'erev' | '1' | '2' ..., and
+ * JavaScript enumerates integer-index-like keys in ascending numeric
+ * order *before* string keys - so 'erev' comes last no matter how the
+ * object was built. Relying on Object.values/Object.keys order here
+ * renders the block's dates backwards. Missing days are skipped rather
+ * than surfaced as empty strings.
+ */
+export function orderedDates(block: BlockData): string[] {
+  return dayKeys(block)
+    .map((day) => block.dates[day])
+    .filter((date): date is string => date !== undefined);
+}
+
+/**
  * The timeline: one group per day of the block, in order, each carrying
  * its date, its rules ordered by time, and its zmanim marker if one
  * falls at its end.

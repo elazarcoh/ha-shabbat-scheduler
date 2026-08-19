@@ -85,6 +85,12 @@ export class ShabbatDefaultsDialog extends LitElement {
                 settings: (event as CustomEvent).detail.settings,
               };
             }}
+            @devices-changed=${(event: Event) => {
+              this._draft = {
+                ...current,
+                devices: (event as CustomEvent).detail.devices,
+              };
+            }}
           ></shabbat-device-settings>
 
           <div class="actions">

@@ -389,3 +389,30 @@ describe('deviceOptions', () => {
     expect(o.intersected).toBe(false);
   });
 });
+
+import { selectableDevices } from '../src/format';
+
+describe('selectableDevices', () => {
+  const states = {
+    'climate.salon': SALON,
+    'input_boolean.t': BOOLEAN,
+    'switch.boiler': { state: 'off', attributes: {} },
+    'sensor.temperature': { state: '21', attributes: {} },
+    'light.kitchen': { state: 'off', attributes: {} },
+  };
+
+  it('offers only the domains this integration can drive', () => {
+    expect(selectableDevices(states)).toEqual([
+      'climate.salon', 'input_boolean.t', 'switch.boiler',
+    ]);
+  });
+
+  it('is sorted, so the list does not reshuffle between renders', () => {
+    const ids = selectableDevices(states);
+    expect(ids).toEqual([...ids].sort());
+  });
+
+  it('copes with no entities at all', () => {
+    expect(selectableDevices({})).toEqual([]);
+  });
+});

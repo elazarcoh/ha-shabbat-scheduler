@@ -95,4 +95,44 @@ describe('shabbat-device-settings', () => {
       expect((control as HTMLInputElement).disabled).toBe(true);
     }
   });
+
+  it('lists the drivable entities as options', async () => {
+    const el = await render({});
+    const options = [...el.shadowRoot!.querySelectorAll('.devices option')].map(
+      (o) => (o as HTMLOptionElement).value,
+    );
+    expect(options).toContain('climate.salon');
+    expect(options).toContain('climate.kids');
+  });
+
+  it('marks the currently selected devices', async () => {
+    const el = await render({ devices: ['climate.kids'] });
+    const selected = [...el.shadowRoot!.querySelectorAll('.devices option')]
+      .filter((o) => (o as HTMLOptionElement).selected)
+      .map((o) => (o as HTMLOptionElement).value);
+    expect(selected).toEqual(['climate.kids']);
+  });
+
+  it('reports a device change rather than mutating its own property', async () => {
+    const el = await render({ devices: ['climate.salon'] });
+    const listener = vi.fn();
+    el.addEventListener('devices-changed', listener);
+
+    const select = el.shadowRoot!.querySelector('.devices') as HTMLSelectElement;
+    for (const option of select.options) option.selected = option.value === 'climate.kids';
+    select.dispatchEvent(new Event('change'));
+
+    expect((listener.mock.calls[0][0] as CustomEvent).detail.devices)
+      .toEqual(['climate.kids']);
+    expect(el.devices).toEqual(['climate.salon']);
+  });
+
+  it('re-offers options for the newly chosen device, not the old one', async () => {
+    const el = await render({ devices: ['climate.kids'] });
+    const fans = [...el.shadowRoot!.querySelectorAll('.fan option')].map(
+      (o) => (o as HTMLOptionElement).value,
+    );
+    expect(fans).toContain('silent');
+    expect(fans).not.toContain('quiet');
+  });
 });

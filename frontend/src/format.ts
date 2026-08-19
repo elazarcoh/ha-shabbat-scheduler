@@ -256,6 +256,24 @@ export function deviceOptions(
   };
 }
 
+/** The domains this integration can actually drive. */
+const DRIVABLE = ['climate.', 'input_boolean.', 'switch.'];
+
+/**
+ * Entities a rule may target, sorted.
+ *
+ * Sorted because an unsorted list reshuffles whenever `hass.states` is
+ * rebuilt, which is every state change in the whole system - a select
+ * whose options move under the user's finger.
+ */
+export function selectableDevices(
+  states: Record<string, HassEntity | undefined>,
+): string[] {
+  return Object.keys(states)
+    .filter((id) => DRIVABLE.some((prefix) => id.startsWith(prefix)))
+    .sort();
+}
+
 const FORM_FIELDS = [
   'day', 'time', 'action', 'devices', 'settings', 'name', 'icon',
   'color', 'enabled', 'script', 'variables', 'replay_on_restart',

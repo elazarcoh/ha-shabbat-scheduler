@@ -206,6 +206,8 @@ export class ShabbatRuleDialog extends LitElement {
                     .language=${this.language}
                     @settings-changed=${(event: Event) =>
                       this._patch({ settings: (event as CustomEvent).detail.settings })}
+                    @devices-changed=${(event: Event) =>
+                      this._patch({ devices: (event as CustomEvent).detail.devices })}
                   ></shabbat-device-settings>
                 `}
 

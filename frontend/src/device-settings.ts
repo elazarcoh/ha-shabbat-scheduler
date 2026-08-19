@@ -1,6 +1,6 @@
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
-import { deviceOptions } from './format';
+import { deviceOptions, selectableDevices } from './format';
 import { t } from './strings';
 import type { DeviceOptions, HassEntity } from './types';
 
@@ -104,6 +104,31 @@ export class ShabbatDeviceSettings extends LitElement {
     const options = this._options;
     return html`
       <div class="settings">
+        <div class="field">
+          <label for="devices">${t(this.language, 'devices')}</label>
+          <select
+            id="devices"
+            class="devices"
+            multiple
+            size="4"
+            ?disabled=${this.disabled}
+            @change=${(event: Event) => {
+              const select = event.target as HTMLSelectElement;
+              const devices = [...select.selectedOptions].map((o) => o.value);
+              this.dispatchEvent(
+                new CustomEvent('devices-changed', { detail: { devices } }),
+              );
+            }}
+          >
+            ${selectableDevices(this.states).map(
+              (id) => html`
+                <option value=${id} ?selected=${this.devices.includes(id)}>
+                  ${id}
+                </option>
+              `,
+            )}
+          </select>
+        </div>
         ${options.unreadable.length
           ? html`<div class="note warn">
               ${t(this.language, 'unreadable')} ${options.unreadable.join(', ')}

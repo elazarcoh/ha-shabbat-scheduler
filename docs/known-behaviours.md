@@ -111,6 +111,80 @@ convenience for reading the schedule. The schedule itself drives real air
 conditioners on days nobody can operate them by hand, and nothing about
 rendering a Lovelace card is allowed to be the reason that stops.
 
+## The card cannot tell a dropped connection from a live one
+
+The spec's error table says a lost connection shows "the last known state,
+visibly marked stale, **with controls disabled**". Neither half is
+implemented, and they share one root cause: **nothing detects a connection
+lost after a successful subscribe.**
+
+What is implemented is the *first* subscribe failing — that sets the stale
+notice, and the next `hass` assignment retries. Once a subscription is
+established, the card has no liveness signal at all: `subscribeMessage`
+pushes when there is something to push, and silence is indistinguishable
+from a healthy week with no changes. So the card cannot mark itself stale,
+and since it does not know it is stale it has nothing to disable controls
+on. Disabling them on a *timer* would be worse — a quiet Tuesday is not a
+fault, and greying out the master switch because nothing has happened for
+an hour is a lie in the other direction.
+
+What limits the exposure:
+
+- `home-assistant-js-websocket` reconnects and re-subscribes on its own, and
+  `ws_subscribe` now sends a full snapshot immediately on subscribe, so a
+  reconnect self-heals the display. The window is the disconnect itself.
+- A control pressed while the socket is down rejects, and that now renders
+  a distinct "that did not go through" notice (it used to claim the
+  connection was lost, which was the wrong diagnosis in the far more common
+  case where the server was reachable and simply refused the call).
+- Nothing the card shows can make an appliance do the wrong thing. The
+  engine runs entirely server-side from its own block.
+
+Closing this properly means a heartbeat or a `connection.connected` /
+`ready`/`disconnected` listener on the HA websocket object, plus a disabled
+state threaded through `<shabbat-block-header>`. Deferred to 2b-ii.
+
+## The card does not re-subscribe when `hass.connection` is replaced
+
+The spec says the card "re-subscribes if the connection object is replaced".
+`set hass` compares only the language and the admin flag; it never compares
+`hass.connection` identity, so a genuinely new connection object leaves the
+old subscription attached to a dead socket and the card frozen on its last
+payload, with nothing marking it stale.
+
+Reachability is low: Home Assistant's frontend creates one connection object
+per page load and reconnects *inside* it, so the object identity is stable
+for the life of the page. Replacement would mean a frontend change or an
+embedder that rebuilds `hass`. Fixing it is a small change (`if
+(hass.connection !== previous.connection) resubscribe`), but it is untested
+against any real path that triggers it, and an unexercised teardown/re-setup
+path in the one component a wall tablet leaves running for weeks is its own
+risk. Recorded rather than guessed at; it belongs with the liveness work
+above, which needs the same teardown path.
+
+## `block: null` hides the rule set — a deliberate deviation from the spec
+
+The spec's error table promises "the rule set, plus a clear note that no
+upcoming Shabbat could be derived". The card renders the note and **not** the
+rule set (`card.ts`'s `_groups` returns `[]` when `block` is null).
+
+This is deliberate. Rules are authored per profile — 1-day, 2-day, 3-day —
+and per day within the block. Without a block there is no length to select a
+profile by and no dates to hang days on, so "the rule set" could only mean
+every profile's rules at once, undifferentiated. That is precisely the
+confidently-wrong display this card exists to eliminate: a screen full of
+rules with no honest way to say which of them apply.
+
+It would also be wrong on the facts. With no block the engine returns from
+`_async_refresh` before building a single timer — nothing is scheduled at
+all. A timeline of rules under those conditions implies a schedule that does
+not exist. The note says the true thing: the Jewish Calendar sensors are not
+readable, so there is nothing upcoming.
+
+The rules remain fully visible either way — every rule has its own switch
+entity, and the `simulate` service and `preview` command both take an
+explicit `block_length`.
+
 ## Deployment note
 
 Nothing here has been installed on the live instance. The integration ships

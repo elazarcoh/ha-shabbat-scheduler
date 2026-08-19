@@ -1,0 +1,12 @@
+default_config:
+
+input_boolean:
+  salon:
+    name: Salon AC stand-in
+  kids:
+    name: Kids AC stand-in
+
+logger:
+  default: info
+  logs:
+    custom_components.shabbat_scheduler: debug

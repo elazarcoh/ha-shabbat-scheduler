@@ -23,6 +23,7 @@ from . import websocket_api
 from .block import preview_payload
 from .const import CANDLE_SENSOR, DOMAIN, HAVDALAH_SENSOR, SIGNAL_RULES_CHANGED
 from .engine import ShabbatEngine
+from .frontend import async_register_frontend, async_unregister_frontend
 from .store import RuleStore
 from .yaml_io import export_yaml, import_yaml
 
@@ -52,9 +53,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         `async_refresh` is a coroutine and this is a sync callback (the
         store's change-listener contract is `Callable[[], None]`, so it must
-        stay sync), hence the task. It cannot loop: refresh only writes the
-        active block via `async_set_active_block`/`async_clear_active_block`,
-        and those deliberately do not notify.
+        stay sync), hence the task. It cannot loop. Two independent reasons:
+        refresh writes to the store only via `async_set_active_block` /
+        `async_clear_active_block`, which deliberately do not notify; and
+        `async_refresh` now dispatches SIGNAL_RULES_CHANGED itself when the
+        block changes, which cannot re-enter here either - this function is
+        the STORE's change listener, not a dispatcher subscriber. The signal
+        reaches only switch.py's `_sync` and the websocket subscribers,
+        neither of which writes to the store or refreshes.
+
+        The cost is that a rule edit which also moves the block (it can: the
+        hold decision reads the rule set's own tail) pushes the card twice.
+        Both pushes carry the same full snapshot, so that is a wasted frame,
+        not a wrong one.
         """
         async_dispatcher_send(hass, SIGNAL_RULES_CHANGED)
         hass.async_create_task(engine.async_refresh())
@@ -64,9 +75,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "store": store,
         "engine": engine,
+        "entry_id": entry.entry_id,
     }
 
     await engine.async_refresh()
+
+    await async_register_frontend(hass)
 
     # Re-apply the current desired state after a restart, so a reboot part-way
     # through a block does not leave devices stranded.
@@ -178,4 +192,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await data["engine"].async_shutdown()
         for service in ("simulate", "set_dry_run", "export_yaml", "import_yaml"):
             hass.services.async_remove(DOMAIN, service)
+        await async_unregister_frontend(hass)
     return unloaded

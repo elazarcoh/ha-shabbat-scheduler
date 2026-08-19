@@ -203,6 +203,9 @@ async def test_a_card_can_drive_the_whole_loop(
     await client.send_json({"id": 1, "type": "shabbat_scheduler/subscribe"})
     assert (await client.receive_json())["success"]
 
+    # Receive and discard the initial snapshot sent by subscribe
+    await client.receive_json()
+
     await client.send_json(
         {
             "id": 2,

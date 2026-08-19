@@ -1,9 +1,11 @@
-from datetime import date, datetime, time
+import json
+from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from custom_components.shabbat_scheduler.block import (
+    block_payload,
     compute_block,
     has_profile,
     merge_defaults,
@@ -164,3 +166,50 @@ def test_has_profile_ignores_disabled_rules():
         Rule(id="b", profile=2, day="1", time=time(12, 0), action=Action.ON)
     )
     assert has_profile(rules, 2) is True
+
+
+def test_block_payload_describes_the_block_for_the_card():
+    block = compute_block(
+        datetime(2026, 8, 14, 18, 44, tzinfo=UTC),
+        datetime(2026, 8, 15, 20, 1, tzinfo=UTC),
+    )
+    payload = block_payload(block)
+
+    assert payload["length"] == 1
+    assert payload["candle_lighting"] == "2026-08-14T18:44:00+00:00"
+    assert payload["havdalah"] == "2026-08-15T20:01:00+00:00"
+    assert payload["dates"] == {"erev": "2026-08-14", "1": "2026-08-15"}
+
+
+def test_block_payload_keys_days_the_same_way_rules_do():
+    """day_dates[0] is day_1, and rules spell their day '1', not '0'.
+
+    An off-by-one here would silently file every rule under the wrong
+    date - the card would render a correct-looking timeline on the wrong
+    days, which is worse than rendering nothing.
+    """
+    block = compute_block(
+        datetime(2026, 10, 2, 18, 0, tzinfo=UTC),
+        datetime(2026, 10, 4, 19, 0, tzinfo=UTC),
+    )
+    payload = block_payload(block)
+
+    assert payload["length"] == 2
+    assert payload["dates"] == {
+        "erev": "2026-10-02",
+        "1": "2026-10-03",
+        "2": "2026-10-04",
+    }
+
+
+def test_block_payload_is_none_when_there_is_no_block():
+    assert block_payload(None) is None
+
+
+def test_block_payload_is_json_able():
+    """It crosses a websocket; a date or datetime object would not survive."""
+    block = compute_block(
+        datetime(2026, 8, 14, 18, 44, tzinfo=UTC),
+        datetime(2026, 8, 15, 20, 1, tzinfo=UTC),
+    )
+    json.dumps(block_payload(block))

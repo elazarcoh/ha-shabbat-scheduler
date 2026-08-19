@@ -1,6 +1,8 @@
+import asyncio
 from datetime import time
 
 import pytest
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.shabbat_scheduler.const import DOMAIN
@@ -506,6 +508,11 @@ async def test_subscribe_pushes_on_change(hass, hass_ws_client):
     ack = await client.receive_json()
     assert ack["success"]
 
+    # The initial snapshot is sent immediately after the subscribe response
+    snapshot = await client.receive_json()
+    assert snapshot["type"] == "event"
+    assert [r["id"] for r in snapshot["event"]["rules"]] == []
+
     store = RuleStore(hass)
     await store.async_load()
     entry_store = list(hass.data[DOMAIN].values())[0]["store"]
@@ -519,11 +526,31 @@ async def test_subscribe_pushes_on_change(hass, hass_ws_client):
     assert [r["id"] for r in event["event"]["rules"]] == ["pushed"]
 
 
+async def test_subscribe_pushes_the_current_state_immediately(hass, hass_ws_client):
+    """Otherwise a client needs list AND subscribe, and a change landing
+    between the two is lost silently and never re-reported."""
+    await _setup(hass, [
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON),
+    ])
+    client = await hass_ws_client(hass)
+
+    await client.send_json_auto_id({"type": "shabbat_scheduler/subscribe"})
+    assert (await client.receive_json())["success"] is True
+
+    pushed = await client.receive_json()
+    assert pushed["type"] == "event"
+    assert [rule["id"] for rule in pushed["event"]["rules"]] == ["r1"]
+    assert pushed["event"]["block"]["length"] == 1
+
+
 async def test_subscribe_stops_pushing_after_unsubscribe(hass, hass_ws_client):
     await _setup(hass)
     client = await hass_ws_client(hass)
     await client.send_json({"id": 1, "type": "shabbat_scheduler/subscribe"})
     assert (await client.receive_json())["success"]
+
+    # Receive and discard the initial snapshot sent by subscribe
+    await client.receive_json()
 
     await client.send_json({"id": 2, "type": "unsubscribe_events", "subscription": 1})
     assert (await client.receive_json())["success"]
@@ -776,3 +803,131 @@ async def test_preview_and_simulate_return_the_same_payload(
     # ...and both actually found the conflict hiding behind the defaults.
     if length is None:
         assert [c["device"] for c in from_service["conflicts"]] == ["climate.a"]
+
+
+async def test_list_carries_the_block_so_the_card_can_draw_dates(hass, hass_ws_client):
+    entry = await _setup(hass)
+    client = await hass_ws_client(hass)
+
+    await client.send_json_auto_id({"type": "shabbat_scheduler/rules/list"})
+    result = (await client.receive_json())["result"]
+
+    assert result["block"]["length"] == 1
+    assert result["block"]["dates"]["erev"] == "2026-08-14"
+    assert result["block"]["dates"]["1"] == "2026-08-15"
+    assert result["block"]["candle_lighting"].startswith("2026-08-14T")
+    assert result["block"]["havdalah"].startswith("2026-08-15T")
+
+
+async def test_block_is_null_when_the_zmanim_are_missing(hass, hass_ws_client):
+    """No Jewish Calendar sensors - the card must render a real message,
+    not an empty timeline it cannot explain."""
+    await hass.config.async_set_time_zone("Asia/Jerusalem")
+    store = RuleStore(hass)
+    await store.async_load()
+    entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": "shabbat_scheduler/rules/list"})
+    result = (await client.receive_json())["result"]
+
+    assert result["block"] is None
+
+
+async def test_list_carries_the_master_entity_id(hass, hass_ws_client):
+    entry = await _setup(hass)
+    client = await hass_ws_client(hass)
+
+    await client.send_json_auto_id({"type": "shabbat_scheduler/rules/list"})
+    result = (await client.receive_json())["result"]
+
+    registry = er.async_get(hass)
+    expected = registry.async_get_entity_id(
+        "switch", DOMAIN, f"{entry.entry_id}_master"
+    )
+    assert expected is not None
+    assert result["master_entity_id"] == expected
+    assert hass.states.get(result["master_entity_id"]) is not None
+
+
+# --- Final review I1: a block change must reach an open card -------------
+#
+# The only push trigger used to be SIGNAL_RULES_CHANGED, dispatched only by
+# the store's change listener. `engine.current_block` also changes at
+# havdalah, at hold release and on restart-restore, and none of those is a
+# store mutation - so a wall tablet left open kept rendering LAST week's
+# dates for the whole following week, and on a 3-day chag kept filtering
+# `profile == block.length` against the stale block: showing rules that
+# will not fire, hiding every rule that will, and marking nothing stale.
+
+
+NEXT_WEEK_ZMANIM = {
+    "sensor.jewish_calendar_upcoming_candle_lighting": "2026-08-21T15:38:00+00:00",
+    "sensor.jewish_calendar_upcoming_havdalah": "2026-08-22T16:54:00+00:00",
+}
+
+
+async def _next_event(client, timeout=5):
+    """The next pushed event, or None if none arrives.
+
+    Bounded deliberately: the defect this covers is *silence*, and an
+    unbounded `receive_json()` against silence hangs the whole suite
+    instead of failing it.
+    """
+    try:
+        return await asyncio.wait_for(client.receive_json(), timeout)
+    except (TimeoutError, asyncio.TimeoutError):
+        return None
+
+
+async def test_the_block_rolling_forward_reaches_an_open_subscriber(
+    hass, hass_ws_client
+):
+    """The havdalah roll-forward is not a store mutation, so nothing used
+    to tell a subscribed card about it."""
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    await client.send_json({"id": 1, "type": "shabbat_scheduler/subscribe"})
+    assert (await client.receive_json())["success"]
+
+    snapshot = await _next_event(client)
+    assert snapshot["event"]["block"]["dates"]["erev"] == "2026-08-14"
+
+    for entity_id, state in NEXT_WEEK_ZMANIM.items():
+        hass.states.async_set(entity_id, state)
+    await hass.async_block_till_done()
+
+    engine = list(hass.data[DOMAIN].values())[0]["engine"]
+    assert engine.current_block.erev_date.isoformat() == "2026-08-21", (
+        "the engine itself did not advance; the test would be vacuous"
+    )
+
+    pushed = await _next_event(client)
+    assert pushed is not None, "the block advanced and no card was told"
+    assert pushed["type"] == "event"
+    assert pushed["event"]["block"]["dates"]["erev"] == "2026-08-21"
+
+
+async def test_a_refresh_that_changes_nothing_pushes_nothing(
+    hass, hass_ws_client
+):
+    """Dispatching on every refresh rather than on a real block change
+    would push on every zmanim re-publish and twice on every rule edit."""
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    await client.send_json({"id": 1, "type": "shabbat_scheduler/subscribe"})
+    assert (await client.receive_json())["success"]
+    assert await _next_event(client) is not None  # the initial snapshot
+
+    engine = list(hass.data[DOMAIN].values())[0]["engine"]
+    before = engine.current_block
+    await engine.async_refresh()
+    await hass.async_block_till_done()
+    assert engine.current_block == before, "the block moved; test is vacuous"
+
+    await client.send_json({"id": 2, "type": "shabbat_scheduler/rules/list"})
+    msg = await client.receive_json()
+    assert msg["id"] == 2, "a refresh with no block change pushed anyway"

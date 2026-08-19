@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 
 from homeassistant.components import persistent_notification
 from homeassistant.core import Context, CoreState, HomeAssistant
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_time
 from homeassistant.util import dt as dt_util
 
@@ -26,6 +27,7 @@ from .const import (
     HAVDALAH_SENSOR,
     RETRY_ATTEMPTS,
     RETRY_DELAY_SECONDS,
+    SIGNAL_RULES_CHANGED,
 )
 from .device_ops import Skip, plan_calls
 from .models import Action, Block, Conflict, ResolvedRule, Rule
@@ -161,9 +163,41 @@ class ShabbatEngine:
         two refreshes genuinely overlap; a second one entering that window
         would cancel nothing (the first has already cancelled everything) and
         then append a duplicate set of timers, firing every rule twice.
+
+        Announces a block change, because nothing else does. The card's push
+        channel is SIGNAL_RULES_CHANGED, and until this existed the only
+        dispatcher of it was the store's change listener - so a block that
+        rolled forward at havdalah, was adopted when a hold released, or was
+        restored across a restart reached no open card at all. A wall tablet
+        left open then rendered the previous week's dates for the whole
+        following week, and because the card filters `profile ==
+        block.length` against the block it was given, a 3-day chag showed
+        the 1-day profile: rules that will not fire, every rule that will
+        fire hidden, nothing marked stale. Scheduling is unaffected either
+        way - the engine works from `self._block`, never from the payload -
+        but "I cannot tell whether it worked" is the complaint this project
+        exists to answer.
+
+        It cannot feed itself. `_rules_changed` (__init__.py), the thing
+        that calls this, is the STORE's change listener, not a dispatcher
+        subscriber, so the signal never re-enters it. The only two
+        subscribers are switch.py's `_sync` (adds/removes entities and
+        re-writes their state) and websocket_api's `_forward` (sends one
+        message); neither writes to the store and neither refreshes. And it
+        is sent only on a genuine change, so the setup-path refresh and
+        every no-op re-publish stay silent.
+
+        Sent outside the lock deliberately: the dispatcher runs @callback
+        subscribers synchronously, and a future subscriber that refreshed
+        would deadlock rather than merely loop.
         """
         async with self._refresh_lock:
+            before = self._block
             await self._async_refresh()
+            changed = self._block != before
+
+        if changed:
+            async_dispatcher_send(self.hass, SIGNAL_RULES_CHANGED)
 
     async def _async_refresh(self) -> None:
         for cancel in self._unsubscribes:

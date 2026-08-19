@@ -47,6 +47,55 @@ describe('shabbat-rule-row', () => {
     expect(el.shadowRoot!.querySelector('.conflict')).not.toBeNull();
   });
 
+  /**
+   * The badge's existence is not the thing that matters - its text is.
+   * Conflicts are warned and never auto-resolved, so the only way anyone
+   * fixes one is by reading which device and which time clash. The
+   * payload this card receives carries no `message` field, so a row
+   * built from `warning.message` renders the literal string "undefined":
+   * a badge that says a conflict exists and refuses to say what it is.
+   * Asserting only that `.conflict` exists passes either way, which is
+   * how that defect survived once already.
+   */
+  it('says which device and time conflict, in the badge and on the row', async () => {
+    const el = await render({
+      rule: rule({ id: 'a' }),
+      warnings: [
+        { kind: 'conflict', device: 'climate.salon', profile: 1, day: '1', time: '11:00:00', rule_ids: ['a'] },
+      ],
+    });
+
+    const badge = el.shadowRoot!.querySelector('.conflict')!;
+    const tooltip = badge.getAttribute('title')!;
+    expect(tooltip).toContain('climate.salon');
+    expect(tooltip).toContain('11:00');
+    expect(tooltip).not.toContain('undefined');
+
+    // And reachable without hovering - see the .conflict-detail line.
+    const detail = el.shadowRoot!.querySelector('.conflict-detail')!;
+    expect(detail).not.toBeNull();
+    expect(detail.textContent).toContain('climate.salon');
+    expect(detail.textContent).toContain('11:00');
+    expect(detail.textContent).not.toContain('undefined');
+  });
+
+  /** Every conflict, not just the first: `unattachedWarnings` treats a
+   * warning as handled the moment it names a displayed rule, so a second
+   * conflict on the same row that this did not render would appear
+   * nowhere at all - neither here nor in the banner. */
+  it('shows every conflict naming this rule, not only the first', async () => {
+    const el = await render({
+      rule: rule({ id: 'a' }),
+      warnings: [
+        { kind: 'conflict', device: 'climate.salon', profile: 1, day: '1', time: '11:00:00', rule_ids: ['a'] },
+        { kind: 'conflict', device: 'climate.bedroom', profile: 1, day: '1', time: '11:00:00', rule_ids: ['a'] },
+      ],
+    });
+    const detail = el.shadowRoot!.querySelector('.conflict-detail')!.textContent!;
+    expect(detail).toContain('climate.salon');
+    expect(detail).toContain('climate.bedroom');
+  });
+
   it('shows no conflict badge when no warning names it', async () => {
     const el = await render({
       rule: rule({ id: 'a' }),

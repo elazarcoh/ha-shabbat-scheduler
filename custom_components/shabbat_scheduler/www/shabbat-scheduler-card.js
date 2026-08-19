@@ -84,9 +84,12 @@ const STRINGS = {
         no_block: 'No upcoming Shabbat could be derived from the Jewish Calendar sensors.',
         not_set_up: 'Shabbat Scheduler is not configured.',
         stale: 'Connection lost — showing the last known state.',
+        // Deliberately distinct from `stale`. The server was reachable and
+        // refused the call - saying "connection lost" there is a wrong
+        // diagnosis that sends someone to check the network.
+        command_failed: 'That did not go through. Nothing was changed.',
         no_rules: 'No rules for this block.',
         disabled_rule: 'disabled',
-        runs_script: 'runs',
         conflict_prefix: 'Conflict',
     },
     he: {
@@ -99,9 +102,9 @@ const STRINGS = {
         no_block: 'לא ניתן לגזור שבת קרובה מחיישני לוח השנה העברי.',
         not_set_up: 'שעון שבת אינו מוגדר.',
         stale: 'החיבור אבד — מוצג המצב האחרון הידוע.',
+        command_failed: 'הפעולה לא בוצעה. שום דבר לא השתנה.',
         no_rules: 'אין כללים לבלוק הזה.',
         disabled_rule: 'מושבת',
-        runs_script: 'מריץ',
         conflict_prefix: 'התנגשות',
     },
 };
@@ -638,9 +641,13 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
         super(...arguments);
         this._state = null;
         /**
-         * `not_set_up` only when the server said so; `stale` for a lost
-         * connection, a failed subscribe attempt, or a rejected write - all of
-         * which leave the last state on screen and nothing else changed.
+         * `not_set_up` only when the server said so; `stale` when the card
+         * could not reach the server at all (a failed subscribe attempt);
+         * `command_failed` when it reached the server and the server refused
+         * the call. All three leave the last state on screen and nothing else
+         * changed, but they are three different things to go and check, and
+         * telling someone the connection is lost when it plainly is not sends
+         * them to the wrong place.
          */
         this._error = null;
         this._config = {};
@@ -786,17 +793,29 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
      * rejection is a control that visibly does nothing with no
      * explanation, which is this system's cardinal sin. The notice clears
      * itself on the next push, i.e. as soon as a write does land.
+     *
+     * `command_failed`, not `stale`: reaching this catch means the socket
+     * carried the call and the server answered with a rejection - the
+     * entity was unavailable, the service errored, permission was refused.
+     * Reporting that as "connection lost" is a wrong diagnosis, and on the
+     * one day nobody can operate anything by hand it sends the household
+     * to check the network instead of the appliance.
      */
     async _call(domain, service, data) {
         try {
             await this._hass.callService(domain, service, data);
         }
         catch {
-            this._error = 'stale';
+            this._error = 'command_failed';
         }
     }
     render() {
-        if (this._error === 'not_set_up') {
+        // Read once into a local: `_error` is a field, and TypeScript's
+        // narrowing of a property access does not survive the intervening
+        // calls below, so the notice branch would lose the type that makes
+        // it a valid string key.
+        const error = this._error;
+        if (error === 'not_set_up') {
             return b `
         <ha-card>
           <div class="message">${t(this._language, 'not_set_up')}</div>
@@ -807,7 +826,7 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
             return b `
         <ha-card>
           <div class="message">
-            ${this._error === 'stale' ? t(this._language, 'stale') : '…'}
+            ${error === null ? '…' : t(this._language, error)}
           </div>
         </ha-card>
       `;
@@ -825,8 +844,8 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
         ${this._config.title
             ? b `<div class="title">${this._config.title}</div>`
             : A}
-        ${this._error === 'stale'
-            ? b `<div class="message notice">${t(this._language, 'stale')}</div>`
+        ${error !== null
+            ? b `<div class="message notice">${t(this._language, error)}</div>`
             : A}
         <shabbat-block-header
           .block=${this._state.block}

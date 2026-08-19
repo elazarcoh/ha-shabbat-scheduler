@@ -39,11 +39,16 @@ function isNotSetUp(error: unknown): boolean {
 export class ShabbatSchedulerCard extends LitElement {
   @state() private _state: CardState | null = null;
   /**
-   * `not_set_up` only when the server said so; `stale` for a lost
-   * connection, a failed subscribe attempt, or a rejected write - all of
-   * which leave the last state on screen and nothing else changed.
+   * `not_set_up` only when the server said so; `stale` when the card
+   * could not reach the server at all (a failed subscribe attempt);
+   * `command_failed` when it reached the server and the server refused
+   * the call. All three leave the last state on screen and nothing else
+   * changed, but they are three different things to go and check, and
+   * telling someone the connection is lost when it plainly is not sends
+   * them to the wrong place.
    */
-  @state() private _error: 'not_set_up' | 'stale' | null = null;
+  @state() private _error: 'not_set_up' | 'stale' | 'command_failed' | null =
+    null;
   @property({ attribute: false }) private _config: CardConfig = {};
 
   private _hass: any;
@@ -209,17 +214,29 @@ export class ShabbatSchedulerCard extends LitElement {
    * rejection is a control that visibly does nothing with no
    * explanation, which is this system's cardinal sin. The notice clears
    * itself on the next push, i.e. as soon as a write does land.
+   *
+   * `command_failed`, not `stale`: reaching this catch means the socket
+   * carried the call and the server answered with a rejection - the
+   * entity was unavailable, the service errored, permission was refused.
+   * Reporting that as "connection lost" is a wrong diagnosis, and on the
+   * one day nobody can operate anything by hand it sends the household
+   * to check the network instead of the appliance.
    */
   private async _call(domain: string, service: string, data: object) {
     try {
       await this._hass.callService(domain, service, data);
     } catch {
-      this._error = 'stale';
+      this._error = 'command_failed';
     }
   }
 
   override render() {
-    if (this._error === 'not_set_up') {
+    // Read once into a local: `_error` is a field, and TypeScript's
+    // narrowing of a property access does not survive the intervening
+    // calls below, so the notice branch would lose the type that makes
+    // it a valid string key.
+    const error = this._error;
+    if (error === 'not_set_up') {
       return html`
         <ha-card>
           <div class="message">${t(this._language, 'not_set_up')}</div>
@@ -230,7 +247,7 @@ export class ShabbatSchedulerCard extends LitElement {
       return html`
         <ha-card>
           <div class="message">
-            ${this._error === 'stale' ? t(this._language, 'stale') : '…'}
+            ${error === null ? '…' : t(this._language, error)}
           </div>
         </ha-card>
       `;
@@ -252,8 +269,8 @@ export class ShabbatSchedulerCard extends LitElement {
         ${this._config.title
           ? html`<div class="title">${this._config.title}</div>`
           : nothing}
-        ${this._error === 'stale'
-          ? html`<div class="message notice">${t(this._language, 'stale')}</div>`
+        ${error !== null
+          ? html`<div class="message notice">${t(this._language, error)}</div>`
           : nothing}
         <shabbat-block-header
           .block=${this._state.block}

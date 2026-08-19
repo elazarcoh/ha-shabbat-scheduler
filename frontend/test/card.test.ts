@@ -433,7 +433,12 @@ describe('shabbat-scheduler-card', () => {
     await flush();
     await el.updateComplete;
 
-    expect(el.shadowRoot!.textContent).toContain('Connection lost');
+    // The server was reachable and refused the call. Reporting that as
+    // "connection lost" is a wrong diagnosis: it sends the household to
+    // check the network instead of the appliance, on the one day nobody
+    // can operate anything by hand.
+    expect(el.shadowRoot!.textContent).toContain('did not go through');
+    expect(el.shadowRoot!.textContent).not.toContain('Connection lost');
     // and the card is still a card - the failure is a notice, not a wipe
     expect(el.shadowRoot!.querySelector('shabbat-block-header')).not.toBeNull();
   });

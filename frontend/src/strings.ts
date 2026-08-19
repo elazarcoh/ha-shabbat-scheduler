@@ -11,9 +11,12 @@ const STRINGS = {
     no_block: 'No upcoming Shabbat could be derived from the Jewish Calendar sensors.',
     not_set_up: 'Shabbat Scheduler is not configured.',
     stale: 'Connection lost — showing the last known state.',
+    // Deliberately distinct from `stale`. The server was reachable and
+    // refused the call - saying "connection lost" there is a wrong
+    // diagnosis that sends someone to check the network.
+    command_failed: 'That did not go through. Nothing was changed.',
     no_rules: 'No rules for this block.',
     disabled_rule: 'disabled',
-    runs_script: 'runs',
     conflict_prefix: 'Conflict',
   },
   he: {
@@ -26,9 +29,9 @@ const STRINGS = {
     no_block: 'לא ניתן לגזור שבת קרובה מחיישני לוח השנה העברי.',
     not_set_up: 'שעון שבת אינו מוגדר.',
     stale: 'החיבור אבד — מוצג המצב האחרון הידוע.',
+    command_failed: 'הפעולה לא בוצעה. שום דבר לא השתנה.',
     no_rules: 'אין כללים לבלוק הזה.',
     disabled_rule: 'מושבת',
-    runs_script: 'מריץ',
     conflict_prefix: 'התנגשות',
   },
 } as const;

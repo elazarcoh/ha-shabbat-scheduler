@@ -53,11 +53,13 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
             )
             # A static path cannot be unregistered, so this flag survives a
             # reload deliberately. Home Assistant does not actually raise on
-            # a repeat registration of the same path (the http component
-            # freezes and then re-opens its router for exactly this kind of
-            # late/duplicate call), so this guard is not here to avoid an
-            # exception - it is here so a reload does not redo pointless
-            # work every time the entry reloads.
+            # a repeat registration of the same path: at startup the http
+            # component replaces `app._router.freeze` with a permanent
+            # no-op, so the router never freezes and late or duplicate
+            # registrations are simply accepted. That is an internal detail
+            # this integration will not depend on across versions, so the
+            # guard stays - but it is here to skip pointless repeat work on
+            # every reload, not to dodge an exception that would never come.
             hass.data[_STATIC_REGISTERED] = True
 
         await _async_register_resource(hass)

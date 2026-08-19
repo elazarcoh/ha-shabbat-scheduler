@@ -139,12 +139,30 @@ def test_the_built_bundle_is_committed():
 
 
 def test_the_bundle_defines_the_card_element():
+    """A stub that merely mentions the card's name is not a card. Require
+    all five custom elements the card is built from, plus the actual
+    browser registration call Lit's @customElement decorator compiles to
+    (`customElements.define(...)`, stable under minification since it is a
+    global-API property access, not a renameable local identifier)."""
     text = (WWW / CARD_FILENAME).read_text(encoding="utf-8")
-    assert "shabbat-scheduler-card" in text
+    for tag in (
+        "shabbat-scheduler-card",
+        "shabbat-block-header",
+        "shabbat-day-group",
+        "shabbat-rule-row",
+        "shabbat-warnings",
+    ):
+        assert tag in text
+    assert "customElements.define" in text
 
 
 def test_the_bundle_version_matches_the_url_stamp():
     """Otherwise the resource URL never changes and browsers keep serving
-    a stale card out of cache after an update."""
+    a stale card out of cache after an update. Ties the check to the actual
+    `const CARD_VERSION = '...'` declaration rollup carries over verbatim
+    from frontend/src/version.ts, so a drift between that file and this
+    module's CARD_VERSION is caught - and requires the real registration
+    call too, so a stub that merely echoes the version string cannot pass."""
     text = (WWW / CARD_FILENAME).read_text(encoding="utf-8")
-    assert CARD_VERSION in text
+    assert f"const CARD_VERSION = '{CARD_VERSION}';" in text
+    assert "customElements.define" in text

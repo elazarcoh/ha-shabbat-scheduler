@@ -40,11 +40,39 @@ def base_url() -> str:
     return BASE
 
 
+def _token_works(value: str) -> bool:
+    """Does this token still authenticate?"""
+    request = urllib.request.Request(
+        f"{BASE}/api/config", headers={"Authorization": f"Bearer {value}"}
+    )
+    try:
+        urllib.request.urlopen(request, timeout=5)
+    except (urllib.error.URLError, OSError):
+        return False
+    return True
+
+
 @pytest.fixture(scope="session")
 def token() -> str:
+    """A token that actually works, or a skip that says why.
+
+    An EXPIRED token is checked for, not just a missing one. The tokens
+    minted from an auth-code exchange last 30 minutes, and an expired one
+    does not fail loudly: Home Assistant closes the websocket with a
+    normal 1000, the frontend never finishes loading, and every test in
+    this directory dies on a 30-second Playwright timeout with nothing
+    pointing at the cause. That misdiagnoses as "the card is broken" -
+    it cost a real debugging cycle once - so it is worth one HTTP call
+    to say the true thing instead.
+    """
     value = os.environ.get("HA_DEV_TOKEN")
     if not value:
-        pytest.skip("HA_DEV_TOKEN is not set; run dev/seed.py")
+        pytest.skip("HA_DEV_TOKEN is not set; see dev/README.md")
+    if not _token_works(value):
+        pytest.skip(
+            "HA_DEV_TOKEN is rejected - it has most likely expired "
+            "(they last 30 minutes). Mint a fresh one; see dev/README.md"
+        )
     return value
 
 

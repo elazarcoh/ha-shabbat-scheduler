@@ -144,6 +144,16 @@ export class ShabbatSchedulerCard extends LitElement {
       const unsubscribe = await this._hass.connection.subscribeMessage(
         (payload: CardState) => {
           if (generation !== this._generation) return;
+          // A tapped chip is honest (the preview banner says so) and
+          // recoverable (tap the matching chip again) - but a wall
+          // dashboard left on, say, 3d must not stay in preview once the
+          // coming block is actually a 3-day Chag. Reset only when the
+          // length itself changes, not on every push - a push is every
+          // state change in the whole system, and resetting on each would
+          // throw away a deliberate preview choice mid-use.
+          if (this._state?.block?.length !== payload.block?.length) {
+            this._selectedProfile = null;
+          }
           this._state = payload;
           this._error = null;
         },

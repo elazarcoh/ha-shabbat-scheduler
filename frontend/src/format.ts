@@ -307,10 +307,14 @@ export function formToCreate(
 /**
  * Only the fields that genuinely differ.
  *
- * `changes_from_api` takes a partial, and sending the whole rule back
- * would record an edit of every field in the logbook every time anyone
- * saved anything. Compared by value, not reference - a devices array
- * rebuilt from the same strings has not changed.
+ * `changes_from_api` takes a partial, so a small diff keeps the write
+ * small and the push it triggers meaningful. This is not what makes an
+ * unchanged save skip the round trip, though - it does not: the card
+ * always asks the server rather than assuming a diff of `{}` means
+ * nothing could go wrong (the entry could be unloaded, the connection
+ * dead, the rule deleted by another client). See `_saveChanges` in
+ * `card.ts`. Compared by value, not reference - a devices array rebuilt
+ * from the same strings has not changed.
  */
 export function formToChanges(
   form: RuleFormState,

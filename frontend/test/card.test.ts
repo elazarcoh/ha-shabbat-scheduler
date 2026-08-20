@@ -552,6 +552,11 @@ describe('authoring', () => {
   });
 
   it('keeps the dialog open and shows the message when the server refuses', async () => {
+    // The saved form must actually differ from the original: the server
+    // validates and stores rule.time already, so it can never answer
+    // "not a valid clock time" for an unchanged value - only for a value
+    // the user just typed. An unchanged form here would test a rejection
+    // the server cannot produce in production.
     const { hass, send } = fakeHass();
     hass.callWS = vi.fn(async () => { throw { code: 'invalid_format', message: 'time is not a valid clock time' }; });
     const el = await mount(hass);
@@ -561,7 +566,10 @@ describe('authoring', () => {
 
     el.shadowRoot!.querySelector('shabbat-rule-dialog')!.dispatchEvent(
       new CustomEvent('dialog-save', {
-        detail: { rule: withRules().rules[0], form: ruleToForm(withRules().rules[0]) },
+        detail: {
+          rule: withRules().rules[0],
+          form: { ...ruleToForm(withRules().rules[0]), time: '99:99:99' },
+        },
       }),
     );
     await el.updateComplete;
@@ -611,6 +619,43 @@ describe('authoring', () => {
     expect(dialog.seed.time).toBe('11:00:00');
   });
 
+  // `_onDuplicate` also sets `_editing` and `_creatingDay` (both already
+  // `@state`), which on their own would trigger the re-render that makes
+  // the seed show up correctly even if `_duplicateSeed` itself were a
+  // plain field - so a duplicate-then-check test proves nothing about the
+  // decorator specifically. Force the case where those two fields do NOT
+  // change value on a second duplicate (same day, still not editing) - the
+  // only path where `_duplicateSeed` alone is what has to trigger the
+  // render.
+  it('reflects a second duplicate on the same day, because _duplicateSeed is itself reactive', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(withRules());
+    el._editing = withRules().rules[0];
+    await el.updateComplete;
+
+    const dialog = () => el.shadowRoot!.querySelector('shabbat-rule-dialog') as any;
+    dialog().dispatchEvent(
+      new CustomEvent('dialog-duplicate', {
+        detail: { rule: withRules().rules[0], form: ruleToForm(withRules().rules[0]) },
+      }),
+    );
+    await el.updateComplete;
+    // Both now hold values that will NOT change on the next duplicate.
+    expect(el._editing).toBeNull();
+    expect(el._creatingDay).toBe('1');
+
+    const secondForm = { ...ruleToForm(withRules().rules[0]), time: '15:00:00' };
+    dialog().dispatchEvent(
+      new CustomEvent('dialog-duplicate', {
+        detail: { rule: withRules().rules[0], form: secondForm },
+      }),
+    );
+    await el.updateComplete;
+
+    expect(dialog().seed.time).toBe('15:00:00');
+  });
+
   it('offers no authoring at all to a read-only user', async () => {
     const { hass, send } = fakeHass({ user: { is_admin: false } });
     const el = await mount(hass);
@@ -618,5 +663,197 @@ describe('authoring', () => {
     await el.updateComplete;
     const group = el.shadowRoot!.querySelector('shabbat-day-group') as any;
     expect(group.canWrite).toBe(false);
+  });
+
+  // ---- an unchanged save is still a decision, not an accident ----
+
+  it('always sends rules/update, even with an empty diff, rather than assuming nothing could go wrong', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(withRules());
+    await el.updateComplete;
+    el._editing = withRules().rules[0];
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-rule-dialog')!.dispatchEvent(
+      new CustomEvent('dialog-save', {
+        detail: {
+          rule: withRules().rules[0],
+          form: ruleToForm(withRules().rules[0]),
+        },
+      }),
+    );
+    await el.updateComplete;
+
+    expect(hass.callWS).toHaveBeenCalledWith({
+      type: 'shabbat_scheduler/rules/update',
+      rule_id: 'r1',
+      changes: {},
+    });
+  });
+
+  // ---- delete: the destructive command had no card-level test ----
+
+  it('sends rules/delete with the rule id and closes only on success', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(withRules());
+    el._editing = withRules().rules[0];
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-rule-dialog')!.dispatchEvent(
+      new CustomEvent('dialog-delete', {
+        detail: { rule: withRules().rules[0] },
+      }),
+    );
+    await flush();
+    await el.updateComplete;
+
+    expect(hass.callWS).toHaveBeenCalledWith({
+      type: 'shabbat_scheduler/rules/delete',
+      rule_id: 'r1',
+    });
+    expect(el.shadowRoot!.querySelector('shabbat-rule-dialog')).toBeNull();
+  });
+
+  it('keeps the dialog open when the server refuses a delete', async () => {
+    const { hass, send } = fakeHass();
+    hass.callWS = vi.fn(async () => {
+      throw { code: 'invalid_state', message: 'rule is referenced elsewhere' };
+    });
+    const el = await mount(hass);
+    send(withRules());
+    el._editing = withRules().rules[0];
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-rule-dialog')!.dispatchEvent(
+      new CustomEvent('dialog-delete', {
+        detail: { rule: withRules().rules[0] },
+      }),
+    );
+    await el.updateComplete;
+    await el.updateComplete;
+
+    expect(el.shadowRoot!.querySelector('shabbat-rule-dialog')).not.toBeNull();
+  });
+
+  // ---- defaults: what every rule inherits ----
+
+  it('opens the defaults dialog from the gear and sends defaults/update on save', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(state());
+    await el.updateComplete;
+
+    const header = el.shadowRoot!.querySelector('shabbat-block-header')!;
+    const gear = header.shadowRoot!.querySelector('.gear') as HTMLElement;
+    expect(gear).not.toBeNull();
+    gear.click();
+    await el.updateComplete;
+
+    expect(el.shadowRoot!.querySelector('shabbat-defaults-dialog')).not.toBeNull();
+
+    el.shadowRoot!.querySelector('shabbat-defaults-dialog')!.dispatchEvent(
+      new CustomEvent('defaults-save', {
+        detail: { defaults: { devices: ['climate.salon'], settings: {} } },
+      }),
+    );
+    await flush();
+    await el.updateComplete;
+
+    expect(hass.callWS).toHaveBeenCalledWith({
+      type: 'shabbat_scheduler/defaults/update',
+      defaults: { devices: ['climate.salon'], settings: {} },
+    });
+    expect(el.shadowRoot!.querySelector('shabbat-defaults-dialog')).toBeNull();
+  });
+
+  // ---- the block:null dead end this plan's headline fix removes ----
+
+  it('renders day groups and the preview banner with no block, once a profile is selected', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(state({ block: null }));
+    el._selectedProfile = 1;
+    await el.updateComplete;
+
+    expect(el.shadowRoot!.querySelectorAll('shabbat-day-group').length).toBe(2);
+    expect(el.shadowRoot!.textContent).toContain('Preview');
+  });
+
+  // ---- the row tap: the sole entry point to authoring, for real ----
+
+  it('opens the dialog from an actual tap on the rendered row, crossing both shadow roots', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(withRules());
+    await el.updateComplete;
+
+    // withRules() puts its one rule on day '1', not 'erev' - the day
+    // groups render in calendar order, so the FIRST one is the empty erev
+    // group. Find the group that actually holds a row rather than assume
+    // position.
+    const dayGroups = [...el.shadowRoot!.querySelectorAll('shabbat-day-group')] as (HTMLElement &
+      Record<string, unknown> & { updateComplete: Promise<unknown> })[];
+    await Promise.all(dayGroups.map((g) => g.updateComplete));
+    const dayGroup = dayGroups.find(
+      (g) => g.shadowRoot!.querySelector('shabbat-rule-row') !== null,
+    )!;
+    expect(dayGroup).not.toBeUndefined();
+    const ruleRow = dayGroup.shadowRoot!.querySelector('shabbat-rule-row') as HTMLElement &
+      Record<string, unknown> & { updateComplete: Promise<unknown> };
+    await ruleRow.updateComplete;
+    const row = ruleRow.shadowRoot!.querySelector('.row') as HTMLElement;
+    expect(row).not.toBeNull();
+
+    row.click();
+    await el.updateComplete;
+
+    const dialog = el.shadowRoot!.querySelector('shabbat-rule-dialog') as any;
+    expect(dialog).not.toBeNull();
+    expect(dialog.rule.id).toBe('r1');
+  });
+
+  // ---- a wall dashboard left on a preview must not stay stuck there ----
+
+  it('resets the selected profile once the coming block\'s length changes', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(state());
+    await el.updateComplete;
+    el._selectedProfile = 3;
+    await el.updateComplete;
+    expect(el._profile).toBe(3);
+
+    send(
+      state({
+        block: {
+          length: 3,
+          candle_lighting: '2026-08-14T18:44:00+03:00',
+          havdalah: '2026-08-17T20:10:00+03:00',
+          dates: {
+            erev: '2026-08-14', '1': '2026-08-15', '2': '2026-08-16', '3': '2026-08-17',
+          },
+        },
+      }),
+    );
+    await el.updateComplete;
+
+    expect(el._selectedProfile).toBeNull();
+    expect(el._profile).toBe(3);
+  });
+
+  it('keeps the selected profile across a push whose block length has not changed', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(state());
+    await el.updateComplete;
+    el._selectedProfile = 3;
+    await el.updateComplete;
+
+    send(state({ enabled: true }));
+    await el.updateComplete;
+
+    expect(el._selectedProfile).toBe(3);
   });
 });

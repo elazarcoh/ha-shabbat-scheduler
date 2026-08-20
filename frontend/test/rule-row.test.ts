@@ -105,4 +105,59 @@ describe('shabbat-rule-row', () => {
     });
     expect(el.shadowRoot!.querySelector('.conflict')).toBeNull();
   });
+
+  // ---- the row is the sole entry point to authoring - it must be
+  // operable without a pointer, not just tappable ----
+
+  it('is a focusable, announced control - not a bare div with a click handler', async () => {
+    const el = await render({ rule: rule({}) });
+    const row = el.shadowRoot!.querySelector('.row') as HTMLElement;
+    expect(row.getAttribute('tabindex')).toBe('0');
+    expect(row.getAttribute('role')).toBe('button');
+  });
+
+  it('opens on Enter as well as on a tap', async () => {
+    const el = await render({ rule: rule({ id: 'a' }) });
+    const row = el.shadowRoot!.querySelector('.row') as HTMLElement;
+
+    let detail: { rule?: { id: string } } | null = null;
+    el.addEventListener('rule-open', (event: Event) => {
+      detail = (event as CustomEvent).detail;
+    });
+
+    row.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }),
+    );
+
+    expect(detail).not.toBeNull();
+    expect((detail as any).rule.id).toBe('a');
+  });
+
+  it('opens on Space as well', async () => {
+    const el = await render({ rule: rule({ id: 'a' }) });
+    const row = el.shadowRoot!.querySelector('.row') as HTMLElement;
+
+    let count = 0;
+    el.addEventListener('rule-open', () => { count += 1; });
+
+    row.dispatchEvent(
+      new KeyboardEvent('keydown', { key: ' ', bubbles: true, composed: true }),
+    );
+
+    expect(count).toBe(1);
+  });
+
+  it('does not open on an unrelated key', async () => {
+    const el = await render({ rule: rule({ id: 'a' }) });
+    const row = el.shadowRoot!.querySelector('.row') as HTMLElement;
+
+    let count = 0;
+    el.addEventListener('rule-open', () => { count += 1; });
+
+    row.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, composed: true }),
+    );
+
+    expect(count).toBe(0);
+  });
 });

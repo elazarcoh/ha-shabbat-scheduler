@@ -185,6 +185,17 @@ The rules remain fully visible either way — every rule has its own switch
 entity, and the `simulate` service and `preview` command both take an
 explicit `block_length`.
 
+## Deleting a rule is immediate, with no confirmation
+
+Delete lives inside the edit dialog and acts at once. There is no confirmation
+step and no undo: the rule and its switch entity are gone.
+
+This was chosen deliberately rather than overlooked. Reaching delete already
+takes two intentional actions — open the row, then tap delete — and a
+confirmation modal on a wall tablet becomes muscle memory within a week, which
+buys nothing. Recovering a deleted rule means adding it again, or re-importing
+a YAML export.
+
 ## Deployment note
 
 Nothing here has been installed on the live instance. The integration ships

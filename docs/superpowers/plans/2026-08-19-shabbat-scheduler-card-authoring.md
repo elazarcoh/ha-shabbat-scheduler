@@ -929,7 +929,10 @@ git commit -m "feat: device-aware settings, offering what the devices actually s
 
 **Interfaces:**
 - Consumes: `ruleToForm` (Task 3), `<shabbat-device-settings>` (Task 4).
-- Produces: `<shabbat-rule-dialog>` with properties `rule: RuleData | null` (null = create), `day: string`, `profile: number`, `defaults: Defaults`, `states`, `canWrite: boolean`, `language: string`, `error: string | null`, `busy: boolean`. Fires `dialog-save` (detail `{ form, rule }`), `dialog-delete` (detail `{ rule }`), `dialog-duplicate` (detail `{ form, rule }`), `dialog-close`.
+- Produces: `<shabbat-rule-dialog>` with properties `rule: RuleData | null` (null = create), `seed: RuleFormState | null`, `day: string`, `profile: number`, `defaults: Defaults`, `states`, `canWrite: boolean`, `language: string`, `error: string | null`, `busy: boolean`. Fires `dialog-save` (detail `{ form, rule }`), `dialog-delete` (detail `{ rule }`), `dialog-duplicate` (detail `{ form, rule }`), `dialog-close`.
+
+`seed` is what makes duplication actually duplicate: a create opened with a
+seed starts from those values instead of an empty form.
 
 This task renders the form and its states. Task 6 wires the actions to the server.
 
@@ -1055,6 +1058,21 @@ describe('shabbat-rule-dialog', () => {
     expect((el.shadowRoot!.querySelector('.script') as HTMLInputElement).value)
       .toBe('script.boiler');
   });
+
+  it('starts a seeded create from the seed, which is what makes duplicate duplicate', async () => {
+    const el = await render({
+      rule: null,
+      seed: { ...ruleToForm(existing), time: '11:00:00' },
+    });
+    expect(el.shadowRoot!.textContent).toContain('Add rule');
+    expect((el.shadowRoot!.querySelector('.name') as HTMLInputElement).value)
+      .toBe('Morning');
+    expect((el.shadowRoot!.querySelector('.time') as HTMLInputElement).value)
+      .toBe('11:00:00');
+    // Still a create - a duplicate that offered delete would delete the
+    // rule it was copied from.
+    expect(el.shadowRoot!.querySelector('.delete')).toBeNull();
+  });
 });
 ```
 
@@ -1086,6 +1104,8 @@ const EMPTY_FORM: RuleFormState = {
 export class ShabbatRuleDialog extends LitElement {
   /** null means create. */
   @property({ attribute: false }) rule: RuleData | null = null;
+  /** Pre-filled values for a create. This is what duplication uses. */
+  @property({ attribute: false }) seed: RuleFormState | null = null;
   @property() day = 'erev';
   @property({ type: Number }) profile = 1;
   @property({ attribute: false }) defaults: Defaults = {};
@@ -1163,13 +1183,22 @@ export class ShabbatRuleDialog extends LitElement {
 
   override willUpdate() {
     // Seed the form once per opened rule. Re-seeding on every update
-    // would throw away what the user has typed each time a push arrives.
-    const key = this.rule ? this.rule.id : `new:${this.day}:${this.profile}`;
+    // would throw away what the user has typed each time a push arrives -
+    // and pushes arrive constantly, since `hass` is reassigned on every
+    // state change in the whole system.
+    const key = this.rule
+      ? `edit:${this.rule.id}`
+      : `new:${this.day}:${this.profile}:${this.seed ? 'seeded' : 'blank'}`;
     if (this._seeded !== key) {
       this._seeded = key;
-      this._form = this.rule
-        ? ruleToForm(this.rule)
-        : { ...EMPTY_FORM, day: this.day };
+      if (this.rule) {
+        this._form = ruleToForm(this.rule);
+      } else if (this.seed) {
+        // A duplicate: same values, no id, so saving creates a new rule.
+        this._form = { ...this.seed, day: this.day };
+      } else {
+        this._form = { ...EMPTY_FORM, day: this.day };
+      }
       this._advanced = false;
     }
   }
@@ -1979,6 +2008,30 @@ describe('authoring', () => {
     }
   });
 
+  it('duplicating opens a create pre-filled from the original', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(withRules());
+    el._editing = withRules().rules[0];
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-rule-dialog')!.dispatchEvent(
+      new CustomEvent('dialog-duplicate', {
+        detail: {
+          rule: withRules().rules[0],
+          form: ruleToForm(withRules().rules[0]),
+        },
+      }),
+    );
+    await el.updateComplete;
+
+    const dialog = el.shadowRoot!.querySelector('shabbat-rule-dialog') as any;
+    // A create, not an edit - saving must add a rule, not overwrite one.
+    expect(dialog.rule).toBeNull();
+    // ...but carrying the original's values, or it duplicates nothing.
+    expect(dialog.seed.time).toBe('11:00:00');
+  });
+
   it('offers no authoring at all to a read-only user', async () => {
     const { hass, send } = fakeHass({ user: { is_admin: false } });
     const el = await mount(hass);
@@ -2080,6 +2133,7 @@ Add the command sender and the handlers:
   private _closeDialogs = () => {
     this._editing = null;
     this._creatingDay = null;
+    this._duplicateSeed = null;
     this._defaultsOpen = false;
     this._dialogError = null;
   };
@@ -2087,12 +2141,14 @@ Add the command sender and the handlers:
   private _onRuleOpen = (event: Event) => {
     this._editing = (event as CustomEvent).detail.rule as RuleData;
     this._creatingDay = null;
+    this._duplicateSeed = null;
     this._dialogError = null;
   };
 
   private _onRuleAdd = (event: Event) => {
     this._creatingDay = (event as CustomEvent).detail.day as string;
     this._editing = null;
+    this._duplicateSeed = null;
     this._dialogError = null;
   };
 
@@ -2133,18 +2189,21 @@ Add the command sender and the handlers:
     }
   };
 
+  @state() private _duplicateSeed: RuleFormState | null = null;
+
   private _onDuplicate = (event: Event) => {
-    // Composed client-side from rules/create: the form is reopened as a
-    // new rule, so the user can move it before saving. The server
-    // generates the id, so no rules/duplicate command is needed.
+    // Composed client-side from rules/create: the dialog reopens as a
+    // CREATE carrying the same values, so the user can move it before
+    // saving. The server generates the id, so no rules/duplicate command
+    // is needed. `_duplicateSeed` must be reactive and must be passed to
+    // the dialog's `seed` property - without that the dialog reseeds from
+    // EMPTY_FORM and a duplicate duplicates nothing.
     const { form } = (event as CustomEvent).detail as { form: RuleFormState };
     this._editing = null;
     this._creatingDay = form.day;
     this._duplicateSeed = form;
     this._dialogError = null;
   };
-
-  private _duplicateSeed: RuleFormState | null = null;
 
   private _onDefaultsSave = async (event: Event) => {
     const { defaults } = (event as CustomEvent).detail;
@@ -2188,6 +2247,7 @@ After the day groups, inside the same `<ha-card>`:
         ${this._editing !== null || this._creatingDay !== null
           ? html`<shabbat-rule-dialog
               .rule=${this._editing}
+              .seed=${this._duplicateSeed}
               .day=${this._creatingDay ?? this._editing?.day ?? 'erev'}
               .profile=${this._profile}
               .defaults=${this._state.defaults}

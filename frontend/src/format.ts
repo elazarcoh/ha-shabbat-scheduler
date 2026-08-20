@@ -4,7 +4,10 @@ import type {
   CardState,
   DayGroup,
   Defaults,
+  DeviceOptions,
+  HassEntity,
   RuleData,
+  RuleFormState,
   WarningData,
 } from './types';
 
@@ -13,10 +16,14 @@ function dayRank(day: string): number {
   return day === 'erev' ? -1 : Number(day);
 }
 
-function dayKeys(block: BlockData): string[] {
+function daysFor(length: number): string[] {
   const days = ['erev'];
-  for (let i = 1; i <= block.length; i += 1) days.push(String(i));
+  for (let i = 1; i <= length; i += 1) days.push(String(i));
   return days;
+}
+
+function dayKeys(block: BlockData): string[] {
+  return daysFor(block.length);
 }
 
 /**
@@ -35,34 +42,53 @@ export function orderedDates(block: BlockData): string[] {
     .filter((date): date is string => date !== undefined);
 }
 
+/** True when the selected length is not the one actually coming. */
+export function isPreview(state: CardState, profile: number): boolean {
+  return state.block === null || state.block.length !== profile;
+}
+
 /**
- * The timeline: one group per day of the block, in order, each carrying
- * its date, its rules ordered by time, and its zmanim marker if one
- * falls at its end.
+ * The timeline for one profile.
  *
- * Only rules matching the block's length are shown - rules are authored
- * per profile, and a 3-day chag's rules must not appear on a plain
- * Shabbat.
+ * With no `profile`, or one equal to the coming block's length, this is
+ * the real thing: real dates on the headings and the zmanim markers in
+ * place. For any other length it is a PREVIEW - the same rules, but no
+ * dates and no markers at all.
+ *
+ * Dropping the dates is deliberate. A hypothetical Chag's dates would be
+ * a guess that looks exactly like a real one, and this card exists
+ * because its user could not otherwise tell what was real.
+ *
+ * Only rules of the selected profile are shown: rules are authored per
+ * profile, and a 3-day Chag's rules must not appear on a plain Shabbat.
  */
-export function buildGroups(state: CardState): DayGroup[] {
+export function buildGroups(state: CardState, profile?: number): DayGroup[] {
   const { block } = state;
-  if (block === null) return [];
+  const length = profile ?? block?.length ?? null;
+  if (length === null) return [];
 
-  const lastDay = String(block.length);
-  return dayKeys(block).map((day) => {
-    const rules = state.rules
-      .filter((rule) => rule.profile === block.length && rule.day === day)
-      .sort((a, b) => a.time.localeCompare(b.time));
+  const preview = isPreview(state, length);
+  const lastDay = String(length);
 
-    let marker: DayGroup['marker'] = null;
-    if (day === 'erev') {
-      marker = { kind: 'candle_lighting', at: block.candle_lighting };
-    } else if (day === lastDay) {
-      marker = { kind: 'havdalah', at: block.havdalah };
-    }
+  return daysFor(length)
+    .map((day) => {
+      const rules = state.rules
+        .filter((rule) => rule.profile === length && rule.day === day)
+        .sort((a, b) => a.time.localeCompare(b.time));
 
-    return { day, date: block.dates[day] ?? null, rules, marker };
-  }).sort((a, b) => dayRank(a.day) - dayRank(b.day));
+      let marker: DayGroup['marker'] = null;
+      if (!preview && block !== null) {
+        if (day === 'erev') {
+          marker = { kind: 'candle_lighting', at: block.candle_lighting };
+        } else if (day === lastDay) {
+          marker = { kind: 'havdalah', at: block.havdalah };
+        }
+      }
+
+      const date = preview || block === null ? null : (block.dates[day] ?? null);
+      return { day, date, rules, marker };
+    })
+    .sort((a, b) => dayRank(a.day) - dayRank(b.day));
 }
 
 /**
@@ -151,4 +177,154 @@ export function formatWarning(warning: WarningData, language?: string): string {
     return parts.join(' · ');
   }
   return warning.message ?? '';
+}
+
+function readList(entity: HassEntity, key: string): string[] | null {
+  const value = entity.attributes[key];
+  return Array.isArray(value) ? value.map(String) : null;
+}
+
+function readNumber(entity: HassEntity, key: string): number | null {
+  const value = entity.attributes[key];
+  return typeof value === 'number' ? value : null;
+}
+
+/**
+ * What the selected devices actually offer, read from their own state.
+ *
+ * The three units here disagree: the salon offers `quiet` and not
+ * `silent`, the AUX units the reverse. Offering a fixed list is how a
+ * rule gets saved with a fan mode its device rejects - discovered at
+ * 11:00 on Shabbat, when nobody can fix it. With several devices the
+ * intersection is the only honest answer: a mode only one of them
+ * supports cannot be applied to the others.
+ *
+ * A device that cannot be read is REPORTED, never silently treated as
+ * offering nothing - that would intersect every option away and present
+ * an empty form as though the device were the problem.
+ */
+export function deviceOptions(
+  states: Record<string, HassEntity | undefined>,
+  entityIds: string[],
+): DeviceOptions {
+  const unreadable: string[] = [];
+  const readable: HassEntity[] = [];
+
+  for (const id of entityIds) {
+    const entity = states[id];
+    if (
+      entity === undefined ||
+      entity.state === 'unavailable' ||
+      entity.state === 'unknown'
+    ) {
+      unreadable.push(id);
+      continue;
+    }
+    readable.push(entity);
+  }
+
+  const climates = readable.filter((entity) => readList(entity, 'hvac_modes') !== null);
+  if (climates.length === 0) {
+    return {
+      hvacModes: [], fanModes: [], minTemp: null, maxTemp: null,
+      tempStep: null, unreadable, climate: false, intersected: false,
+    };
+  }
+
+  const intersect = (key: string): string[] =>
+    climates
+      .map((entity) => readList(entity, key) ?? [])
+      .reduce((acc, list) => acc.filter((item) => list.includes(item)));
+
+  const bounds = (key: string, pick: (values: number[]) => number): number | null => {
+    const values = climates
+      .map((entity) => readNumber(entity, key))
+      .filter((value): value is number => value !== null);
+    return values.length ? pick(values) : null;
+  };
+
+  return {
+    hvacModes: intersect('hvac_modes'),
+    fanModes: intersect('fan_modes'),
+    // The narrowest range every device accepts.
+    minTemp: bounds('min_temp', (values) => Math.max(...values)),
+    maxTemp: bounds('max_temp', (values) => Math.min(...values)),
+    tempStep: bounds('target_temp_step', (values) => Math.max(...values)),
+    unreadable,
+    climate: true,
+    intersected: climates.length > 1,
+  };
+}
+
+/** The domains this integration can actually drive. */
+const DRIVABLE = ['climate.', 'input_boolean.', 'switch.'];
+
+/**
+ * Entities a rule may target, sorted.
+ *
+ * Sorted because an unsorted list reshuffles whenever `hass.states` is
+ * rebuilt, which is every state change in the whole system - a select
+ * whose options move under the user's finger.
+ */
+export function selectableDevices(
+  states: Record<string, HassEntity | undefined>,
+): string[] {
+  return Object.keys(states)
+    .filter((id) => DRIVABLE.some((prefix) => id.startsWith(prefix)))
+    .sort();
+}
+
+const FORM_FIELDS = [
+  'day', 'time', 'action', 'devices', 'settings', 'name', 'icon',
+  'color', 'enabled', 'script', 'variables', 'replay_on_restart',
+] as const;
+
+export function ruleToForm(rule: RuleData): RuleFormState {
+  return {
+    day: rule.day,
+    time: rule.time,
+    action: rule.action,
+    devices: [...rule.devices],
+    settings: { ...rule.settings },
+    name: rule.name,
+    icon: rule.icon,
+    color: rule.color,
+    enabled: rule.enabled,
+    script: rule.script,
+    variables: { ...rule.variables },
+    replay_on_restart: rule.replay_on_restart,
+  };
+}
+
+/** Everything, plus the profile the day is being authored under. */
+export function formToCreate(
+  form: RuleFormState,
+  profile: number,
+): Record<string, unknown> {
+  return { ...form, profile };
+}
+
+/**
+ * Only the fields that genuinely differ.
+ *
+ * `changes_from_api` takes a partial, so a small diff keeps the write
+ * small and the push it triggers meaningful. This is not what makes an
+ * unchanged save skip the round trip, though - it does not: the card
+ * always asks the server rather than assuming a diff of `{}` means
+ * nothing could go wrong (the entry could be unloaded, the connection
+ * dead, the rule deleted by another client). See `_saveChanges` in
+ * `card.ts`. Compared by value, not reference - a devices array rebuilt
+ * from the same strings has not changed.
+ */
+export function formToChanges(
+  form: RuleFormState,
+  original: RuleData,
+): Record<string, unknown> {
+  const changes: Record<string, unknown> = {};
+  for (const field of FORM_FIELDS) {
+    const next = form[field];
+    const prev = (original as unknown as Record<string, unknown>)[field];
+    if (JSON.stringify(next) !== JSON.stringify(prev)) changes[field] = next;
+  }
+  return changes;
 }

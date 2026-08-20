@@ -3,6 +3,7 @@ import {
   actionColour,
   buildGroups,
   formatWarning,
+  isPreview,
   ruleBrief,
   unattachedWarnings,
   warningsForRule,
@@ -71,6 +72,62 @@ describe('buildGroups', () => {
 
   it('returns nothing when there is no block', () => {
     expect(buildGroups(state({ block: null }))).toEqual([]);
+  });
+});
+
+describe('buildGroups with a profile', () => {
+  const threeDayRule = rule({ id: 'chag', profile: 3, day: '2', time: '11:00:00' });
+
+  it('shows the current profile with real dates when it matches the block', () => {
+    const groups = buildGroups(state({ rules: [rule({ id: 'a', profile: 1, day: '1' })] }), 1);
+    expect(groups.map((g) => g.day)).toEqual(['erev', '1']);
+    expect(groups[1].date).toBe('2026-08-15');
+    expect(groups[1].marker?.kind).toBe('havdalah');
+  });
+
+  it('gives a preview profile the right number of days', () => {
+    const groups = buildGroups(state({ rules: [threeDayRule] }), 3);
+    expect(groups.map((g) => g.day)).toEqual(['erev', '1', '2', '3']);
+  });
+
+  it('drops dates and markers in preview, so nothing reads as a real date', () => {
+    const groups = buildGroups(state({ rules: [threeDayRule] }), 3);
+    for (const group of groups) {
+      expect(group.date).toBeNull();
+      expect(group.marker).toBeNull();
+    }
+  });
+
+  it('shows the selected profile rules, not the block-length ones', () => {
+    const groups = buildGroups(
+      state({ rules: [rule({ id: 'one', profile: 1, day: '1' }), threeDayRule] }),
+      3,
+    );
+    expect(groups.flatMap((g) => g.rules.map((r) => r.id))).toEqual(['chag']);
+  });
+
+  it('still works with no block at all, so the card is not a dead end', () => {
+    const groups = buildGroups(state({ block: null, rules: [threeDayRule] }), 3);
+    expect(groups.map((g) => g.day)).toEqual(['erev', '1', '2', '3']);
+    expect(groups[0].date).toBeNull();
+  });
+
+  it('defaults to the block length when no profile is given', () => {
+    const groups = buildGroups(state({ rules: [rule({ id: 'a', profile: 1, day: '1' })] }));
+    expect(groups.map((g) => g.day)).toEqual(['erev', '1']);
+    expect(groups[1].date).toBe('2026-08-15');
+  });
+});
+
+describe('isPreview', () => {
+  it('is false for the coming block length', () => {
+    expect(isPreview(state({}), 1)).toBe(false);
+  });
+  it('is true for any other length', () => {
+    expect(isPreview(state({}), 3)).toBe(true);
+  });
+  it('is true whenever there is no block to be current about', () => {
+    expect(isPreview(state({ block: null }), 1)).toBe(true);
   });
 });
 
@@ -195,5 +252,198 @@ describe('formatWarning', () => {
 
   it('gives English and Hebrew visibly different text', () => {
     expect(formatWarning(conflict, 'en')).not.toBe(formatWarning(conflict, 'he'));
+  });
+});
+
+import { deviceOptions } from '../src/format';
+import type { HassEntity } from '../src/types';
+
+import { formToChanges, formToCreate, ruleToForm } from '../src/format';
+
+const base = rule({
+  id: 'r1', profile: 1, day: '1', time: '11:00:00', action: 'on',
+  devices: ['climate.salon'], settings: { temperature: 26 }, name: 'Morning',
+});
+
+describe('ruleToForm / formToCreate / formToChanges', () => {
+  it('round-trips a rule through the form unchanged', () => {
+    expect(formToChanges(ruleToForm(base), base)).toEqual({});
+  });
+
+  it('sends only what changed', () => {
+    const form = { ...ruleToForm(base), time: '12:00:00' };
+    expect(formToChanges(form, base)).toEqual({ time: '12:00:00' });
+  });
+
+  it('detects a changed device list, not just a changed reference', () => {
+    const same = { ...ruleToForm(base), devices: ['climate.salon'] };
+    expect(formToChanges(same, base)).toEqual({});
+    const different = { ...ruleToForm(base), devices: ['climate.kids'] };
+    expect(formToChanges(different, base)).toEqual({ devices: ['climate.kids'] });
+  });
+
+  it('detects a changed setting value', () => {
+    const form = { ...ruleToForm(base), settings: { temperature: 24 } };
+    expect(formToChanges(form, base)).toEqual({ settings: { temperature: 24 } });
+  });
+
+  it('sends a cleared name as null rather than omitting it', () => {
+    const form = { ...ruleToForm(base), name: null };
+    expect(formToChanges(form, base)).toEqual({ name: null });
+  });
+
+  it('builds a create payload carrying the profile and every field', () => {
+    const payload = formToCreate(ruleToForm(base), 3);
+    expect(payload.profile).toBe(3);
+    expect(payload.day).toBe('1');
+    expect(payload.action).toBe('on');
+    expect(payload.devices).toEqual(['climate.salon']);
+    // A create must never carry an id - the server generates it.
+    expect(payload.id).toBeUndefined();
+  });
+
+  it('keeps enabled as a real boolean, never a string', () => {
+    const payload = formToCreate({ ...ruleToForm(base), enabled: false }, 1);
+    expect(payload.enabled).toBe(false);
+    expect(typeof payload.enabled).toBe('boolean');
+  });
+});
+
+// The attributes of the units this system drives.
+//
+// `min_temp` and `target_temp_step` are deliberately DIFFERENT between the
+// two. Both units really do report 16 / 0.5, but a fixture where the two
+// devices agree cannot tell `Math.max` from `Math.min`: with both at 16,
+// swapping "narrowest" for "widest" on the minimum changed nothing and the
+// whole suite stayed green, exactly as it did for the "already sorted"
+// fixture this branch fixed once before. Only `max_temp` (31 vs 32)
+// discriminated. Splitting the minimums and the steps is what makes
+// "the narrowest range every device accepts" an assertion rather than a
+// coincidence - and 18 / 1.0 are ordinary values for a unit of this kind.
+const SALON: HassEntity = {
+  state: 'off',
+  attributes: {
+    hvac_modes: ['off', 'heat_cool', 'cool', 'fan_only', 'dry', 'heat'],
+    fan_modes: ['auto', 'quiet', 'low', 'medlow', 'medium', 'medhigh', 'high', 'strong'],
+    min_temp: 16.0, max_temp: 31.0, target_temp_step: 0.5,
+  },
+};
+const KIDS: HassEntity = {
+  state: 'off',
+  attributes: {
+    hvac_modes: ['off', 'auto', 'cool', 'heat', 'dry', 'fan_only'],
+    fan_modes: ['auto', 'low', 'medium', 'high', 'turbo', 'silent'],
+    min_temp: 18, max_temp: 32, target_temp_step: 1.0,
+  },
+};
+const BOOLEAN: HassEntity = { state: 'off', attributes: {} };
+
+describe('deviceOptions', () => {
+  it('offers exactly what a single device declares', () => {
+    const o = deviceOptions({ 'climate.salon': SALON }, ['climate.salon']);
+    expect(o.fanModes).toContain('quiet');
+    expect(o.fanModes).not.toContain('silent');
+    expect(o.minTemp).toBe(16);
+    expect(o.maxTemp).toBe(31);
+    expect(o.tempStep).toBe(0.5);
+    expect(o.climate).toBe(true);
+    expect(o.intersected).toBe(false);
+  });
+
+  it('offers exactly what the OTHER single device declares', () => {
+    // The pair above and this one differ in every bound, so a "narrowest"
+    // that had quietly become "widest" cannot hide behind one of them.
+    const o = deviceOptions({ 'climate.kids': KIDS }, ['climate.kids']);
+    expect(o.minTemp).toBe(18);
+    expect(o.maxTemp).toBe(32);
+    expect(o.tempStep).toBe(1.0);
+  });
+
+  it('intersects when devices disagree, dropping what only one offers', () => {
+    const o = deviceOptions(
+      { 'climate.salon': SALON, 'climate.kids': KIDS },
+      ['climate.salon', 'climate.kids'],
+    );
+    expect(o.fanModes).toEqual(['auto', 'low', 'medium', 'high']);
+    expect(o.fanModes).not.toContain('quiet');
+    expect(o.fanModes).not.toContain('silent');
+    expect(o.intersected).toBe(true);
+  });
+
+  it('narrows the temperature range to what every device accepts', () => {
+    const o = deviceOptions(
+      { 'climate.salon': SALON, 'climate.kids': KIDS },
+      ['climate.salon', 'climate.kids'],
+    );
+    // The narrowest range EVERY device accepts: the kids' floor and the
+    // salon's ceiling. Sending 16 to the kids' unit, or 32 to the salon's,
+    // is a value the device rejects - discovered at 11:00 on Shabbat.
+    expect(o.minTemp).toBe(18); // the kids' floor, not the salon's 16
+    expect(o.maxTemp).toBe(31); // the salon's ceiling, not the kids' 32
+    // Likewise the coarsest step: 16.5 is not a temperature both accept.
+    expect(o.tempStep).toBe(1.0);
+  });
+
+  it('reports a device it cannot read rather than pretending it offers nothing', () => {
+    const o = deviceOptions({ 'climate.salon': SALON }, ['climate.salon', 'climate.gone']);
+    expect(o.unreadable).toEqual(['climate.gone']);
+    // The readable device still contributes - an absent one must not
+    // intersect every option away to nothing.
+    expect(o.fanModes).toContain('quiet');
+  });
+
+  it('treats an unavailable entity as unreadable', () => {
+    const o = deviceOptions(
+      { 'climate.salon': { state: 'unavailable', attributes: {} } },
+      ['climate.salon'],
+    );
+    expect(o.unreadable).toEqual(['climate.salon']);
+    expect(o.climate).toBe(false);
+  });
+
+  it('says a non-climate device has no settings', () => {
+    const o = deviceOptions({ 'input_boolean.t': BOOLEAN }, ['input_boolean.t']);
+    expect(o.climate).toBe(false);
+    expect(o.fanModes).toEqual([]);
+    expect(o.unreadable).toEqual([]);
+  });
+
+  it('returns empty options for no devices at all', () => {
+    const o = deviceOptions({}, []);
+    expect(o.climate).toBe(false);
+    expect(o.intersected).toBe(false);
+  });
+});
+
+import { selectableDevices } from '../src/format';
+
+describe('selectableDevices', () => {
+  // Deliberately not alphabetical: 'switch.boiler' is inserted before
+  // 'climate.salon' and 'input_boolean.t' so an unsorted result would
+  // genuinely differ from a sorted one. With the old (alphabetical)
+  // insertion order, `Object.keys` already came out sorted, so both
+  // tests below passed whether or not `selectableDevices` sorted
+  // anything - that was the bug this fixture fixes.
+  const states = {
+    'switch.boiler': { state: 'off', attributes: {} },
+    'sensor.temperature': { state: '21', attributes: {} },
+    'climate.salon': SALON,
+    'light.kitchen': { state: 'off', attributes: {} },
+    'input_boolean.t': BOOLEAN,
+  };
+
+  it('offers only the domains this integration can drive', () => {
+    expect(selectableDevices(states)).toEqual([
+      'climate.salon', 'input_boolean.t', 'switch.boiler',
+    ]);
+  });
+
+  it('is sorted, so the list does not reshuffle between renders', () => {
+    const ids = selectableDevices(states);
+    expect(ids).toEqual([...ids].sort());
+  });
+
+  it('copes with no entities at all', () => {
+    expect(selectableDevices({})).toEqual([]);
   });
 });

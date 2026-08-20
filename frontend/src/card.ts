@@ -3,9 +3,11 @@ import { customElement, property, state } from 'lit/decorators.js';
 import './block-header';
 import './day-group';
 import './warnings';
-import { buildGroups } from './format';
+import './rule-dialog';
+import './defaults-dialog';
+import { buildGroups, formToChanges, formToCreate, isPreview } from './format';
 import { t } from './strings';
-import type { CardState, DayGroup } from './types';
+import type { CardState, DayGroup, RuleData, RuleFormState } from './types';
 import { CARD_VERSION } from './version';
 
 interface CardConfig {
@@ -51,6 +53,14 @@ export class ShabbatSchedulerCard extends LitElement {
     null;
   @property({ attribute: false }) private _config: CardConfig = {};
 
+  @state() private _selectedProfile: number | null = null;
+  @state() private _editing: RuleData | null = null;
+  @state() private _creatingDay: string | null = null;
+  @state() private _defaultsOpen = false;
+  @state() private _dialogError: string | null = null;
+  @state() private _busy = false;
+  @state() private _duplicateSeed: RuleFormState | null = null;
+
   private _hass: any;
   private _unsubscribe: (() => Promise<void>) | null = null;
   private _subscribed = false;
@@ -69,6 +79,14 @@ export class ShabbatSchedulerCard extends LitElement {
     .title { font-size: 1.1em; font-weight: 600; margin-block-end: 8px; }
     .message { color: var(--secondary-text-color, #666); padding-block: 8px; }
     .notice { color: var(--warning-color, #d9822b); }
+    .preview {
+      background: var(--secondary-background-color, #f4f4f4);
+      border-inline-start: 3px solid var(--primary-color, #03a9f4);
+      padding-block: 8px;
+      padding-inline: 12px;
+      margin-block: 8px;
+      font-size: 0.9em;
+    }
   `;
 
   setConfig(config: CardConfig) {
@@ -126,6 +144,16 @@ export class ShabbatSchedulerCard extends LitElement {
       const unsubscribe = await this._hass.connection.subscribeMessage(
         (payload: CardState) => {
           if (generation !== this._generation) return;
+          // A tapped chip is honest (the preview banner says so) and
+          // recoverable (tap the matching chip again) - but a wall
+          // dashboard left on, say, 3d must not stay in preview once the
+          // coming block is actually a 3-day Chag. Reset only when the
+          // length itself changes, not on every push - a push is every
+          // state change in the whole system, and resetting on each would
+          // throw away a deliberate preview choice mid-use.
+          if (this._state?.block?.length !== payload.block?.length) {
+            this._selectedProfile = null;
+          }
           this._state = payload;
           this._error = null;
         },
@@ -182,6 +210,11 @@ export class ShabbatSchedulerCard extends LitElement {
     return this._hass?.user?.is_admin === true;
   }
 
+  /** The selected profile, defaulting to the coming block's length. */
+  private get _profile(): number {
+    return this._selectedProfile ?? this._state?.block?.length ?? 1;
+  }
+
   /**
    * The day groups actually rendered, and `[]` for any payload this card
    * cannot draw. Total on purpose: `render` and `getCardSize` both go
@@ -190,8 +223,8 @@ export class ShabbatSchedulerCard extends LitElement {
    */
   private get _groups(): DayGroup[] {
     const state = this._state;
-    if (state === null || !state.block || !Array.isArray(state.rules)) return [];
-    return buildGroups(state);
+    if (state === null || !Array.isArray(state.rules)) return [];
+    return buildGroups(state, this._profile);
   }
 
   private _onMaster = (event: Event) => {
@@ -230,6 +263,125 @@ export class ShabbatSchedulerCard extends LitElement {
     }
   }
 
+  /**
+   * A websocket command, with its rejection surfaced.
+   *
+   * Nothing here is optimistic: the dialog closes only after the server
+   * accepts, and the redraw comes from the following push. On rejection
+   * the dialog stays open carrying the server's own message, because
+   * `rule_schema.py` owns validation and its wording is the truth.
+   */
+  private async _send(message: object): Promise<boolean> {
+    this._busy = true;
+    this._dialogError = null;
+    try {
+      await this._hass.callWS(message);
+      return true;
+    } catch (err) {
+      const detail = err as { message?: string } | null;
+      this._dialogError = detail?.message ?? String(err);
+      return false;
+    } finally {
+      this._busy = false;
+    }
+  }
+
+  private _closeDialogs = () => {
+    this._editing = null;
+    this._creatingDay = null;
+    this._duplicateSeed = null;
+    this._defaultsOpen = false;
+    this._dialogError = null;
+  };
+
+  private _onRuleOpen = (event: Event) => {
+    this._editing = (event as CustomEvent).detail.rule as RuleData;
+    this._creatingDay = null;
+    this._duplicateSeed = null;
+    this._dialogError = null;
+  };
+
+  private _onRuleAdd = (event: Event) => {
+    this._creatingDay = (event as CustomEvent).detail.day as string;
+    this._editing = null;
+    this._duplicateSeed = null;
+    this._dialogError = null;
+  };
+
+  private _onSave = async (event: Event) => {
+    const { form, rule } = (event as CustomEvent).detail as {
+      form: RuleFormState;
+      rule: RuleData | null;
+    };
+    const ok =
+      rule === null
+        ? await this._send({
+            type: 'shabbat_scheduler/rules/create',
+            rule: formToCreate(form, this._profile),
+          })
+        : await this._saveChanges(form, rule);
+    if (ok) this._closeDialogs();
+  };
+
+  private async _saveChanges(form: RuleFormState, rule: RuleData) {
+    // Always a round trip, even for an empty diff: the dialog cannot
+    // know locally whether the server will accept the save, and a
+    // client-side skip here would mean "nothing changed" quietly wins
+    // over a rejection the server would otherwise have raised.
+    //
+    // `rule` is the snapshot taken when the dialog opened (`_editing`),
+    // NOT the latest pushed copy, and that is deliberate. If another
+    // client edits the same rule while this dialog is open, the diff
+    // basis is stale - but every key the diff emits still carries exactly
+    // the value the form is showing, so the write itself can never be
+    // wrong. Diffing against the fresh copy instead would turn "a field
+    // the user can see was not sent" into "a field the user never touched
+    // silently overwrites what the other client just saved", which is
+    // strictly worse on a system where nobody can undo it by hand.
+    // Reseeding the form from the push is worse still: it discards what
+    // the user has typed, and pushes arrive on every state change in the
+    // whole system. Staying conservative is the correct trade.
+    return this._send({
+      type: 'shabbat_scheduler/rules/update',
+      rule_id: rule.id,
+      changes: formToChanges(form, rule),
+    });
+  }
+
+  private _onDelete = async (event: Event) => {
+    const { rule } = (event as CustomEvent).detail as { rule: RuleData };
+    if (await this._send({
+      type: 'shabbat_scheduler/rules/delete',
+      rule_id: rule.id,
+    })) {
+      this._closeDialogs();
+    }
+  };
+
+  private _onDuplicate = (event: Event) => {
+    // Composed client-side from rules/create: the dialog reopens as a
+    // CREATE carrying the same values, so the user can move it before
+    // saving. The server generates the id, so no rules/duplicate command
+    // is needed. `_duplicateSeed` must be reactive and must be passed to
+    // the dialog's `seed` property - without that the dialog reseeds from
+    // EMPTY_FORM and a duplicate duplicates nothing.
+    const { form } = (event as CustomEvent).detail as { form: RuleFormState };
+    this._editing = null;
+    this._creatingDay = form.day;
+    this._duplicateSeed = form;
+    this._dialogError = null;
+  };
+
+  private _onDefaultsSave = async (event: Event) => {
+    const { defaults } = (event as CustomEvent).detail;
+    if (await this._send({
+      type: 'shabbat_scheduler/defaults/update',
+      defaults,
+    })) {
+      this._closeDialogs();
+    }
+  };
+
   override render() {
     // Read once into a local: `_error` is a field, and TypeScript's
     // narrowing of a property access does not survive the intervening
@@ -265,7 +417,7 @@ export class ShabbatSchedulerCard extends LitElement {
     );
 
     return html`
-      <ha-card>
+      <ha-card @rule-open=${this._onRuleOpen}>
         ${this._config.title
           ? html`<div class="title">${this._config.title}</div>`
           : nothing}
@@ -278,10 +430,18 @@ export class ShabbatSchedulerCard extends LitElement {
           .dryRun=${this._state.dry_run}
           .canWrite=${this._canWrite}
           .masterEntityId=${this._state.master_entity_id}
+          .selectedProfile=${this._profile}
           .language=${this._language}
           @shabbat-master-toggle=${this._onMaster}
           @shabbat-dry-run-toggle=${this._onDryRun}
+          @profile-selected=${(event: Event) => {
+            this._selectedProfile = (event as CustomEvent).detail.profile;
+          }}
+          @defaults-open=${() => { this._defaultsOpen = true; }}
         ></shabbat-block-header>
+        ${isPreview(this._state, this._profile)
+          ? html`<div class="preview">${t(this._language, 'preview_banner')}</div>`
+          : nothing}
         <shabbat-warnings
           .warnings=${this._state.warnings}
           .displayedRuleIds=${displayedRuleIds}
@@ -294,9 +454,41 @@ export class ShabbatSchedulerCard extends LitElement {
               .defaults=${this._state!.defaults}
               .warnings=${this._state!.warnings}
               .language=${this._language}
+              .canWrite=${this._canWrite}
+              @rule-add=${this._onRuleAdd}
             ></shabbat-day-group>
           `,
         )}
+        ${this._editing !== null || this._creatingDay !== null
+          ? html`<shabbat-rule-dialog
+              .rule=${this._editing}
+              .seed=${this._duplicateSeed}
+              .day=${this._creatingDay ?? this._editing?.day ?? 'erev'}
+              .profile=${this._profile}
+              .defaults=${this._state.defaults}
+              .states=${this._hass?.states ?? {}}
+              .canWrite=${this._canWrite}
+              .busy=${this._busy}
+              .error=${this._dialogError}
+              .language=${this._language}
+              @dialog-save=${this._onSave}
+              @dialog-delete=${this._onDelete}
+              @dialog-duplicate=${this._onDuplicate}
+              @dialog-close=${this._closeDialogs}
+            ></shabbat-rule-dialog>`
+          : nothing}
+        ${this._defaultsOpen
+          ? html`<shabbat-defaults-dialog
+              .defaults=${this._state.defaults}
+              .states=${this._hass?.states ?? {}}
+              .canWrite=${this._canWrite}
+              .busy=${this._busy}
+              .error=${this._dialogError}
+              .language=${this._language}
+              @defaults-save=${this._onDefaultsSave}
+              @dialog-close=${this._closeDialogs}
+            ></shabbat-defaults-dialog>`
+          : nothing}
       </ha-card>
     `;
   }

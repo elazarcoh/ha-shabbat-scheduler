@@ -65,8 +65,21 @@ who can still read the whole schedule.
 
 The card shows only the rules matching the coming block's length, because
 rules are authored per profile — a 3-day chag's rules are not shown on a
-plain Shabbat. Editing rules from the card comes in a later release; for now
-use the switch entities, or `import_yaml`.
+plain Shabbat.
+
+Tap any rule to edit it, or use the **+ add** button under a day to create one
+there — the day and block length are taken from where you tapped. The dialog
+reads each device's own capabilities, so it offers exactly the fan modes and
+temperature range that device supports; select several devices and you get only
+what they all support, stated plainly.
+
+The **1d / 2d / 3d** chips switch which block length you are looking at, so a
+3-day Chag can be set up long before one arrives. Any length other than the
+coming one is shown as a preview: no dates, no candle-lighting or havdalah
+markers, and a banner saying so. Editing works exactly the same there.
+
+The gear opens the **shared defaults** — the devices and settings every rule
+inherits unless it sets its own.
 
 ## Services
 

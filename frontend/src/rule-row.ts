@@ -39,7 +39,19 @@ export class ShabbatRuleRow extends LitElement {
       margin-block-start: 2px;
     }
     .tag { font-size: 0.8em; color: var(--secondary-text-color, #666); }
+    .row { cursor: pointer; }
+    .row:focus-visible { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: -2px; }
   `;
+
+  private _open() {
+    this.dispatchEvent(
+      new CustomEvent('rule-open', {
+        detail: { rule: this.rule },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
 
   /**
    * The conflict text is rendered inline, not only as a `title=` tooltip.
@@ -62,7 +74,18 @@ export class ShabbatRuleRow extends LitElement {
     const conflicts = warningsForRule(this.rule.id, this.warnings);
     const title = this.rule.name;
     return html`
-      <div class="row ${this.rule.enabled ? '' : 'disabled'}">
+      <div
+        class="row ${this.rule.enabled ? '' : 'disabled'}"
+        tabindex="0"
+        role="button"
+        @click=${() => this._open()}
+        @keydown=${(event: KeyboardEvent) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            this._open();
+          }
+        }}
+      >
         <span class="dot" style="background:${actionColour(this.rule.action)}"></span>
         <span class="time">${this.rule.time.slice(0, 5)}</span>
         <div class="body">

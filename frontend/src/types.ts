@@ -17,6 +17,22 @@ export interface RuleData {
   color: string | null;
 }
 
+/** Everything the rule dialog edits. Mirrors RuleData minus `id` and `profile`. */
+export interface RuleFormState {
+  day: string;
+  time: string;
+  action: string;
+  devices: string[];
+  settings: Record<string, unknown>;
+  name: string | null;
+  icon: string | null;
+  color: string | null;
+  enabled: boolean;
+  script: string | null;
+  variables: Record<string, unknown>;
+  replay_on_restart: boolean;
+}
+
 export interface Defaults {
   devices?: string[];
   settings?: Record<string, unknown>;
@@ -67,4 +83,24 @@ export interface DayGroup {
   date: string | null;          // 'YYYY-MM-DD'
   rules: RuleData[];
   marker: { kind: 'candle_lighting' | 'havdalah'; at: string } | null;
+}
+
+/** The shape Home Assistant's `hass.states` entries have, as much of it as we read. */
+export interface HassEntity {
+  state: string;
+  attributes: Record<string, unknown>;
+}
+
+export interface DeviceOptions {
+  hvacModes: string[];
+  fanModes: string[];
+  minTemp: number | null;
+  maxTemp: number | null;
+  tempStep: number | null;
+  /** Entity ids that could not be read - missing, unavailable or unknown. */
+  unreadable: string[];
+  /** False when not one selected device is a climate entity. */
+  climate: boolean;
+  /** True when more than one climate device contributed, so these are an intersection. */
+  intersected: boolean;
 }

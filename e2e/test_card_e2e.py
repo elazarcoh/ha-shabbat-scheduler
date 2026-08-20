@@ -107,3 +107,125 @@ def test_the_card_lays_out_right_to_left_in_hebrew(page, base_url):
 
     direction = card.evaluate("el => getComputedStyle(el).direction")
     assert direction == "rtl"
+
+
+def _card(page, base_url):
+    page.goto(f"{base_url}/shabbat-scheduler/0")
+    card = page.locator("shabbat-scheduler-card")
+    card.wait_for(state="attached", timeout=30_000)
+    card.locator("shabbat-rule-row .time").first.wait_for(timeout=30_000)
+    return card
+
+
+def test_editing_a_rule_redraws_the_timeline(page, base_url):
+    """The whole loop this card exists for: change a time, and see it.
+
+    happy-dom cannot prove this - it has no layout, no real focus, and a
+    forgiving event model. Only a browser does.
+    """
+    card = _card(page, base_url)
+    before = card.locator("shabbat-rule-row .time").all_inner_texts()
+    assert "11:00" in before
+
+    card.locator("shabbat-rule-row").filter(has_text="11:00").first.click()
+    dialog = card.locator("shabbat-rule-dialog")
+    dialog.wait_for(state="attached", timeout=10_000)
+
+    time_input = dialog.locator("input.time")
+    time_input.fill("12:15:00")
+    dialog.locator("button.save").click()
+
+    # No optimistic update: the redraw only happens once the server has
+    # accepted and pushed the new state back.
+    card.locator("shabbat-rule-row .time").filter(has_text="12:15").first.wait_for(
+        timeout=15_000
+    )
+    after = card.locator("shabbat-rule-row .time").all_inner_texts()
+    assert "12:15" in after
+    assert "11:00" not in after
+
+    # Put it back, so the fixture is unchanged for the next run.
+    card.locator("shabbat-rule-row").filter(has_text="12:15").first.click()
+    dialog.wait_for(state="attached", timeout=10_000)
+    dialog.locator("input.time").fill("11:00:00")
+    dialog.locator("button.save").click()
+    card.locator("shabbat-rule-row .time").filter(has_text="11:00").first.wait_for(
+        timeout=15_000
+    )
+
+
+def test_the_add_button_creates_a_rule_on_its_own_day(page, base_url):
+    card = _card(page, base_url)
+    erev = card.locator("shabbat-day-group").first
+
+    erev.locator("button.add").click()
+    dialog = card.locator("shabbat-rule-dialog")
+    dialog.wait_for(state="attached", timeout=10_000)
+    dialog.locator("input.time").fill("21:00:00")
+    dialog.locator("button.save").click()
+
+    card.locator("shabbat-rule-row .time").filter(has_text="21:00").first.wait_for(
+        timeout=15_000
+    )
+
+    # Remove it again so the fixture is unchanged.
+    card.locator("shabbat-rule-row").filter(has_text="21:00").first.click()
+    dialog.wait_for(state="attached", timeout=10_000)
+    dialog.locator("button.delete").click()
+    card.locator("shabbat-rule-row .time").filter(
+        has_text="21:00"
+    ).wait_for(state="detached", timeout=15_000)
+
+
+def test_a_preview_profile_shows_no_dates(page, base_url):
+    """Selecting a profile that isn't the active block's own length is a
+    PREVIEW - see format.ts's isPreview - and the card must not claim real
+    calendar dates for it.
+
+    Two things this test must NOT do, both of which it did before:
+
+    1. Read `card.inner_text()`. shabbat-block-header's `.preview` banner
+       sits behind its own shadow root (as shabbat-day-group's `.date`
+       does - see test_the_card_renders_the_timeline above), so native
+       innerText never composes across it. `card.inner_text()` reliably
+       returns '' here even when the banner is rendering correctly, which
+       would let this assertion pass against a card that dropped the
+       banner entirely. Locating `.preview` directly, the way Playwright's
+       locators pierce shadow DOM, is the only way the assertion means
+       anything.
+    2. Assert `all(... for date in dates)` without first pinning how many
+       dates there should be. `all()` over an empty list is True, so a
+       selector that matched nothing would pass this exact assertion while
+       checking nothing at all.
+    """
+    card = _card(page, base_url)
+
+    # Baseline, proven first: the default 1-day profile is the active
+    # block's own length, so it is NOT a preview. If the assertions below
+    # were vacuous - matching zero elements either way - this baseline
+    # would pass right alongside the preview case and the pair would prove
+    # nothing. Pinning both the group count and that a real date is shown
+    # here is what makes the preview-mode assertions below mean something.
+    assert card.locator(".preview").count() == 0
+    baseline_groups = card.locator("shabbat-day-group")
+    assert baseline_groups.count() == 2, "expected an erev group and a day-1 group"
+    baseline_dates = card.locator("shabbat-day-group .date").all_inner_texts()
+    assert len(baseline_dates) == 2
+    assert any(date.strip() for date in baseline_dates), baseline_dates
+
+    # Switch to the 3-day profile. The active block is 1 day, so this is a
+    # preview: erev + 3 days is 4 groups, none of which may carry a date.
+    card.locator("shabbat-block-header button.chip").nth(2).click()
+
+    preview = card.locator(".preview")
+    preview.wait_for(state="attached", timeout=10_000)
+    assert preview.count() == 1
+    preview_text = preview.inner_text()
+    assert "Preview" in preview_text or "תצוגה" in preview_text, preview_text
+
+    groups = card.locator("shabbat-day-group")
+    assert groups.count() == 4, "3-day profile: erev + 3 days"
+
+    dates = card.locator("shabbat-day-group .date").all_inner_texts()
+    assert len(dates) == 4
+    assert all(date.strip() == "" for date in dates), dates

@@ -91,6 +91,35 @@ const STRINGS = {
         no_rules: 'No rules for this block.',
         disabled_rule: 'disabled',
         conflict_prefix: 'Conflict',
+        devices: 'Devices',
+        temperature: 'Temperature',
+        hvac_mode: 'Mode',
+        fan_mode: 'Fan',
+        intersected: 'Showing only what every selected device supports.',
+        unreadable: 'Could not read these devices, so their options are unknown:',
+        not_climate: 'These devices take no settings — on and off only.',
+        kept_setting: 'kept, but this device does not list it',
+        edit_rule: 'Edit rule',
+        add_rule: 'Add rule',
+        time: 'Time',
+        action: 'Action',
+        name: 'Name',
+        enabled: 'Enabled',
+        advanced: 'Advanced',
+        icon: 'Icon',
+        colour: 'Colour',
+        script: 'Script',
+        replay: 'Re-apply after a restart',
+        save: 'Save',
+        cancel: 'Cancel',
+        delete_rule: 'Delete',
+        duplicate: 'Duplicate',
+        read_only: 'You do not have permission to change the schedule.',
+        will_conflict: 'This overlaps another rule. You can still save it — nothing is resolved for you.',
+        defaults_title: 'Shared defaults',
+        defaults_help: 'Rules inherit these unless they set their own.',
+        inherits_devices: 'No devices set — inherits from the shared defaults:',
+        preview_banner: 'Preview — not the coming Shabbat. Dates are not shown because this block is not scheduled.',
     },
     he: {
         erev: 'ערב',
@@ -106,6 +135,35 @@ const STRINGS = {
         no_rules: 'אין כללים לבלוק הזה.',
         disabled_rule: 'מושבת',
         conflict_prefix: 'התנגשות',
+        devices: 'מכשירים',
+        temperature: 'טמפרטורה',
+        hvac_mode: 'מצב',
+        fan_mode: 'מאוורר',
+        intersected: 'מוצג רק מה שכל המכשירים שנבחרו תומכים בו.',
+        unreadable: 'לא ניתן לקרוא את המכשירים האלה, לכן האפשרויות שלהם אינן ידועות:',
+        not_climate: 'המכשירים האלה לא מקבלים הגדרות — הפעלה וכיבוי בלבד.',
+        kept_setting: 'נשמר, אך המכשיר לא מציג אותו',
+        edit_rule: 'עריכת כלל',
+        add_rule: 'הוספת כלל',
+        time: 'שעה',
+        action: 'פעולה',
+        name: 'שם',
+        enabled: 'מופעל',
+        advanced: 'מתקדם',
+        icon: 'סמל',
+        colour: 'צבע',
+        script: 'סקריפט',
+        replay: 'החלה מחדש לאחר הפעלה מחדש',
+        save: 'שמירה',
+        cancel: 'ביטול',
+        delete_rule: 'מחיקה',
+        duplicate: 'שכפול',
+        read_only: 'אין לך הרשאה לשנות את הלוח.',
+        will_conflict: 'הכלל חופף לכלל אחר. אפשר לשמור בכל זאת — שום דבר לא ייפתר עבורך.',
+        defaults_title: 'ברירות מחדל משותפות',
+        defaults_help: 'כללים יורשים אותן אלא אם הגדירו משלהם.',
+        inherits_devices: 'לא נבחרו מכשירים — יורש מברירות המחדל המשותפות:',
+        preview_banner: 'תצוגה מקדימה — לא השבת הקרובה. התאריכים אינם מוצגים כי הבלוק הזה אינו מתוכנן.',
     },
 };
 function t(language, key) {
@@ -117,11 +175,14 @@ function t(language, key) {
 function dayRank(day) {
     return day === 'erev' ? -1 : Number(day);
 }
-function dayKeys(block) {
+function daysFor(length) {
     const days = ['erev'];
-    for (let i = 1; i <= block.length; i += 1)
+    for (let i = 1; i <= length; i += 1)
         days.push(String(i));
     return days;
+}
+function dayKeys(block) {
+    return daysFor(block.length);
 }
 /**
  * The block's dates in calendar order: erev, then day 1, day 2, ….
@@ -138,33 +199,50 @@ function orderedDates(block) {
         .map((day) => block.dates[day])
         .filter((date) => date !== undefined);
 }
+/** True when the selected length is not the one actually coming. */
+function isPreview(state, profile) {
+    return state.block === null || state.block.length !== profile;
+}
 /**
- * The timeline: one group per day of the block, in order, each carrying
- * its date, its rules ordered by time, and its zmanim marker if one
- * falls at its end.
+ * The timeline for one profile.
  *
- * Only rules matching the block's length are shown - rules are authored
- * per profile, and a 3-day chag's rules must not appear on a plain
- * Shabbat.
+ * With no `profile`, or one equal to the coming block's length, this is
+ * the real thing: real dates on the headings and the zmanim markers in
+ * place. For any other length it is a PREVIEW - the same rules, but no
+ * dates and no markers at all.
+ *
+ * Dropping the dates is deliberate. A hypothetical Chag's dates would be
+ * a guess that looks exactly like a real one, and this card exists
+ * because its user could not otherwise tell what was real.
+ *
+ * Only rules of the selected profile are shown: rules are authored per
+ * profile, and a 3-day Chag's rules must not appear on a plain Shabbat.
  */
-function buildGroups(state) {
+function buildGroups(state, profile) {
     const { block } = state;
-    if (block === null)
+    const length = profile ?? block?.length ?? null;
+    if (length === null)
         return [];
-    const lastDay = String(block.length);
-    return dayKeys(block).map((day) => {
+    const preview = isPreview(state, length);
+    const lastDay = String(length);
+    return daysFor(length)
+        .map((day) => {
         const rules = state.rules
-            .filter((rule) => rule.profile === block.length && rule.day === day)
+            .filter((rule) => rule.profile === length && rule.day === day)
             .sort((a, b) => a.time.localeCompare(b.time));
         let marker = null;
-        if (day === 'erev') {
-            marker = { kind: 'candle_lighting', at: block.candle_lighting };
+        if (!preview && block !== null) {
+            if (day === 'erev') {
+                marker = { kind: 'candle_lighting', at: block.candle_lighting };
+            }
+            else if (day === lastDay) {
+                marker = { kind: 'havdalah', at: block.havdalah };
+            }
         }
-        else if (day === lastDay) {
-            marker = { kind: 'havdalah', at: block.havdalah };
-        }
-        return { day, date: block.dates[day] ?? null, rules, marker };
-    }).sort((a, b) => dayRank(a.day) - dayRank(b.day));
+        const date = preview || block === null ? null : (block.dates[day] ?? null);
+        return { day, date, rules, marker };
+    })
+        .sort((a, b) => dayRank(a.day) - dayRank(b.day));
 }
 /**
  * One line describing what a rule does, resolved exactly the way the
@@ -239,6 +317,129 @@ function formatWarning(warning, language) {
     }
     return warning.message ?? '';
 }
+function readList(entity, key) {
+    const value = entity.attributes[key];
+    return Array.isArray(value) ? value.map(String) : null;
+}
+function readNumber(entity, key) {
+    const value = entity.attributes[key];
+    return typeof value === 'number' ? value : null;
+}
+/**
+ * What the selected devices actually offer, read from their own state.
+ *
+ * The three units here disagree: the salon offers `quiet` and not
+ * `silent`, the AUX units the reverse. Offering a fixed list is how a
+ * rule gets saved with a fan mode its device rejects - discovered at
+ * 11:00 on Shabbat, when nobody can fix it. With several devices the
+ * intersection is the only honest answer: a mode only one of them
+ * supports cannot be applied to the others.
+ *
+ * A device that cannot be read is REPORTED, never silently treated as
+ * offering nothing - that would intersect every option away and present
+ * an empty form as though the device were the problem.
+ */
+function deviceOptions(states, entityIds) {
+    const unreadable = [];
+    const readable = [];
+    for (const id of entityIds) {
+        const entity = states[id];
+        if (entity === undefined ||
+            entity.state === 'unavailable' ||
+            entity.state === 'unknown') {
+            unreadable.push(id);
+            continue;
+        }
+        readable.push(entity);
+    }
+    const climates = readable.filter((entity) => readList(entity, 'hvac_modes') !== null);
+    if (climates.length === 0) {
+        return {
+            hvacModes: [], fanModes: [], minTemp: null, maxTemp: null,
+            tempStep: null, unreadable, climate: false, intersected: false,
+        };
+    }
+    const intersect = (key) => climates
+        .map((entity) => readList(entity, key) ?? [])
+        .reduce((acc, list) => acc.filter((item) => list.includes(item)));
+    const bounds = (key, pick) => {
+        const values = climates
+            .map((entity) => readNumber(entity, key))
+            .filter((value) => value !== null);
+        return values.length ? pick(values) : null;
+    };
+    return {
+        hvacModes: intersect('hvac_modes'),
+        fanModes: intersect('fan_modes'),
+        // The narrowest range every device accepts.
+        minTemp: bounds('min_temp', (values) => Math.max(...values)),
+        maxTemp: bounds('max_temp', (values) => Math.min(...values)),
+        tempStep: bounds('target_temp_step', (values) => Math.max(...values)),
+        unreadable,
+        climate: true,
+        intersected: climates.length > 1,
+    };
+}
+/** The domains this integration can actually drive. */
+const DRIVABLE = ['climate.', 'input_boolean.', 'switch.'];
+/**
+ * Entities a rule may target, sorted.
+ *
+ * Sorted because an unsorted list reshuffles whenever `hass.states` is
+ * rebuilt, which is every state change in the whole system - a select
+ * whose options move under the user's finger.
+ */
+function selectableDevices(states) {
+    return Object.keys(states)
+        .filter((id) => DRIVABLE.some((prefix) => id.startsWith(prefix)))
+        .sort();
+}
+const FORM_FIELDS = [
+    'day', 'time', 'action', 'devices', 'settings', 'name', 'icon',
+    'color', 'enabled', 'script', 'variables', 'replay_on_restart',
+];
+function ruleToForm(rule) {
+    return {
+        day: rule.day,
+        time: rule.time,
+        action: rule.action,
+        devices: [...rule.devices],
+        settings: { ...rule.settings },
+        name: rule.name,
+        icon: rule.icon,
+        color: rule.color,
+        enabled: rule.enabled,
+        script: rule.script,
+        variables: { ...rule.variables },
+        replay_on_restart: rule.replay_on_restart,
+    };
+}
+/** Everything, plus the profile the day is being authored under. */
+function formToCreate(form, profile) {
+    return { ...form, profile };
+}
+/**
+ * Only the fields that genuinely differ.
+ *
+ * `changes_from_api` takes a partial, so a small diff keeps the write
+ * small and the push it triggers meaningful. This is not what makes an
+ * unchanged save skip the round trip, though - it does not: the card
+ * always asks the server rather than assuming a diff of `{}` means
+ * nothing could go wrong (the entry could be unloaded, the connection
+ * dead, the rule deleted by another client). See `_saveChanges` in
+ * `card.ts`. Compared by value, not reference - a devices array rebuilt
+ * from the same strings has not changed.
+ */
+function formToChanges(form, original) {
+    const changes = {};
+    for (const field of FORM_FIELDS) {
+        const next = form[field];
+        const prev = original[field];
+        if (JSON.stringify(next) !== JSON.stringify(prev))
+            changes[field] = next;
+    }
+    return changes;
+}
 
 let ShabbatBlockHeader = class ShabbatBlockHeader extends i {
     constructor() {
@@ -249,6 +450,7 @@ let ShabbatBlockHeader = class ShabbatBlockHeader extends i {
         this.canWrite = false;
         this.masterEntityId = null;
         this.language = 'en';
+        this.selectedProfile = 1;
     }
     _dates() {
         if (this.block === null)
@@ -278,6 +480,24 @@ let ShabbatBlockHeader = class ShabbatBlockHeader extends i {
                 <span class="dates">${this._dates()}</span>
               `}
         </div>
+        <div class="chips">
+          ${[1, 2, 3].map((profile) => b `
+              <button
+                class="chip ${this.selectedProfile === profile ? 'active' : ''}"
+                @click=${() => this.dispatchEvent(new CustomEvent('profile-selected', { detail: { profile } }))}
+              >
+                ${profile}d
+              </button>
+            `)}
+        </div>
+        ${this.canWrite
+            ? b `<button
+              class="gear"
+              @click=${() => this.dispatchEvent(new CustomEvent('defaults-open'))}
+            >
+              ⚙
+            </button>`
+            : A}
         <button
           class="master ${this.enabled ? 'active' : ''}"
           ?disabled=${!this.canWrite || this.masterEntityId === null}
@@ -324,6 +544,24 @@ ShabbatBlockHeader.styles = i$3 `
       border-color: transparent;
     }
     .none { color: var(--secondary-text-color, #666); }
+    .chips { display: flex; gap: 4px; }
+    .chip {
+      font: inherit;
+      font-size: 0.85em;
+      padding-block: 2px;
+      padding-inline: 8px;
+      border-radius: 10px;
+      border: 1px solid var(--divider-color, #e0e0e0);
+      background: var(--card-background-color, #fff);
+      color: inherit;
+      cursor: pointer;
+    }
+    .chip.active {
+      background: var(--primary-color, #03a9f4);
+      color: var(--text-primary-color, #fff);
+      border-color: transparent;
+    }
+    .gear { border: none; background: none; cursor: pointer; font-size: 1.1em; }
   `;
 __decorate([
     n({ attribute: false })
@@ -343,6 +581,9 @@ __decorate([
 __decorate([
     n()
 ], ShabbatBlockHeader.prototype, "language", void 0);
+__decorate([
+    n({ type: Number })
+], ShabbatBlockHeader.prototype, "selectedProfile", void 0);
 ShabbatBlockHeader = __decorate([
     t$1('shabbat-block-header')
 ], ShabbatBlockHeader);
@@ -353,6 +594,13 @@ let ShabbatRuleRow = class ShabbatRuleRow extends i {
         this.defaults = {};
         this.warnings = [];
         this.language = 'en';
+    }
+    _open() {
+        this.dispatchEvent(new CustomEvent('rule-open', {
+            detail: { rule: this.rule },
+            bubbles: true,
+            composed: true,
+        }));
     }
     /**
      * The conflict text is rendered inline, not only as a `title=` tooltip.
@@ -375,7 +623,18 @@ let ShabbatRuleRow = class ShabbatRuleRow extends i {
         const conflicts = warningsForRule(this.rule.id, this.warnings);
         const title = this.rule.name;
         return b `
-      <div class="row ${this.rule.enabled ? '' : 'disabled'}">
+      <div
+        class="row ${this.rule.enabled ? '' : 'disabled'}"
+        tabindex="0"
+        role="button"
+        @click=${() => this._open()}
+        @keydown=${(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                this._open();
+            }
+        }}
+      >
         <span class="dot" style="background:${actionColour(this.rule.action)}"></span>
         <span class="time">${this.rule.time.slice(0, 5)}</span>
         <div class="body">
@@ -433,6 +692,8 @@ ShabbatRuleRow.styles = i$3 `
       margin-block-start: 2px;
     }
     .tag { font-size: 0.8em; color: var(--secondary-text-color, #666); }
+    .row { cursor: pointer; }
+    .row:focus-visible { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: -2px; }
   `;
 __decorate([
     n({ attribute: false })
@@ -466,6 +727,7 @@ let ShabbatDayGroup = class ShabbatDayGroup extends i {
         this.defaults = {};
         this.warnings = [];
         this.language = 'en';
+        this.canWrite = false;
     }
     label() {
         const { day } = this.group;
@@ -502,6 +764,14 @@ let ShabbatDayGroup = class ShabbatDayGroup extends i {
                 ></shabbat-rule-row>
               `)
             : b `<div class="empty">${t(this.language, 'no_rules')}</div>`}
+        ${this.canWrite
+            ? b `<button
+              class="add"
+              @click=${() => this.dispatchEvent(new CustomEvent('rule-add', { detail: { day: this.group.day } }))}
+            >
+              + ${t(this.language, 'add_rule')}
+            </button>`
+            : A}
         ${marker
             ? b `
               <div class="marker">
@@ -539,6 +809,16 @@ ShabbatDayGroup.styles = i$3 `
       color: var(--secondary-text-color, #666);
       font-size: 0.9em;
     }
+    .add {
+      font: inherit;
+      font-size: 0.9em;
+      background: none;
+      border: none;
+      color: var(--primary-color, #03a9f4);
+      padding-block: 6px;
+      padding-inline: 4px;
+      cursor: pointer;
+    }
   `;
 __decorate([
     n({ attribute: false })
@@ -552,6 +832,9 @@ __decorate([
 __decorate([
     n()
 ], ShabbatDayGroup.prototype, "language", void 0);
+__decorate([
+    n({ type: Boolean })
+], ShabbatDayGroup.prototype, "canWrite", void 0);
 ShabbatDayGroup = __decorate([
     t$1('shabbat-day-group')
 ], ShabbatDayGroup);
@@ -612,8 +895,656 @@ ShabbatWarnings = __decorate([
     t$1('shabbat-warnings')
 ], ShabbatWarnings);
 
+let ShabbatDeviceSettings = class ShabbatDeviceSettings extends i {
+    constructor() {
+        super(...arguments);
+        this.states = {};
+        /** The rule's actual saved selection. Always shown in the picker as-is. */
+        this.devices = [];
+        /**
+         * The devices this rule will actually run against once inheritance is
+         * applied - `devices` itself when the rule has its own, otherwise the
+         * caller's merged-in defaults. Used only to compute what settings to
+         * offer, never to decide what the picker shows: an empty `devices`
+         * must still render as empty, or the picker would misrepresent what a
+         * save sends. Defaults to `devices` so callers with no inheritance
+         * concept (the defaults dialog itself) need not think about it.
+         */
+        this.effectiveDevices = null;
+        this.settings = {};
+        this.disabled = false;
+        this.language = 'en';
+    }
+    get _options() {
+        return deviceOptions(this.states, this.effectiveDevices ?? this.devices);
+    }
+    _emit(settings) {
+        // Reports intent. The parent owns the value and passes it back down,
+        // so this element never disagrees with what will actually be saved.
+        this.dispatchEvent(new CustomEvent('settings-changed', { detail: { settings } }));
+    }
+    _set(key, value) {
+        const next = { ...this.settings };
+        if (value === '' || value === null)
+            delete next[key];
+        else
+            next[key] = value;
+        this._emit(next);
+    }
+    /** A saved value the current devices do not list. Kept, never dropped. */
+    _orphan(key, offered) {
+        const value = this.settings[key];
+        if (typeof value !== 'string' || value === '')
+            return null;
+        return offered.includes(value) ? null : value;
+    }
+    _select(key, offered) {
+        const current = this.settings[key];
+        const orphan = this._orphan(key, offered);
+        // Wrapped in one root: under happy-dom 15.11.7 with lit-html 3.3.3, a
+        // template result with more than one top-level node - here the field
+        // and the conditional orphan note - fails to render either branch of
+        // a ternary in tests. A real browser is unaffected, but this is
+        // shared with the rule and defaults dialogs and must render in tests.
+        return b `
+      <div>
+        <div class="field">
+          <label for=${key}>${t(this.language, key)}</label>
+          <select
+            id=${key}
+            class=${key === 'fan_mode' ? 'fan' : 'hvac'}
+            ?disabled=${this.disabled}
+            @change=${(event) => this._set(key, event.target.value)}
+          >
+            <option value=""></option>
+            ${orphan !== null
+            ? b `<option value=${orphan} selected>${orphan}</option>`
+            : A}
+            ${offered.map((option) => b `
+                <option value=${option} ?selected=${current === option}>
+                  ${option}
+                </option>
+              `)}
+          </select>
+        </div>
+        ${orphan !== null
+            ? b `<div class="note warn">
+              ${orphan} — ${t(this.language, 'kept_setting')}
+            </div>`
+            : A}
+      </div>
+    `;
+    }
+    render() {
+        const options = this._options;
+        return b `
+      <div class="settings">
+        <div class="field">
+          <label for="devices">${t(this.language, 'devices')}</label>
+          <select
+            id="devices"
+            class="devices"
+            multiple
+            size="4"
+            ?disabled=${this.disabled}
+            @change=${(event) => {
+            const select = event.target;
+            const devices = [...select.selectedOptions].map((o) => o.value);
+            this.dispatchEvent(new CustomEvent('devices-changed', { detail: { devices } }));
+        }}
+          >
+            ${selectableDevices(this.states).map((id) => b `
+                <option value=${id} ?selected=${this.devices.includes(id)}>
+                  ${id}
+                </option>
+              `)}
+          </select>
+        </div>
+        ${options.unreadable.length
+            ? b `<div class="note warn">
+              ${t(this.language, 'unreadable')} ${options.unreadable.join(', ')}
+            </div>`
+            : A}
+        ${options.intersected
+            ? b `<div class="note">${t(this.language, 'intersected')}</div>`
+            : A}
+        ${options.climate
+            ? b `
+              <div>
+                <div class="field">
+                  <label for="temperature">${t(this.language, 'temperature')}</label>
+                  <input
+                    id="temperature"
+                    class="temperature"
+                    type="number"
+                    .value=${String(this.settings.temperature ?? '')}
+                    min=${options.minTemp ?? 5}
+                    max=${options.maxTemp ?? 35}
+                    step=${options.tempStep ?? 0.5}
+                    ?disabled=${this.disabled}
+                    @change=${(event) => {
+                const raw = event.target.value;
+                this._set('temperature', raw === '' ? null : Number(raw));
+            }}
+                  />
+                </div>
+                ${this._select('hvac_mode', options.hvacModes)}
+                ${this._select('fan_mode', options.fanModes)}
+              </div>
+            `
+            : b `<div class="note">${t(this.language, 'not_climate')}</div>`}
+      </div>
+    `;
+    }
+};
+ShabbatDeviceSettings.styles = i$3 `
+    .field {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-block: 8px;
+    }
+    .field label { min-inline-size: 7em; }
+    select, input {
+      font: inherit;
+      padding-block: 4px;
+      padding-inline: 6px;
+      flex: 1;
+      min-inline-size: 0;
+    }
+    .note {
+      color: var(--secondary-text-color, #666);
+      font-size: 0.85em;
+      margin-block: 4px;
+    }
+    .warn { color: var(--warning-color, #d9822b); }
+  `;
+__decorate([
+    n({ attribute: false })
+], ShabbatDeviceSettings.prototype, "states", void 0);
+__decorate([
+    n({ attribute: false })
+], ShabbatDeviceSettings.prototype, "devices", void 0);
+__decorate([
+    n({ attribute: false })
+], ShabbatDeviceSettings.prototype, "effectiveDevices", void 0);
+__decorate([
+    n({ attribute: false })
+], ShabbatDeviceSettings.prototype, "settings", void 0);
+__decorate([
+    n({ type: Boolean })
+], ShabbatDeviceSettings.prototype, "disabled", void 0);
+__decorate([
+    n()
+], ShabbatDeviceSettings.prototype, "language", void 0);
+ShabbatDeviceSettings = __decorate([
+    t$1('shabbat-device-settings')
+], ShabbatDeviceSettings);
+
+const EMPTY_FORM = {
+    day: 'erev', time: '', action: 'on', devices: [], settings: {},
+    name: null, icon: null, color: null, enabled: true, script: null,
+    variables: {}, replay_on_restart: false,
+};
+let ShabbatRuleDialog = class ShabbatRuleDialog extends i {
+    constructor() {
+        super(...arguments);
+        /** null means create. */
+        this.rule = null;
+        /** Pre-filled values for a create. This is what duplication uses. */
+        this.seed = null;
+        this.day = 'erev';
+        this.profile = 1;
+        this.defaults = {};
+        this.states = {};
+        this.canWrite = false;
+        this.busy = false;
+        this.error = null;
+        this.language = 'en';
+        this._form = EMPTY_FORM;
+        this._advanced = false;
+        this._seeded = null;
+    }
+    willUpdate() {
+        // Seed the form once per opened rule. Re-seeding on every update
+        // would throw away what the user has typed each time a push arrives -
+        // and pushes arrive constantly, since `hass` is reassigned on every
+        // state change in the whole system.
+        //
+        // The create key is keyed off the seed's *content*, not just whether
+        // one is present: the dialog instance persists across opens, so two
+        // different duplicates on the same day/profile ('new:1:1:seeded' both
+        // times) would otherwise be indistinguishable and the second duplicate
+        // would silently keep the first one's values. Keying on content is
+        // correct by construction - if two seeds are identical, skipping the
+        // reseed leaves the form showing exactly those values anyway.
+        const key = this.rule
+            ? `edit:${this.rule.id}`
+            : `new:${this.day}:${this.profile}:${JSON.stringify(this.seed)}`;
+        if (this._seeded !== key) {
+            this._seeded = key;
+            if (this.rule) {
+                this._form = ruleToForm(this.rule);
+            }
+            else if (this.seed) {
+                // A duplicate: same values, no id, so saving creates a new rule.
+                this._form = { ...this.seed, day: this.day };
+            }
+            else {
+                this._form = { ...EMPTY_FORM, day: this.day };
+            }
+            this._advanced = false;
+        }
+    }
+    _patch(patch) {
+        this._form = { ...this._form, ...patch };
+    }
+    _emit(type) {
+        this.dispatchEvent(new CustomEvent(type, { detail: { form: this._form, rule: this.rule } }));
+    }
+    _text(key, label) {
+        return b `
+      <div class="field">
+        <label for=${key}>${label}</label>
+        <input
+          id=${key}
+          class=${key}
+          .value=${String(this._form[key] ?? '')}
+          ?disabled=${!this.canWrite}
+          @change=${(event) => {
+            const value = event.target.value;
+            this._patch({ [key]: value === '' ? null : value });
+        }}
+        />
+      </div>
+    `;
+    }
+    render() {
+        const editing = this.rule !== null;
+        const inheritedDevices = this.defaults.devices ?? [];
+        // An empty `devices` on a rule means "inherit the shared defaults" -
+        // see `merge_defaults` in block.py. The picker must still show the
+        // rule's own (empty) selection, or clearing it would look like it
+        // snapped back to the defaults' devices when the pending save
+        // actually sends `[]`. This is only what the settings below are
+        // computed against, never what the picker displays.
+        const effectiveDevices = this._form.devices.length ? this._form.devices : inheritedDevices;
+        return b `
+      <div class="sheet" @click=${(event) => {
+            if (event.target === event.currentTarget) {
+                this.dispatchEvent(new CustomEvent('dialog-close'));
+            }
+        }}>
+        <div class="panel">
+          <h2>${t(this.language, editing ? 'edit_rule' : 'add_rule')}</h2>
+
+          ${this.canWrite
+            ? A
+            : b `<div class="note">${t(this.language, 'read_only')}</div>`}
+          ${this.error !== null
+            ? b `<div class="error">${this.error}</div>`
+            : A}
+
+          <div class="form">
+            ${this._text('time', t(this.language, 'time'))}
+            <div class="field">
+              <label for="action">${t(this.language, 'action')}</label>
+              <select
+                id="action"
+                class="action"
+                ?disabled=${!this.canWrite}
+                @change=${(event) => this._patch({ action: event.target.value })}
+              >
+                ${['on', 'off', 'custom'].map((option) => b `
+                    <option value=${option} ?selected=${this._form.action === option}>
+                      ${option}
+                    </option>
+                  `)}
+              </select>
+            </div>
+            ${this._text('name', t(this.language, 'name'))}
+
+            ${this._form.action === 'custom'
+            ? this._text('script', t(this.language, 'script'))
+            : b `
+                  <div>
+                    ${!this._form.devices.length && inheritedDevices.length
+                ? b `<div class="note">
+                          ${t(this.language, 'inherits_devices')} ${inheritedDevices.join(', ')}
+                        </div>`
+                : A}
+                    <shabbat-device-settings
+                      .states=${this.states}
+                      .devices=${this._form.devices}
+                      .effectiveDevices=${effectiveDevices}
+                      .settings=${this._form.settings}
+                      .disabled=${!this.canWrite}
+                      .language=${this.language}
+                      @settings-changed=${(event) => this._patch({ settings: event.detail.settings })}
+                      @devices-changed=${(event) => this._patch({ devices: event.detail.devices })}
+                    ></shabbat-device-settings>
+                  </div>
+                `}
+
+            <div class="field">
+              <label for="enabled">${t(this.language, 'enabled')}</label>
+              <input
+                id="enabled"
+                class="enabled"
+                type="checkbox"
+                .checked=${this._form.enabled}
+                ?disabled=${!this.canWrite}
+                @change=${(event) => this._patch({ enabled: event.target.checked })}
+              />
+            </div>
+
+            <button
+              class="advanced-toggle"
+              @click=${() => { this._advanced = !this._advanced; }}
+            >
+              ${t(this.language, 'advanced')}
+            </button>
+            ${this._advanced
+            ? b `
+                  ${this._text('icon', t(this.language, 'icon'))}
+                  ${this._text('color', t(this.language, 'colour'))}
+                  <div class="field">
+                    <label for="replay">${t(this.language, 'replay')}</label>
+                    <input
+                      id="replay"
+                      class="replay"
+                      type="checkbox"
+                      .checked=${this._form.replay_on_restart}
+                      ?disabled=${!this.canWrite}
+                      @change=${(event) => this._patch({
+                replay_on_restart: event.target.checked,
+            })}
+                    />
+                  </div>
+                `
+            : A}
+          </div>
+
+          <div class="actions">
+            ${this.canWrite && editing
+            ? b `<button
+                  class="delete"
+                  ?disabled=${this.busy}
+                  @click=${() => this._emit('dialog-delete')}
+                >
+                  ${t(this.language, 'delete_rule')}
+                </button>`
+            : A}
+            <button @click=${() => this.dispatchEvent(new CustomEvent('dialog-close'))}>
+              ${t(this.language, 'cancel')}
+            </button>
+            ${this.canWrite && editing
+            ? b `<button
+                  class="duplicate"
+                  ?disabled=${this.busy}
+                  @click=${() => this._emit('dialog-duplicate')}
+                >
+                  ${t(this.language, 'duplicate')}
+                </button>`
+            : A}
+            ${this.canWrite
+            ? b `<button
+                  class="save"
+                  ?disabled=${this.busy}
+                  @click=${() => this._emit('dialog-save')}
+                >
+                  ${t(this.language, 'save')}
+                </button>`
+            : A}
+          </div>
+        </div>
+      </div>
+    `;
+    }
+};
+ShabbatRuleDialog.styles = i$3 `
+    .sheet {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.4);
+      z-index: 10;
+    }
+    .panel {
+      background: var(--card-background-color, #fff);
+      color: var(--primary-text-color, #111);
+      border-radius: 12px;
+      padding: 16px;
+      inline-size: min(28rem, 92vw);
+      max-block-size: 88vh;
+      overflow: auto;
+    }
+    h2 { margin-block: 0 12px; font-size: 1.1em; }
+    .field { display: flex; align-items: center; gap: 12px; margin-block: 8px; }
+    .field label { min-inline-size: 7em; }
+    input, select {
+      font: inherit;
+      padding-block: 4px;
+      padding-inline: 6px;
+      flex: 1;
+      min-inline-size: 0;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      margin-block-start: 16px;
+      flex-wrap: wrap;
+    }
+    .actions .delete { margin-inline-end: auto; color: var(--error-color, #d64545); }
+    button {
+      font: inherit;
+      padding-block: 6px;
+      padding-inline: 12px;
+      border-radius: 6px;
+      border: 1px solid var(--divider-color, #e0e0e0);
+      background: var(--card-background-color, #fff);
+      color: inherit;
+      cursor: pointer;
+    }
+    button[disabled] { opacity: 0.5; cursor: not-allowed; }
+    .error {
+      color: var(--error-color, #d64545);
+      margin-block: 8px;
+      font-size: 0.9em;
+    }
+    .note { color: var(--secondary-text-color, #666); font-size: 0.85em; }
+    .advanced-toggle {
+      background: none;
+      border: none;
+      padding-inline: 0;
+      color: var(--primary-color, #03a9f4);
+    }
+  `;
+__decorate([
+    n({ attribute: false })
+], ShabbatRuleDialog.prototype, "rule", void 0);
+__decorate([
+    n({ attribute: false })
+], ShabbatRuleDialog.prototype, "seed", void 0);
+__decorate([
+    n()
+], ShabbatRuleDialog.prototype, "day", void 0);
+__decorate([
+    n({ type: Number })
+], ShabbatRuleDialog.prototype, "profile", void 0);
+__decorate([
+    n({ attribute: false })
+], ShabbatRuleDialog.prototype, "defaults", void 0);
+__decorate([
+    n({ attribute: false })
+], ShabbatRuleDialog.prototype, "states", void 0);
+__decorate([
+    n({ type: Boolean })
+], ShabbatRuleDialog.prototype, "canWrite", void 0);
+__decorate([
+    n({ type: Boolean })
+], ShabbatRuleDialog.prototype, "busy", void 0);
+__decorate([
+    n()
+], ShabbatRuleDialog.prototype, "error", void 0);
+__decorate([
+    n()
+], ShabbatRuleDialog.prototype, "language", void 0);
+__decorate([
+    r()
+], ShabbatRuleDialog.prototype, "_form", void 0);
+__decorate([
+    r()
+], ShabbatRuleDialog.prototype, "_advanced", void 0);
+ShabbatRuleDialog = __decorate([
+    t$1('shabbat-rule-dialog')
+], ShabbatRuleDialog);
+
+let ShabbatDefaultsDialog = class ShabbatDefaultsDialog extends i {
+    constructor() {
+        super(...arguments);
+        this.defaults = {};
+        this.states = {};
+        this.canWrite = false;
+        this.busy = false;
+        this.error = null;
+        this.language = 'en';
+        this._draft = null;
+    }
+    get _current() {
+        return this._draft ?? this.defaults;
+    }
+    render() {
+        const current = this._current;
+        return b `
+      <div class="sheet" @click=${(event) => {
+            if (event.target === event.currentTarget) {
+                this.dispatchEvent(new CustomEvent('dialog-close'));
+            }
+        }}>
+        <div class="panel">
+          <h2>${t(this.language, 'defaults_title')}</h2>
+          <div class="note">${t(this.language, 'defaults_help')}</div>
+          ${this.error !== null
+            ? b `<div class="error">${this.error}</div>`
+            : A}
+
+          <shabbat-device-settings
+            .states=${this.states}
+            .devices=${current.devices ?? []}
+            .settings=${current.settings ?? {}}
+            .disabled=${!this.canWrite}
+            .language=${this.language}
+            @settings-changed=${(event) => {
+            this._draft = {
+                ...current,
+                settings: event.detail.settings,
+            };
+        }}
+            @devices-changed=${(event) => {
+            this._draft = {
+                ...current,
+                devices: event.detail.devices,
+            };
+        }}
+          ></shabbat-device-settings>
+
+          <div class="actions">
+            <button @click=${() => this.dispatchEvent(new CustomEvent('dialog-close'))}>
+              ${t(this.language, 'cancel')}
+            </button>
+            ${this.canWrite
+            ? b `<button
+                  class="save"
+                  ?disabled=${this.busy}
+                  @click=${() => this.dispatchEvent(new CustomEvent('defaults-save', {
+                // Exactly the two keys validate_defaults accepts.
+                // Anything else is rejected outright, not ignored.
+                detail: {
+                    defaults: {
+                        devices: current.devices ?? [],
+                        settings: current.settings ?? {},
+                    },
+                },
+            }))}
+                >
+                  ${t(this.language, 'save')}
+                </button>`
+            : A}
+          </div>
+        </div>
+      </div>
+    `;
+    }
+};
+ShabbatDefaultsDialog.styles = i$3 `
+    .sheet {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.4);
+      z-index: 10;
+    }
+    .panel {
+      background: var(--card-background-color, #fff);
+      color: var(--primary-text-color, #111);
+      border-radius: 12px;
+      padding: 16px;
+      inline-size: min(28rem, 92vw);
+    }
+    h2 { margin-block: 0 4px; font-size: 1.1em; }
+    .note { color: var(--secondary-text-color, #666); font-size: 0.85em; }
+    .error { color: var(--error-color, #d64545); margin-block: 8px; font-size: 0.9em; }
+    .actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      margin-block-start: 16px;
+    }
+    button {
+      font: inherit;
+      padding-block: 6px;
+      padding-inline: 12px;
+      border-radius: 6px;
+      border: 1px solid var(--divider-color, #e0e0e0);
+      background: var(--card-background-color, #fff);
+      color: inherit;
+      cursor: pointer;
+    }
+    button[disabled] { opacity: 0.5; cursor: not-allowed; }
+  `;
+__decorate([
+    n({ attribute: false })
+], ShabbatDefaultsDialog.prototype, "defaults", void 0);
+__decorate([
+    n({ attribute: false })
+], ShabbatDefaultsDialog.prototype, "states", void 0);
+__decorate([
+    n({ type: Boolean })
+], ShabbatDefaultsDialog.prototype, "canWrite", void 0);
+__decorate([
+    n({ type: Boolean })
+], ShabbatDefaultsDialog.prototype, "busy", void 0);
+__decorate([
+    n()
+], ShabbatDefaultsDialog.prototype, "error", void 0);
+__decorate([
+    n()
+], ShabbatDefaultsDialog.prototype, "language", void 0);
+__decorate([
+    r()
+], ShabbatDefaultsDialog.prototype, "_draft", void 0);
+ShabbatDefaultsDialog = __decorate([
+    t$1('shabbat-defaults-dialog')
+], ShabbatDefaultsDialog);
+
 /** Stamped into the Lovelace resource URL so a rebuild busts the cache. */
-const CARD_VERSION = '0.1.0';
+const CARD_VERSION = '0.2.0';
 
 /**
  * The only failure the server states as a fact: `ws_subscribe`
@@ -651,6 +1582,13 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
          */
         this._error = null;
         this._config = {};
+        this._selectedProfile = null;
+        this._editing = null;
+        this._creatingDay = null;
+        this._defaultsOpen = false;
+        this._dialogError = null;
+        this._busy = false;
+        this._duplicateSeed = null;
         this._unsubscribe = null;
         this._subscribed = false;
         /**
@@ -674,6 +1612,67 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
         this._onDryRun = (event) => {
             const { dryRun } = event.detail;
             void this._call('shabbat_scheduler', 'set_dry_run', { enabled: dryRun });
+        };
+        this._closeDialogs = () => {
+            this._editing = null;
+            this._creatingDay = null;
+            this._duplicateSeed = null;
+            this._defaultsOpen = false;
+            this._dialogError = null;
+        };
+        this._onRuleOpen = (event) => {
+            this._editing = event.detail.rule;
+            this._creatingDay = null;
+            this._duplicateSeed = null;
+            this._dialogError = null;
+        };
+        this._onRuleAdd = (event) => {
+            this._creatingDay = event.detail.day;
+            this._editing = null;
+            this._duplicateSeed = null;
+            this._dialogError = null;
+        };
+        this._onSave = async (event) => {
+            const { form, rule } = event.detail;
+            const ok = rule === null
+                ? await this._send({
+                    type: 'shabbat_scheduler/rules/create',
+                    rule: formToCreate(form, this._profile),
+                })
+                : await this._saveChanges(form, rule);
+            if (ok)
+                this._closeDialogs();
+        };
+        this._onDelete = async (event) => {
+            const { rule } = event.detail;
+            if (await this._send({
+                type: 'shabbat_scheduler/rules/delete',
+                rule_id: rule.id,
+            })) {
+                this._closeDialogs();
+            }
+        };
+        this._onDuplicate = (event) => {
+            // Composed client-side from rules/create: the dialog reopens as a
+            // CREATE carrying the same values, so the user can move it before
+            // saving. The server generates the id, so no rules/duplicate command
+            // is needed. `_duplicateSeed` must be reactive and must be passed to
+            // the dialog's `seed` property - without that the dialog reseeds from
+            // EMPTY_FORM and a duplicate duplicates nothing.
+            const { form } = event.detail;
+            this._editing = null;
+            this._creatingDay = form.day;
+            this._duplicateSeed = form;
+            this._dialogError = null;
+        };
+        this._onDefaultsSave = async (event) => {
+            const { defaults } = event.detail;
+            if (await this._send({
+                type: 'shabbat_scheduler/defaults/update',
+                defaults,
+            })) {
+                this._closeDialogs();
+            }
         };
     }
     setConfig(config) {
@@ -723,6 +1722,16 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
             const unsubscribe = await this._hass.connection.subscribeMessage((payload) => {
                 if (generation !== this._generation)
                     return;
+                // A tapped chip is honest (the preview banner says so) and
+                // recoverable (tap the matching chip again) - but a wall
+                // dashboard left on, say, 3d must not stay in preview once the
+                // coming block is actually a 3-day Chag. Reset only when the
+                // length itself changes, not on every push - a push is every
+                // state change in the whole system, and resetting on each would
+                // throw away a deliberate preview choice mid-use.
+                if (this._state?.block?.length !== payload.block?.length) {
+                    this._selectedProfile = null;
+                }
                 this._state = payload;
                 this._error = null;
             }, { type: 'shabbat_scheduler/subscribe' });
@@ -775,6 +1784,10 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
         // control that is certain to fail is worse than not offering it.
         return this._hass?.user?.is_admin === true;
     }
+    /** The selected profile, defaulting to the coming block's length. */
+    get _profile() {
+        return this._selectedProfile ?? this._state?.block?.length ?? 1;
+    }
     /**
      * The day groups actually rendered, and `[]` for any payload this card
      * cannot draw. Total on purpose: `render` and `getCardSize` both go
@@ -783,9 +1796,9 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
      */
     get _groups() {
         const state = this._state;
-        if (state === null || !state.block || !Array.isArray(state.rules))
+        if (state === null || !Array.isArray(state.rules))
             return [];
-        return buildGroups(state);
+        return buildGroups(state, this._profile);
     }
     /**
      * A write that fails has to say so. Nothing here is optimistic - the
@@ -808,6 +1821,41 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
         catch {
             this._error = 'command_failed';
         }
+    }
+    /**
+     * A websocket command, with its rejection surfaced.
+     *
+     * Nothing here is optimistic: the dialog closes only after the server
+     * accepts, and the redraw comes from the following push. On rejection
+     * the dialog stays open carrying the server's own message, because
+     * `rule_schema.py` owns validation and its wording is the truth.
+     */
+    async _send(message) {
+        this._busy = true;
+        this._dialogError = null;
+        try {
+            await this._hass.callWS(message);
+            return true;
+        }
+        catch (err) {
+            const detail = err;
+            this._dialogError = detail?.message ?? String(err);
+            return false;
+        }
+        finally {
+            this._busy = false;
+        }
+    }
+    async _saveChanges(form, rule) {
+        // Always a round trip, even for an empty diff: the dialog cannot
+        // know locally whether the server will accept the save, and a
+        // client-side skip here would mean "nothing changed" quietly wins
+        // over a rejection the server would otherwise have raised.
+        return this._send({
+            type: 'shabbat_scheduler/rules/update',
+            rule_id: rule.id,
+            changes: formToChanges(form, rule),
+        });
     }
     render() {
         // Read once into a local: `_error` is a field, and TypeScript's
@@ -840,7 +1888,7 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
         // naming only rules from another profile would never render at all.
         const displayedRuleIds = groups.flatMap((group) => group.rules.map((rule) => rule.id));
         return b `
-      <ha-card>
+      <ha-card @rule-open=${this._onRuleOpen}>
         ${this._config.title
             ? b `<div class="title">${this._config.title}</div>`
             : A}
@@ -853,10 +1901,18 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
           .dryRun=${this._state.dry_run}
           .canWrite=${this._canWrite}
           .masterEntityId=${this._state.master_entity_id}
+          .selectedProfile=${this._profile}
           .language=${this._language}
           @shabbat-master-toggle=${this._onMaster}
           @shabbat-dry-run-toggle=${this._onDryRun}
+          @profile-selected=${(event) => {
+            this._selectedProfile = event.detail.profile;
+        }}
+          @defaults-open=${() => { this._defaultsOpen = true; }}
         ></shabbat-block-header>
+        ${isPreview(this._state, this._profile)
+            ? b `<div class="preview">${t(this._language, 'preview_banner')}</div>`
+            : A}
         <shabbat-warnings
           .warnings=${this._state.warnings}
           .displayedRuleIds=${displayedRuleIds}
@@ -868,8 +1924,40 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
               .defaults=${this._state.defaults}
               .warnings=${this._state.warnings}
               .language=${this._language}
+              .canWrite=${this._canWrite}
+              @rule-add=${this._onRuleAdd}
             ></shabbat-day-group>
           `)}
+        ${this._editing !== null || this._creatingDay !== null
+            ? b `<shabbat-rule-dialog
+              .rule=${this._editing}
+              .seed=${this._duplicateSeed}
+              .day=${this._creatingDay ?? this._editing?.day ?? 'erev'}
+              .profile=${this._profile}
+              .defaults=${this._state.defaults}
+              .states=${this._hass?.states ?? {}}
+              .canWrite=${this._canWrite}
+              .busy=${this._busy}
+              .error=${this._dialogError}
+              .language=${this._language}
+              @dialog-save=${this._onSave}
+              @dialog-delete=${this._onDelete}
+              @dialog-duplicate=${this._onDuplicate}
+              @dialog-close=${this._closeDialogs}
+            ></shabbat-rule-dialog>`
+            : A}
+        ${this._defaultsOpen
+            ? b `<shabbat-defaults-dialog
+              .defaults=${this._state.defaults}
+              .states=${this._hass?.states ?? {}}
+              .canWrite=${this._canWrite}
+              .busy=${this._busy}
+              .error=${this._dialogError}
+              .language=${this._language}
+              @defaults-save=${this._onDefaultsSave}
+              @dialog-close=${this._closeDialogs}
+            ></shabbat-defaults-dialog>`
+            : A}
       </ha-card>
     `;
     }
@@ -879,6 +1967,14 @@ ShabbatSchedulerCard.styles = i$3 `
     .title { font-size: 1.1em; font-weight: 600; margin-block-end: 8px; }
     .message { color: var(--secondary-text-color, #666); padding-block: 8px; }
     .notice { color: var(--warning-color, #d9822b); }
+    .preview {
+      background: var(--secondary-background-color, #f4f4f4);
+      border-inline-start: 3px solid var(--primary-color, #03a9f4);
+      padding-block: 8px;
+      padding-inline: 12px;
+      margin-block: 8px;
+      font-size: 0.9em;
+    }
   `;
 __decorate([
     r()
@@ -889,6 +1985,27 @@ __decorate([
 __decorate([
     n({ attribute: false })
 ], ShabbatSchedulerCard.prototype, "_config", void 0);
+__decorate([
+    r()
+], ShabbatSchedulerCard.prototype, "_selectedProfile", void 0);
+__decorate([
+    r()
+], ShabbatSchedulerCard.prototype, "_editing", void 0);
+__decorate([
+    r()
+], ShabbatSchedulerCard.prototype, "_creatingDay", void 0);
+__decorate([
+    r()
+], ShabbatSchedulerCard.prototype, "_defaultsOpen", void 0);
+__decorate([
+    r()
+], ShabbatSchedulerCard.prototype, "_dialogError", void 0);
+__decorate([
+    r()
+], ShabbatSchedulerCard.prototype, "_busy", void 0);
+__decorate([
+    r()
+], ShabbatSchedulerCard.prototype, "_duplicateSeed", void 0);
 ShabbatSchedulerCard = __decorate([
     t$1('shabbat-scheduler-card')
 ], ShabbatSchedulerCard);

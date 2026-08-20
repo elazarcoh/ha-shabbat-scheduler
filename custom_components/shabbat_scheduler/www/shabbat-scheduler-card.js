@@ -98,6 +98,13 @@ const STRINGS = {
         intersected: 'Showing only what every selected device supports.',
         unreadable: 'Could not read these devices, so their options are unknown:',
         not_climate: 'These devices take no settings — on and off only.',
+        // Deliberately NOT `not_climate`. "I cannot read this device" and
+        // "this device has no settings" are different statements, and
+        // rendering the second for the first tells someone a rule sets
+        // nothing when it sets 24 degrees - the card saying something other
+        // than what will happen, which is the one thing it must never do.
+        options_unknown: 'These devices cannot be read, so their settings cannot be edited here.',
+        saved_settings: 'The settings this rule already has are kept exactly as they are:',
         kept_setting: 'kept, but this device does not list it',
         edit_rule: 'Edit rule',
         add_rule: 'Add rule',
@@ -142,6 +149,8 @@ const STRINGS = {
         intersected: 'מוצג רק מה שכל המכשירים שנבחרו תומכים בו.',
         unreadable: 'לא ניתן לקרוא את המכשירים האלה, לכן האפשרויות שלהם אינן ידועות:',
         not_climate: 'המכשירים האלה לא מקבלים הגדרות — הפעלה וכיבוי בלבד.',
+        options_unknown: 'לא ניתן לקרוא את המכשירים האלה, ולכן אי אפשר לערוך כאן את ההגדרות שלהם.',
+        saved_settings: 'ההגדרות שכבר קיימות בכלל נשמרות בדיוק כפי שהן:',
         kept_setting: 'נשמר, אך המכשיר לא מציג אותו',
         edit_rule: 'עריכת כלל',
         add_rule: 'הוספת כלל',
@@ -895,6 +904,8 @@ ShabbatWarnings = __decorate([
     t$1('shabbat-warnings')
 ], ShabbatWarnings);
 
+/** Settings keys this card has its own words for. Anything else reads raw. */
+const LABELLED = ['temperature', 'hvac_mode', 'fan_mode'];
 let ShabbatDeviceSettings = class ShabbatDeviceSettings extends i {
     constructor() {
         super(...arguments);
@@ -938,6 +949,43 @@ let ShabbatDeviceSettings = class ShabbatDeviceSettings extends i {
             return null;
         return offered.includes(value) ? null : value;
     }
+    /**
+     * What to show when nothing could be read.
+     *
+     * `deviceOptions` returns `climate: false` both for a device that
+     * genuinely takes no settings and for one it could not read at all -
+     * but those are two different statements, and only the first one means
+     * "this rule sets nothing". Rendering `not_climate` for an unreadable
+     * device made a rule holding `{temperature: 24, hvac_mode: 'cool'}`
+     * display as a rule with no settings at all, while the engine went on
+     * applying 24 / cool at 11:00 the next morning. A cloud-backed unit
+     * reports `unavailable` on any upstream hiccup and `unknown` after a
+     * restart before its first poll, so this is the normal case, not an
+     * exotic one.
+     *
+     * The values cannot be *edited* here - the bounds and the accepted
+     * modes are exactly what could not be read, so offering a control
+     * would be inventing them - but they must stay visible, because a
+     * saved setting the card does not show is a saved setting nobody knows
+     * about.
+     */
+    _unreadableSettings() {
+        const entries = Object.entries(this.settings).filter(([, value]) => value !== null && value !== undefined && value !== '');
+        return b `
+      <div class="unknown">
+        <div class="note warn">${t(this.language, 'options_unknown')}</div>
+        ${entries.length
+            ? b `<div class="note kept">
+              <div>${t(this.language, 'saved_settings')}</div>
+              ${entries.map(([key, value]) => b `<div class="kept-row">
+                  ${LABELLED.includes(key) ? t(this.language, key) : key}:
+                  ${String(value)}
+                </div>`)}
+            </div>`
+            : A}
+      </div>
+    `;
+    }
     _select(key, offered) {
         const current = this.settings[key];
         const orphan = this._orphan(key, offered);
@@ -977,6 +1025,38 @@ let ShabbatDeviceSettings = class ShabbatDeviceSettings extends i {
     }
     render() {
         const options = this._options;
+        // Three distinct answers, never conflated: the real controls; "these
+        // devices could not be read, and here is what the rule already
+        // holds"; or "these devices genuinely take no settings". Computed
+        // here rather than as a nested ternary inside the template, so each
+        // branch is one whole template result - see the note in `_select`.
+        const settings = options.climate
+            ? b `
+          <div>
+            <div class="field">
+              <label for="temperature">${t(this.language, 'temperature')}</label>
+              <input
+                id="temperature"
+                class="temperature"
+                type="number"
+                .value=${String(this.settings.temperature ?? '')}
+                min=${options.minTemp ?? 5}
+                max=${options.maxTemp ?? 35}
+                step=${options.tempStep ?? 0.5}
+                ?disabled=${this.disabled}
+                @change=${(event) => {
+                const raw = event.target.value;
+                this._set('temperature', raw === '' ? null : Number(raw));
+            }}
+              />
+            </div>
+            ${this._select('hvac_mode', options.hvacModes)}
+            ${this._select('fan_mode', options.fanModes)}
+          </div>
+        `
+            : options.unreadable.length
+                ? this._unreadableSettings()
+                : b `<div class="note">${t(this.language, 'not_climate')}</div>`;
         return b `
       <div class="settings">
         <div class="field">
@@ -1008,31 +1088,7 @@ let ShabbatDeviceSettings = class ShabbatDeviceSettings extends i {
         ${options.intersected
             ? b `<div class="note">${t(this.language, 'intersected')}</div>`
             : A}
-        ${options.climate
-            ? b `
-              <div>
-                <div class="field">
-                  <label for="temperature">${t(this.language, 'temperature')}</label>
-                  <input
-                    id="temperature"
-                    class="temperature"
-                    type="number"
-                    .value=${String(this.settings.temperature ?? '')}
-                    min=${options.minTemp ?? 5}
-                    max=${options.maxTemp ?? 35}
-                    step=${options.tempStep ?? 0.5}
-                    ?disabled=${this.disabled}
-                    @change=${(event) => {
-                const raw = event.target.value;
-                this._set('temperature', raw === '' ? null : Number(raw));
-            }}
-                  />
-                </div>
-                ${this._select('hvac_mode', options.hvacModes)}
-                ${this._select('fan_mode', options.fanModes)}
-              </div>
-            `
-            : b `<div class="note">${t(this.language, 'not_climate')}</div>`}
+        ${settings}
       </div>
     `;
     }
@@ -1544,7 +1600,7 @@ ShabbatDefaultsDialog = __decorate([
 ], ShabbatDefaultsDialog);
 
 /** Stamped into the Lovelace resource URL so a rebuild busts the cache. */
-const CARD_VERSION = '0.2.0';
+const CARD_VERSION = '0.3.0';
 
 /**
  * The only failure the server states as a fact: `ws_subscribe`
@@ -1851,6 +1907,19 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
         // know locally whether the server will accept the save, and a
         // client-side skip here would mean "nothing changed" quietly wins
         // over a rejection the server would otherwise have raised.
+        //
+        // `rule` is the snapshot taken when the dialog opened (`_editing`),
+        // NOT the latest pushed copy, and that is deliberate. If another
+        // client edits the same rule while this dialog is open, the diff
+        // basis is stale - but every key the diff emits still carries exactly
+        // the value the form is showing, so the write itself can never be
+        // wrong. Diffing against the fresh copy instead would turn "a field
+        // the user can see was not sent" into "a field the user never touched
+        // silently overwrites what the other client just saved", which is
+        // strictly worse on a system where nobody can undo it by hand.
+        // Reseeding the form from the push is worse still: it discards what
+        // the user has typed, and pushes arrive on every state change in the
+        // whole system. Staying conservative is the correct trade.
         return this._send({
             type: 'shabbat_scheduler/rules/update',
             rule_id: rule.id,

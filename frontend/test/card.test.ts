@@ -551,6 +551,92 @@ describe('authoring', () => {
     expect(sent.rule.profile).toBe(3);
   });
 
+  // ---- the per-day add chain, end to end ----
+  //
+  // Three separate links carried no guard at all: the card handing
+  // `_creatingDay` to the dialog's `.day`, and the dialog stamping that
+  // `day` onto both an empty form and a seeded (duplicate) one. Break any
+  // one of them and EVERY rule added from EVERY day's button is created on
+  // erev - an air conditioner acting on the wrong day of a three-day Chag -
+  // while `day-group` still emits `{day: '1'}` and the card still sets
+  // `_creatingDay` correctly, so both existing tests stay green.
+  //
+  // This one drives the whole chain through the real Save button rather
+  // than a synthesised `dialog-save`, so the day it asserts is the day
+  // that would actually be written.
+
+  it('creates a rule on the day whose add button was pressed, all the way to the payload', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(state());
+    el._selectedProfile = 3;
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-day-group')!.dispatchEvent(
+      new CustomEvent('rule-add', {
+        detail: { day: '2' }, bubbles: true, composed: true,
+      }),
+    );
+    await el.updateComplete;
+
+    const dialog = el.shadowRoot!.querySelector('shabbat-rule-dialog') as Card;
+    expect(dialog).not.toBeNull();
+    // The card must hand the target day down...
+    expect(dialog.day).toBe('2');
+    await dialog.updateComplete;
+
+    (dialog.shadowRoot!.querySelector('.save') as HTMLElement).click();
+    await flush();
+    await el.updateComplete;
+
+    // ...and the dialog must stamp it onto the form it emits.
+    const sent = hass.callWS.mock.calls[0][0];
+    expect(sent.type).toBe('shabbat_scheduler/rules/create');
+    expect(sent.rule.day).toBe('2');
+    expect(sent.rule.profile).toBe(3);
+  });
+
+  it('duplicates onto the day the duplicate was opened for, not the original\'s', async () => {
+    // `_onDuplicate` reopens as a create carrying the original's values.
+    // The seeded branch stamps `day` separately from the empty branch, so
+    // it needs its own guard: a duplicate that ignored `this.day` would
+    // silently move every duplicate to erev.
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(withRules());
+    el._editing = withRules().rules[0];
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-rule-dialog')!.dispatchEvent(
+      new CustomEvent('dialog-duplicate', {
+        detail: {
+          rule: withRules().rules[0],
+          form: { ...ruleToForm(withRules().rules[0]), day: '1' },
+        },
+      }),
+    );
+    await el.updateComplete;
+
+    // The user then moves the duplicate to day 2 before saving it.
+    // Deliberately not erev: erev is what every fallback in this chain
+    // falls back to, so expecting it would pass whether or not the target
+    // day was honoured at all.
+    el._creatingDay = '2';
+    await el.updateComplete;
+    const dialog = el.shadowRoot!.querySelector('shabbat-rule-dialog') as Card;
+    expect(dialog.day).toBe('2');
+    await dialog.updateComplete;
+
+    (dialog.shadowRoot!.querySelector('.save') as HTMLElement).click();
+    await flush();
+    await el.updateComplete;
+
+    const sent = hass.callWS.mock.calls[0][0];
+    expect(sent.rule.day).toBe('2');
+    // ...still carrying the original's values, or it duplicates nothing.
+    expect(sent.rule.time).toBe('11:00:00');
+  });
+
   it('keeps the dialog open and shows the message when the server refuses', async () => {
     // The saved form must actually differ from the original: the server
     // validates and stores rule.time already, so it can never answer
@@ -572,12 +658,96 @@ describe('authoring', () => {
         },
       }),
     );
-    await el.updateComplete;
+    // `flush`, not `updateComplete`. Both `await el.updateComplete` calls
+    // resolve BEFORE `_onSave`'s continuation runs, so without a macrotask
+    // flush the assertions below observe an intermediate state in which
+    // `_send` has set `_dialogError` but the close has not happened yet -
+    // and an optimistic `this._closeDialogs()` (the one thing the Global
+    // Constraints forbid) passed this test unnoticed. One macrotask is the
+    // whole difference between a guard and a decoration.
+    await flush();
     await el.updateComplete;
 
     const dialog = el.shadowRoot!.querySelector('shabbat-rule-dialog') as any;
     expect(dialog).not.toBeNull();
     expect(dialog.error).toContain('not a valid clock time');
+    // The rejected form is still in the card's hands, unchanged.
+    expect(el._editing).not.toBeNull();
+  });
+
+  // ---- the close path, in BOTH directions ----
+  //
+  // Closing before the server answers is optimistic and forbidden. NOT
+  // closing after the server accepts is its own bug: the user taps Save,
+  // sees nothing happen, and taps again - which on the create path is a
+  // second identical rule, i.e. exactly the double-fire `conflict_warnings`
+  // exists to complain about. The test above pins the first direction;
+  // these two pin the second, for update and for create.
+
+  it('closes the rule dialog once the server accepts an update', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(withRules());
+    el._editing = withRules().rules[0];
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-rule-dialog')!.dispatchEvent(
+      new CustomEvent('dialog-save', {
+        detail: {
+          rule: withRules().rules[0],
+          form: { ...ruleToForm(withRules().rules[0]), time: '12:00:00' },
+        },
+      }),
+    );
+    await flush();
+    await el.updateComplete;
+
+    expect(el.shadowRoot!.querySelector('shabbat-rule-dialog')).toBeNull();
+    expect(el._editing).toBeNull();
+  });
+
+  it('closes the rule dialog once the server accepts a create, so a second tap cannot duplicate it', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(state());
+    el._creatingDay = '1';
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-rule-dialog')!.dispatchEvent(
+      new CustomEvent('dialog-save', {
+        detail: { rule: null, form: { ...EMPTY, day: '1', time: '11:00:00' } },
+      }),
+    );
+    await flush();
+    await el.updateComplete;
+
+    expect(hass.callWS).toHaveBeenCalledOnce();
+    expect(el.shadowRoot!.querySelector('shabbat-rule-dialog')).toBeNull();
+    expect(el._creatingDay).toBeNull();
+  });
+
+  it('keeps the rule dialog open when the server refuses a create', async () => {
+    const { hass, send } = fakeHass();
+    hass.callWS = vi.fn(async () => {
+      throw { code: 'invalid_format', message: 'time is required' };
+    });
+    const el = await mount(hass);
+    send(state());
+    el._creatingDay = '1';
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-rule-dialog')!.dispatchEvent(
+      new CustomEvent('dialog-save', {
+        detail: { rule: null, form: { ...EMPTY, day: '1', time: '' } },
+      }),
+    );
+    await flush();
+    await el.updateComplete;
+
+    const dialog = el.shadowRoot!.querySelector('shabbat-rule-dialog') as any;
+    expect(dialog).not.toBeNull();
+    expect(dialog.error).toContain('time is required');
+    expect(el._creatingDay).toBe('1');
   });
 
   it('shows the preview banner and hides dates for a non-current profile', async () => {
@@ -692,6 +862,45 @@ describe('authoring', () => {
     });
   });
 
+  // ---- a push arriving while the dialog is open ----
+  //
+  // `_editing` is captured at open and never reconciled with later
+  // pushes, so a rule edited by another client mid-dialog leaves the diff
+  // basis stale. Assessed and deliberately kept: every key the diff emits
+  // still carries exactly the value the form is showing, so the write can
+  // never be wrong - it can only be smaller than the display implies.
+  // Diffing against the fresh copy would send a field the user never
+  // touched and silently overwrite the other client's save, on a system
+  // with no undo. This test pins the conservative choice so a future
+  // "fix" for the stale display cannot quietly introduce the clobber.
+
+  it('does not overwrite a field another client changed while the dialog was open', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(withRules());
+    el._editing = withRules().rules[0];
+    await el.updateComplete;
+
+    // Another client moves the same rule to 12:00 and the push lands.
+    send(state({ rules: [{ ...withRules().rules[0], time: '12:00:00' }] }));
+    await el.updateComplete;
+
+    const dialog = el.shadowRoot!.querySelector('shabbat-rule-dialog') as Card;
+    await dialog.updateComplete;
+    const name = dialog.shadowRoot!.querySelector('.name') as HTMLInputElement;
+    name.value = 'Morning';
+    name.dispatchEvent(new Event('change'));
+    (dialog.shadowRoot!.querySelector('.save') as HTMLElement).click();
+    await flush();
+    await el.updateComplete;
+
+    const sent = hass.callWS.mock.calls[0][0];
+    expect(sent.changes).toEqual({ name: 'Morning' });
+    // The field the user never touched is not in the payload, so the
+    // other client's 12:00 survives.
+    expect('time' in sent.changes).toBe(false);
+  });
+
   // ---- delete: the destructive command had no card-level test ----
 
   it('sends rules/delete with the rule id and closes only on success', async () => {
@@ -731,7 +940,10 @@ describe('authoring', () => {
         detail: { rule: withRules().rules[0] },
       }),
     );
-    await el.updateComplete;
+    // Same reason as the refused-save test above: without a macrotask the
+    // assertion lands before `_onDelete`'s continuation and would pass
+    // against an unconditional close.
+    await flush();
     await el.updateComplete;
 
     expect(el.shadowRoot!.querySelector('shabbat-rule-dialog')).not.toBeNull();

@@ -2,7 +2,11 @@ import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { deviceOptions, selectableDevices } from './format';
 import { t } from './strings';
+import type { StringKey } from './strings';
 import type { DeviceOptions, HassEntity } from './types';
+
+/** Settings keys this card has its own words for. Anything else reads raw. */
+const LABELLED: string[] = ['temperature', 'hvac_mode', 'fan_mode'];
 
 @customElement('shabbat-device-settings')
 export class ShabbatDeviceSettings extends LitElement {
@@ -70,6 +74,48 @@ export class ShabbatDeviceSettings extends LitElement {
     return offered.includes(value) ? null : value;
   }
 
+  /**
+   * What to show when nothing could be read.
+   *
+   * `deviceOptions` returns `climate: false` both for a device that
+   * genuinely takes no settings and for one it could not read at all -
+   * but those are two different statements, and only the first one means
+   * "this rule sets nothing". Rendering `not_climate` for an unreadable
+   * device made a rule holding `{temperature: 24, hvac_mode: 'cool'}`
+   * display as a rule with no settings at all, while the engine went on
+   * applying 24 / cool at 11:00 the next morning. A cloud-backed unit
+   * reports `unavailable` on any upstream hiccup and `unknown` after a
+   * restart before its first poll, so this is the normal case, not an
+   * exotic one.
+   *
+   * The values cannot be *edited* here - the bounds and the accepted
+   * modes are exactly what could not be read, so offering a control
+   * would be inventing them - but they must stay visible, because a
+   * saved setting the card does not show is a saved setting nobody knows
+   * about.
+   */
+  private _unreadableSettings() {
+    const entries = Object.entries(this.settings).filter(
+      ([, value]) => value !== null && value !== undefined && value !== '',
+    );
+    return html`
+      <div class="unknown">
+        <div class="note warn">${t(this.language, 'options_unknown')}</div>
+        ${entries.length
+          ? html`<div class="note kept">
+              <div>${t(this.language, 'saved_settings')}</div>
+              ${entries.map(
+                ([key, value]) => html`<div class="kept-row">
+                  ${LABELLED.includes(key) ? t(this.language, key as StringKey) : key}:
+                  ${String(value)}
+                </div>`,
+              )}
+            </div>`
+          : nothing}
+      </div>
+    `;
+  }
+
   private _select(key: 'hvac_mode' | 'fan_mode', offered: string[]) {
     const current = this.settings[key];
     const orphan = this._orphan(key, offered);
@@ -113,6 +159,38 @@ export class ShabbatDeviceSettings extends LitElement {
 
   override render() {
     const options = this._options;
+    // Three distinct answers, never conflated: the real controls; "these
+    // devices could not be read, and here is what the rule already
+    // holds"; or "these devices genuinely take no settings". Computed
+    // here rather than as a nested ternary inside the template, so each
+    // branch is one whole template result - see the note in `_select`.
+    const settings = options.climate
+      ? html`
+          <div>
+            <div class="field">
+              <label for="temperature">${t(this.language, 'temperature')}</label>
+              <input
+                id="temperature"
+                class="temperature"
+                type="number"
+                .value=${String(this.settings.temperature ?? '')}
+                min=${options.minTemp ?? 5}
+                max=${options.maxTemp ?? 35}
+                step=${options.tempStep ?? 0.5}
+                ?disabled=${this.disabled}
+                @change=${(event: Event) => {
+                  const raw = (event.target as HTMLInputElement).value;
+                  this._set('temperature', raw === '' ? null : Number(raw));
+                }}
+              />
+            </div>
+            ${this._select('hvac_mode', options.hvacModes)}
+            ${this._select('fan_mode', options.fanModes)}
+          </div>
+        `
+      : options.unreadable.length
+        ? this._unreadableSettings()
+        : html`<div class="note">${t(this.language, 'not_climate')}</div>`;
     return html`
       <div class="settings">
         <div class="field">
@@ -148,31 +226,7 @@ export class ShabbatDeviceSettings extends LitElement {
         ${options.intersected
           ? html`<div class="note">${t(this.language, 'intersected')}</div>`
           : nothing}
-        ${options.climate
-          ? html`
-              <div>
-                <div class="field">
-                  <label for="temperature">${t(this.language, 'temperature')}</label>
-                  <input
-                    id="temperature"
-                    class="temperature"
-                    type="number"
-                    .value=${String(this.settings.temperature ?? '')}
-                    min=${options.minTemp ?? 5}
-                    max=${options.maxTemp ?? 35}
-                    step=${options.tempStep ?? 0.5}
-                    ?disabled=${this.disabled}
-                    @change=${(event: Event) => {
-                      const raw = (event.target as HTMLInputElement).value;
-                      this._set('temperature', raw === '' ? null : Number(raw));
-                    }}
-                  />
-                </div>
-                ${this._select('hvac_mode', options.hvacModes)}
-                ${this._select('fan_mode', options.fanModes)}
-              </div>
-            `
-          : html`<div class="note">${t(this.language, 'not_climate')}</div>`}
+        ${settings}
       </div>
     `;
   }

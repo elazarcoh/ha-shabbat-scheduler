@@ -309,7 +309,17 @@ describe('ruleToForm / formToCreate / formToChanges', () => {
   });
 });
 
-// The real attributes of the three units this system drives.
+// The attributes of the units this system drives.
+//
+// `min_temp` and `target_temp_step` are deliberately DIFFERENT between the
+// two. Both units really do report 16 / 0.5, but a fixture where the two
+// devices agree cannot tell `Math.max` from `Math.min`: with both at 16,
+// swapping "narrowest" for "widest" on the minimum changed nothing and the
+// whole suite stayed green, exactly as it did for the "already sorted"
+// fixture this branch fixed once before. Only `max_temp` (31 vs 32)
+// discriminated. Splitting the minimums and the steps is what makes
+// "the narrowest range every device accepts" an assertion rather than a
+// coincidence - and 18 / 1.0 are ordinary values for a unit of this kind.
 const SALON: HassEntity = {
   state: 'off',
   attributes: {
@@ -323,7 +333,7 @@ const KIDS: HassEntity = {
   attributes: {
     hvac_modes: ['off', 'auto', 'cool', 'heat', 'dry', 'fan_only'],
     fan_modes: ['auto', 'low', 'medium', 'high', 'turbo', 'silent'],
-    min_temp: 16, max_temp: 32, target_temp_step: 0.5,
+    min_temp: 18, max_temp: 32, target_temp_step: 1.0,
   },
 };
 const BOOLEAN: HassEntity = { state: 'off', attributes: {} };
@@ -335,8 +345,18 @@ describe('deviceOptions', () => {
     expect(o.fanModes).not.toContain('silent');
     expect(o.minTemp).toBe(16);
     expect(o.maxTemp).toBe(31);
+    expect(o.tempStep).toBe(0.5);
     expect(o.climate).toBe(true);
     expect(o.intersected).toBe(false);
+  });
+
+  it('offers exactly what the OTHER single device declares', () => {
+    // The pair above and this one differ in every bound, so a "narrowest"
+    // that had quietly become "widest" cannot hide behind one of them.
+    const o = deviceOptions({ 'climate.kids': KIDS }, ['climate.kids']);
+    expect(o.minTemp).toBe(18);
+    expect(o.maxTemp).toBe(32);
+    expect(o.tempStep).toBe(1.0);
   });
 
   it('intersects when devices disagree, dropping what only one offers', () => {
@@ -355,8 +375,13 @@ describe('deviceOptions', () => {
       { 'climate.salon': SALON, 'climate.kids': KIDS },
       ['climate.salon', 'climate.kids'],
     );
-    expect(o.minTemp).toBe(16);
+    // The narrowest range EVERY device accepts: the kids' floor and the
+    // salon's ceiling. Sending 16 to the kids' unit, or 32 to the salon's,
+    // is a value the device rejects - discovered at 11:00 on Shabbat.
+    expect(o.minTemp).toBe(18); // the kids' floor, not the salon's 16
     expect(o.maxTemp).toBe(31); // the salon's ceiling, not the kids' 32
+    // Likewise the coarsest step: 16.5 is not a temperature both accept.
+    expect(o.tempStep).toBe(1.0);
   });
 
   it('reports a device it cannot read rather than pretending it offers nothing', () => {

@@ -14,6 +14,63 @@ input_boolean:
     name: Salon AC stand-in
   kids:
     name: Kids AC stand-in
+  # Actuated by the two generic_thermostats below, so their switching can
+  # never disturb the two stand-ins the seeded rules drive.
+  heater_salon:
+    name: Thermostat output (salon)
+  heater_kids:
+    name: Thermostat output (kids)
+
+# The device-aware settings form is this branch's headline feature, and
+# with only input_boolean/switch entities in this fixture every e2e test
+# ran with `options.climate === false` - so the intersection, the
+# narrowest-bounds and the orphan-option logic were exercised ONLY under
+# happy-dom, the same emulator the plan documents as mis-rendering exactly
+# these nested templates. These two exist to give that logic a real
+# browser to be wrong in.
+#
+# generic_thermostat rather than the `demo` platform: demo's climates all
+# report the same fan modes and the same 7/35 bounds, so an intersection
+# of them proves nothing, while generic_thermostat lets min_temp/max_temp
+# and hvac_modes be set per entity. Chosen so that no two of the three
+# possible selections agree:
+#
+#   salon alone       -> hvac ['heat','off'],  16.0 .. 32.0
+#   kids alone        -> hvac ['cool','off'],  14.0 .. 31.0
+#   both together     -> hvac ['off'],         16.0 .. 31.0
+#
+# `initial_hvac_mode: "off"` keeps them inert - they exist to be read, not
+# to control anything.
+template:
+  - sensor:
+      - name: Dev room temperature
+        unique_id: dev_room_temperature
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state: "22"
+
+climate:
+  - platform: generic_thermostat
+    name: Dev salon
+    unique_id: dev_salon
+    heater: input_boolean.heater_salon
+    target_sensor: sensor.dev_room_temperature
+    min_temp: 16
+    max_temp: 32
+    target_temp: 24
+    target_temp_step: 0.5
+    initial_hvac_mode: "off"
+  - platform: generic_thermostat
+    name: Dev kids
+    unique_id: dev_kids
+    ac_mode: true
+    heater: input_boolean.heater_kids
+    target_sensor: sensor.dev_room_temperature
+    min_temp: 14
+    max_temp: 31
+    target_temp: 24
+    target_temp_step: 0.5
+    initial_hvac_mode: "off"
 
 logger:
   default: info

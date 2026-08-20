@@ -328,6 +328,19 @@ export class ShabbatSchedulerCard extends LitElement {
     // know locally whether the server will accept the save, and a
     // client-side skip here would mean "nothing changed" quietly wins
     // over a rejection the server would otherwise have raised.
+    //
+    // `rule` is the snapshot taken when the dialog opened (`_editing`),
+    // NOT the latest pushed copy, and that is deliberate. If another
+    // client edits the same rule while this dialog is open, the diff
+    // basis is stale - but every key the diff emits still carries exactly
+    // the value the form is showing, so the write itself can never be
+    // wrong. Diffing against the fresh copy instead would turn "a field
+    // the user can see was not sent" into "a field the user never touched
+    // silently overwrites what the other client just saved", which is
+    // strictly worse on a system where nobody can undo it by hand.
+    // Reseeding the form from the push is worse still: it discards what
+    // the user has typed, and pushes arrive on every state change in the
+    // whole system. Staying conservative is the correct trade.
     return this._send({
       type: 'shabbat_scheduler/rules/update',
       rule_id: rule.id,

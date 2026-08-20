@@ -25,6 +25,13 @@ const STRINGS = {
     intersected: 'Showing only what every selected device supports.',
     unreadable: 'Could not read these devices, so their options are unknown:',
     not_climate: 'These devices take no settings — on and off only.',
+    // Deliberately NOT `not_climate`. "I cannot read this device" and
+    // "this device has no settings" are different statements, and
+    // rendering the second for the first tells someone a rule sets
+    // nothing when it sets 24 degrees - the card saying something other
+    // than what will happen, which is the one thing it must never do.
+    options_unknown: 'These devices cannot be read, so their settings cannot be edited here.',
+    saved_settings: 'The settings this rule already has are kept exactly as they are:',
     kept_setting: 'kept, but this device does not list it',
     edit_rule: 'Edit rule',
     add_rule: 'Add rule',
@@ -69,6 +76,8 @@ const STRINGS = {
     intersected: 'מוצג רק מה שכל המכשירים שנבחרו תומכים בו.',
     unreadable: 'לא ניתן לקרוא את המכשירים האלה, לכן האפשרויות שלהם אינן ידועות:',
     not_climate: 'המכשירים האלה לא מקבלים הגדרות — הפעלה וכיבוי בלבד.',
+    options_unknown: 'לא ניתן לקרוא את המכשירים האלה, ולכן אי אפשר לערוך כאן את ההגדרות שלהם.',
+    saved_settings: 'ההגדרות שכבר קיימות בכלל נשמרות בדיוק כפי שהן:',
     kept_setting: 'נשמר, אך המכשיר לא מציג אותו',
     edit_rule: 'עריכת כלל',
     add_rule: 'הוספת כלל',

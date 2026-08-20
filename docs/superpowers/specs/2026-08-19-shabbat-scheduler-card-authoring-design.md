@@ -147,8 +147,20 @@ closes, and the server's push redraws the card. On rejection it **stays open**
 with the user's input intact and shows the server's message.
 
 An update sends only the fields that changed. `changes_from_api` already
-accepts a partial, and sending an unchanged full rule would make every save
-look like an edit of every field in the logbook.
+accepts a partial, so the write stays small and the push it triggers says
+what actually moved.
+
+This is **not** a logbook concern. An earlier draft of this spec claimed a
+full-rule save "would make every save look like an edit of every field in
+the logbook"; that was disproved during Task 9 and is false. `logbook.py`
+describes exactly one event, `EVENT_RULE_APPLIED`, and `engine.py` fires it
+only when a rule actually runs. No rule edit ever reaches the logbook.
+
+Nor is a small diff what lets an unchanged save skip the round trip — it does
+not skip it. The card always asks the server rather than assuming a diff of
+`{}` means nothing could go wrong: the entry could be unloaded, the
+connection dead, the rule deleted by another client. An unchanged save still
+sends `changes: {}` and waits for the answer.
 
 Duplicate is composed client-side: read the rule, open the create dialog
 pre-filled, let the user change the time or day, and `rules/create` it. The

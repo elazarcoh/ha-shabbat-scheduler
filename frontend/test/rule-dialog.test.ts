@@ -106,6 +106,65 @@ describe('shabbat-rule-dialog', () => {
     expect(el.shadowRoot!.querySelector('.delete')).toBeNull();
   });
 
+  // ---- the day a create is authored under ----
+  //
+  // The dialog stamps `day` in two separate places - once for an empty
+  // create, once for a seeded (duplicate) one - and neither had a test.
+  // Either one silently falling back to 'erev' would put every added rule
+  // on erev while every other assertion in the suite stayed green, and an
+  // air conditioner would run on the wrong day of a three-day Chag.
+
+  it('creates on the day it was opened for, not on erev', async () => {
+    const el = await render({ rule: null, seed: null, day: '2' });
+    const listener = vi.fn();
+    el.addEventListener('dialog-save', listener);
+
+    (el.shadowRoot!.querySelector('.save') as HTMLElement).click();
+
+    expect((listener.mock.calls[0][0] as CustomEvent).detail.form.day).toBe('2');
+  });
+
+  it('re-stamps the day when the same dialog is reopened for another day', async () => {
+    // The dialog instance persists across opens: a `day` that only took
+    // effect on first construction would strand every later create on the
+    // first day ever opened.
+    const el = await render({ rule: null, seed: null, day: 'erev' });
+    el.day = '3';
+    await el.updateComplete;
+
+    const listener = vi.fn();
+    el.addEventListener('dialog-save', listener);
+    (el.shadowRoot!.querySelector('.save') as HTMLElement).click();
+
+    expect((listener.mock.calls[0][0] as CustomEvent).detail.form.day).toBe('3');
+  });
+
+  it('puts a duplicate on the day it was opened for, overriding the seed\'s own day', async () => {
+    // The seed is the original rule's form, day and all. The dialog's own
+    // `day` is where the user is putting the copy, and it must win.
+    //
+    // The target day is deliberately NOT 'erev'. Erev is what every
+    // fallback in this chain falls back to, so a test that expects 'erev'
+    // passes whether the day was honoured or hard-coded - verified: with
+    // `day: 'erev'` here, forcing this branch to 'erev' left 168/168
+    // green. '3' can only come from `this.day`.
+    const el = await render({
+      rule: null,
+      seed: { ...ruleToForm(existing), day: '1' },
+      day: '3',
+    });
+    const listener = vi.fn();
+    el.addEventListener('dialog-save', listener);
+
+    (el.shadowRoot!.querySelector('.save') as HTMLElement).click();
+
+    const { form } = (listener.mock.calls[0][0] as CustomEvent).detail;
+    expect(form.day).toBe('3');
+    // ...while everything else still comes from the seed.
+    expect(form.time).toBe('11:00:00');
+    expect(form.name).toBe('Morning');
+  });
+
   it('reseeds when a different rule is duplicated for the same day and profile', async () => {
     const other: RuleData = {
       ...existing, id: 'r2', name: 'Evening', time: '22:00:00',

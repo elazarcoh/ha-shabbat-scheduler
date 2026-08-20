@@ -62,7 +62,17 @@ export class ShabbatRuleRow extends LitElement {
     const conflicts = warningsForRule(this.rule.id, this.warnings);
     const title = this.rule.name;
     return html`
-      <div class="row ${this.rule.enabled ? '' : 'disabled'}">
+      <div
+        class="row ${this.rule.enabled ? '' : 'disabled'}"
+        @click=${() =>
+          this.dispatchEvent(
+            new CustomEvent('rule-open', {
+              detail: { rule: this.rule },
+              bubbles: true,
+              composed: true,
+            }),
+          )}
+      >
         <span class="dot" style="background:${actionColour(this.rule.action)}"></span>
         <span class="time">${this.rule.time.slice(0, 5)}</span>
         <div class="body">

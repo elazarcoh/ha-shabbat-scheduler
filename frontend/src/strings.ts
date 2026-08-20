@@ -46,6 +46,7 @@ const STRINGS = {
     defaults_title: 'Shared defaults',
     defaults_help: 'Rules inherit these unless they set their own.',
     inherits_devices: 'No devices set — inherits from the shared defaults:',
+    preview_banner: 'Preview — not the coming Shabbat. Dates are not shown because this block is not scheduled.',
   },
   he: {
     erev: 'ערב',
@@ -89,6 +90,7 @@ const STRINGS = {
     defaults_title: 'ברירות מחדל משותפות',
     defaults_help: 'כללים יורשים אותן אלא אם הגדירו משלהם.',
     inherits_devices: 'לא נבחרו מכשירים — יורש מברירות המחדל המשותפות:',
+    preview_banner: 'תצוגה מקדימה — לא השבת הקרובה. התאריכים אינם מוצגים כי הבלוק הזה אינו מתוכנן.',
   },
 } as const;
 

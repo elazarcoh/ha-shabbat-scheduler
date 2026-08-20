@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import '../src/card';
+import { ruleToForm } from '../src/format';
 import type { CardState, RuleData } from '../src/types';
+
+const EMPTY = {
+  day: 'erev', time: '', action: 'on', devices: [], settings: {},
+  name: null, icon: null, color: null, enabled: true, script: null,
+  variables: {}, replay_on_restart: false,
+};
 
 /** Lets pending promise chains (subscribe, unsubscribe, callService) settle. */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -36,10 +43,12 @@ function fakeHass(over: Record<string, unknown> = {}) {
   let push: ((s: CardState) => void) | null = null;
   const unsubscribe = vi.fn(async () => {});
   const callService = vi.fn(async () => {});
+  const callWS = vi.fn(async (_message: any) => ({}) as any);
   const hass = {
     locale: { language: 'en' },
     user: { is_admin: true },
     callService,
+    callWS,
     connection: {
       subscribeMessage: vi.fn<SubscribeFn>(async (cb) => {
         push = cb;
@@ -48,7 +57,7 @@ function fakeHass(over: Record<string, unknown> = {}) {
     },
     ...over,
   };
-  return { hass, send: (s: CardState) => push!(s), unsubscribe, callService };
+  return { hass, send: (s: CardState) => push!(s), unsubscribe, callService, callWS };
 }
 
 type Card = HTMLElement & Record<string, any>;
@@ -470,5 +479,144 @@ describe('shabbat-scheduler-card', () => {
     await el.updateComplete;
 
     expect(el.getCardSize()).toBe(3);
+  });
+});
+
+describe('authoring', () => {
+  const withRules = () =>
+    state({ rules: [
+      { id: 'r1', profile: 1, day: '1', time: '11:00:00', action: 'on',
+        devices: [], settings: {}, name: null, icon: null, enabled: true,
+        script: null, variables: {}, replay_on_restart: false, color: null },
+    ] });
+
+  it('opens the dialog when a row asks to be opened', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(withRules());
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-day-group')!.dispatchEvent(
+      new CustomEvent('rule-open', {
+        detail: { rule: withRules().rules[0] }, bubbles: true, composed: true,
+      }),
+    );
+    await el.updateComplete;
+
+    expect(el.shadowRoot!.querySelector('shabbat-rule-dialog')).not.toBeNull();
+  });
+
+  it('sends rules/update with only the changed fields', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(withRules());
+    await el.updateComplete;
+    el._editing = withRules().rules[0];
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-rule-dialog')!.dispatchEvent(
+      new CustomEvent('dialog-save', {
+        detail: {
+          rule: withRules().rules[0],
+          form: { ...ruleToForm(withRules().rules[0]), time: '12:00:00' },
+        },
+      }),
+    );
+    await el.updateComplete;
+
+    expect(hass.callWS).toHaveBeenCalledWith({
+      type: 'shabbat_scheduler/rules/update',
+      rule_id: 'r1',
+      changes: { time: '12:00:00' },
+    });
+  });
+
+  it('sends rules/create carrying the selected profile', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(state());
+    el._selectedProfile = 3;
+    el._creatingDay = '2';
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-rule-dialog')!.dispatchEvent(
+      new CustomEvent('dialog-save', {
+        detail: { rule: null, form: { ...EMPTY, day: '2', time: '11:00:00' } },
+      }),
+    );
+    await el.updateComplete;
+
+    const sent = hass.callWS.mock.calls[0][0];
+    expect(sent.type).toBe('shabbat_scheduler/rules/create');
+    expect(sent.rule.profile).toBe(3);
+  });
+
+  it('keeps the dialog open and shows the message when the server refuses', async () => {
+    const { hass, send } = fakeHass();
+    hass.callWS = vi.fn(async () => { throw { code: 'invalid_format', message: 'time is not a valid clock time' }; });
+    const el = await mount(hass);
+    send(withRules());
+    el._editing = withRules().rules[0];
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-rule-dialog')!.dispatchEvent(
+      new CustomEvent('dialog-save', {
+        detail: { rule: withRules().rules[0], form: ruleToForm(withRules().rules[0]) },
+      }),
+    );
+    await el.updateComplete;
+    await el.updateComplete;
+
+    const dialog = el.shadowRoot!.querySelector('shabbat-rule-dialog') as any;
+    expect(dialog).not.toBeNull();
+    expect(dialog.error).toContain('not a valid clock time');
+  });
+
+  it('shows the preview banner and hides dates for a non-current profile', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(withRules());
+    el._selectedProfile = 3;
+    await el.updateComplete;
+
+    expect(el.shadowRoot!.textContent).toContain('Preview');
+    const groups = [...el.shadowRoot!.querySelectorAll('shabbat-day-group')];
+    expect(groups.length).toBe(4);
+    for (const group of groups) {
+      expect((group as any).group.date).toBeNull();
+    }
+  });
+
+  it('duplicating opens a create pre-filled from the original', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(withRules());
+    el._editing = withRules().rules[0];
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-rule-dialog')!.dispatchEvent(
+      new CustomEvent('dialog-duplicate', {
+        detail: {
+          rule: withRules().rules[0],
+          form: ruleToForm(withRules().rules[0]),
+        },
+      }),
+    );
+    await el.updateComplete;
+
+    const dialog = el.shadowRoot!.querySelector('shabbat-rule-dialog') as any;
+    // A create, not an edit - saving must add a rule, not overwrite one.
+    expect(dialog.rule).toBeNull();
+    // ...but carrying the original's values, or it duplicates nothing.
+    expect(dialog.seed.time).toBe('11:00:00');
+  });
+
+  it('offers no authoring at all to a read-only user', async () => {
+    const { hass, send } = fakeHass({ user: { is_admin: false } });
+    const el = await mount(hass);
+    send(withRules());
+    await el.updateComplete;
+    const group = el.shadowRoot!.querySelector('shabbat-day-group') as any;
+    expect(group.canWrite).toBe(false);
   });
 });

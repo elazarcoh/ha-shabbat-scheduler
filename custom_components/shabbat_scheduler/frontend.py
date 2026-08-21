@@ -87,16 +87,39 @@ async def _async_register_resource(hass: HomeAssistant) -> None:
         )
         return
 
-    wanted = f"{CARD_URL}?v={CARD_VERSION}"
-    for item in data.resources.async_items():
-        if item["url"].startswith(CARD_URL):
-            if item["url"] != wanted:
-                await data.resources.async_update_item(
-                    item["id"], {"url": wanted}
-                )
-            return
+    # async_items() is a plain `list(self.data.values())` - it does not load
+    # the collection from storage. async_get_info() is the public method
+    # that does (it calls the same _async_ensure_loaded() that
+    # async_create_item/async_update_item/async_delete_item use), so call
+    # it first and discard the result. Without this, on a fresh boot where
+    # nothing has touched the collection yet, async_items() below returns
+    # [] even though the store on disk already has our resource(s), the
+    # dedup loop finds nothing to update, and async_create_item - which
+    # does load - appends a duplicate on top of what's already there.
+    await data.resources.async_get_info()
 
-    await data.resources.async_create_item({"res_type": "module", "url": wanted})
+    wanted = f"{CARD_URL}?v={CARD_VERSION}"
+    matching = [
+        item
+        for item in data.resources.async_items()
+        if item["url"].startswith(CARD_URL)
+    ]
+
+    if not matching:
+        await data.resources.async_create_item(
+            {"res_type": "module", "url": wanted}
+        )
+        return
+
+    keep, *extras = matching
+    if keep["url"] != wanted:
+        await data.resources.async_update_item(keep["id"], {"url": wanted})
+    # Self-heal: users may already have duplicates left behind by the bug
+    # this fixes (or from manual edits). Registration must always end with
+    # exactly one resource matching CARD_URL, so remove the rest instead of
+    # leaving them for the user to hand-clean from .storage.
+    for extra in extras:
+        await data.resources.async_delete_item(extra["id"])
 
 
 async def async_unregister_frontend(hass: HomeAssistant) -> None:
@@ -112,10 +135,14 @@ async def async_unregister_frontend(hass: HomeAssistant) -> None:
         data = hass.data.get(LOVELACE_DATA)
         if data is None or data.resource_mode != "storage":
             return
-        for item in data.resources.async_items():
+        # See _async_register_resource: async_items() does not load the
+        # collection from storage, so without this the unloaded-collection
+        # race can make unload find nothing to remove, leaving the
+        # resource (or duplicates of it) orphaned in .storage.
+        await data.resources.async_get_info()
+        for item in list(data.resources.async_items()):
             if item["url"].startswith(CARD_URL):
                 await data.resources.async_delete_item(item["id"])
-                return
     except Exception:  # noqa: BLE001 - deliberately broad, see docstring
         _LOGGER.exception(
             "Failed to remove the Shabbat Scheduler card's Lovelace "

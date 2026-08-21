@@ -7,8 +7,14 @@ from homeassistant.components.lovelace.const import LOVELACE_DATA
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from homeassistant.components.lovelace.resources import RESOURCE_STORAGE_KEY
+
 from custom_components.shabbat_scheduler.const import DOMAIN
-from custom_components.shabbat_scheduler.frontend import CARD_URL
+from custom_components.shabbat_scheduler.frontend import (
+    CARD_URL,
+    CARD_VERSION,
+    async_unregister_frontend,
+)
 
 
 async def _setup(hass):
@@ -121,12 +127,76 @@ async def test_setup_survives_yaml_resource_mode(hass):
     assert hass.data[DOMAIN][entry.entry_id]["engine"] is not None
 
 
+async def test_stale_duplicates_are_cleaned_up_when_the_collection_was_never_loaded(
+    hass, hass_storage
+):
+    """Reproduces the real production race: `ResourceStorageCollection`
+    only loads from disk lazily, the first time one of
+    `async_create_item`/`async_update_item`/`async_delete_item`/
+    `async_get_info` is awaited. `async_items()` does not trigger that
+    load - it is a plain `list(self.data.values())` - so on a fresh boot,
+    before anything else has touched the collection, it returns `[]` even
+    though the store on disk already holds duplicates left over from
+    earlier versions of the card. The dedup loop then finds nothing to
+    update and falls through to `async_create_item`, which *does* load,
+    and appends yet another copy on top of the ones already there.
+
+    `async_setup_component(hass, "lovelace", {})` only constructs the
+    (unloaded) collection; it does not load it either, so seeding
+    `hass_storage` before that call and then setting up the entry
+    reproduces the race precisely as it happens on a real restart.
+    """
+    hass_storage[RESOURCE_STORAGE_KEY] = {
+        "version": 1,
+        "data": {
+            "items": [
+                {"id": "old1", "type": "module", "url": f"{CARD_URL}?v=0.1.0"},
+                {"id": "old2", "type": "module", "url": f"{CARD_URL}?v=0.1.0"},
+                {"id": "old3", "type": "module", "url": f"{CARD_URL}?v=0.2.0"},
+            ]
+        },
+    }
+
+    await async_setup_component(hass, "lovelace", {})
+    entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    matching = [
+        item
+        for item in hass.data[LOVELACE_DATA].resources.async_items()
+        if item["url"].startswith(CARD_URL)
+    ]
+    assert len(matching) == 1
+    assert matching[0]["url"] == f"{CARD_URL}?v={CARD_VERSION}"
+
+
+async def test_unregistering_removes_every_matching_resource(hass):
+    """`async_unregister_frontend` must not stop at the first match either
+    - a user who already has duplicates (from this same bug, or from
+    manual edits) must not be left with orphans after the entry unloads."""
+    await async_setup_component(hass, "lovelace", {})
+    resources = hass.data[LOVELACE_DATA].resources
+    await resources.async_create_item(
+        {"res_type": "module", "url": f"{CARD_URL}?v=0.1.0"}
+    )
+    await resources.async_create_item(
+        {"res_type": "module", "url": f"{CARD_URL}?v=0.2.0"}
+    )
+    await resources.async_create_item({"res_type": "module", "url": CARD_URL})
+
+    await async_unregister_frontend(hass)
+
+    matching = [
+        item for item in resources.async_items() if item["url"].startswith(CARD_URL)
+    ]
+    assert matching == []
+
+
 from pathlib import Path
 
-from custom_components.shabbat_scheduler.frontend import (
-    CARD_FILENAME,
-    CARD_VERSION,
-)
+from custom_components.shabbat_scheduler.frontend import CARD_FILENAME
 
 # Anchored to this file, not to the working directory: pytest is routinely
 # invoked from somewhere other than the repo root (an editor's test runner,

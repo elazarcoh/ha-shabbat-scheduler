@@ -5,7 +5,10 @@ from unittest.mock import patch
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.components.lovelace.const import LOVELACE_DATA
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    flush_store,
+)
 
 from homeassistant.components.lovelace.resources import RESOURCE_STORAGE_KEY
 
@@ -192,6 +195,123 @@ async def test_unregistering_removes_every_matching_resource(hass):
         item for item in resources.async_items() if item["url"].startswith(CARD_URL)
     ]
     assert matching == []
+
+
+async def test_unregistering_removes_every_matching_resource_from_an_unloaded_collection(
+    hass, hass_storage
+):
+    """The test above seeds its resources through `async_create_item`,
+    which itself calls `_async_ensure_loaded()` - so by the time
+    `async_unregister_frontend` runs there, the collection is already
+    loaded and the `await data.resources.async_get_info()` on the
+    unregister path does nothing observable. This test constructs the
+    genuinely-unloaded case instead.
+
+    Resources are seeded straight into `hass_storage`, exactly as in
+    `test_stale_duplicates_are_cleaned_up_when_the_collection_was_never_loaded`.
+    To keep the collection unloaded through *setup* as well - so nothing
+    upstream of unload accidentally loads it first - the static path
+    registration is made to raise. `async_register_frontend`'s outer
+    `try` then skips `_async_register_resource` entirely (the raise
+    happens before that call is reached), which is the only other thing
+    in this integration that would touch the collection. Setup still
+    succeeds (registration failures never fail setup - see
+    `test_an_unexpected_registration_error_does_not_fail_setup`), so the
+    collection reaches `hass.config_entries.async_unload` - which calls
+    `async_unregister_frontend` for real, not by calling the function
+    directly - having never been loaded even once.
+
+    Asserting against `resources.async_items()` here would be a trap: if
+    the collection was never loaded, `self.data` is still an empty dict
+    regardless of whether anything was actually deleted, so an in-memory
+    check would pass vacuously whether or not the fix does its job (this
+    was caught by first running this test against the deliberately
+    broken code below and seeing it pass for the wrong reason). The only
+    honest signal is what ends up back on disk, so this flushes the
+    collection's `Store` and reads `hass_storage` directly - if
+    `async_get_info()` never ran, the collection's in-memory data was
+    never populated, there is nothing to flush, and the original
+    on-disk duplicates are still sitting there untouched.
+    """
+    hass_storage[RESOURCE_STORAGE_KEY] = {
+        "version": 1,
+        "data": {
+            "items": [
+                {"id": "old1", "type": "module", "url": f"{CARD_URL}?v=0.1.0"},
+                {"id": "old2", "type": "module", "url": f"{CARD_URL}?v=0.2.0"},
+                {"id": "old3", "type": "module", "url": CARD_URL},
+            ]
+        },
+    }
+
+    await async_setup_component(hass, "lovelace", {})
+    await async_setup_component(hass, "http", {})
+    entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
+    entry.add_to_hass(hass)
+
+    with patch.object(
+        hass.http,
+        "async_register_static_paths",
+        side_effect=RuntimeError("boom"),
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    # Setup must have survived the static-path failure, per the existing
+    # guarantee - and, crucially for this test, that means it never reached
+    # `_async_register_resource`, so the collection is still unloaded here.
+    assert entry.state is ConfigEntryState.LOADED
+    assert hass.data[LOVELACE_DATA].resources.loaded is False
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    await flush_store(hass.data[LOVELACE_DATA].resources.store)
+    matching = [
+        item
+        for item in hass_storage[RESOURCE_STORAGE_KEY]["data"]["items"]
+        if item["url"].startswith(CARD_URL)
+    ]
+    assert matching == []
+
+
+async def test_registration_is_a_no_op_when_already_current_and_unloaded(
+    hass, hass_storage
+):
+    """The dedup code's three states - no match, stale match, current match
+    - are each reachable from a freshly-unloaded collection. The first two
+    are exercised elsewhere; this pins the third: a resource already at
+    `CARD_VERSION`, seeded on disk rather than through the collection, so
+    nothing has loaded it before setup runs. Registration must recognise it
+    as already correct and leave it alone rather than updating or
+    duplicating it."""
+    hass_storage[RESOURCE_STORAGE_KEY] = {
+        "version": 1,
+        "data": {
+            "items": [
+                {
+                    "id": "current",
+                    "type": "module",
+                    "url": f"{CARD_URL}?v={CARD_VERSION}",
+                }
+            ]
+        },
+    }
+
+    await async_setup_component(hass, "lovelace", {})
+    entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    matching = [
+        item
+        for item in hass.data[LOVELACE_DATA].resources.async_items()
+        if item["url"].startswith(CARD_URL)
+    ]
+    assert matching == [
+        {"id": "current", "type": "module", "url": f"{CARD_URL}?v={CARD_VERSION}"}
+    ]
 
 
 from pathlib import Path

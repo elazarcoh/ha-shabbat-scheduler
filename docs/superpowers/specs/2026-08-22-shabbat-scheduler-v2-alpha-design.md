@@ -236,18 +236,45 @@ an upgrade.
 
 The bespoke climate form is deleted. In its place:
 
-- an **action editor** built on Home Assistant's own service-control component,
-  so the form for every service comes from HA's schemas rather than being
+- an **action editor** on `<ha-service-control>` for the action and its data, so
+  the form for every service comes from HA's own schemas rather than being
   hand-written per domain;
-- a **target picker** covering entities, devices, areas and labels;
+- a **target picker** as `<ha-selector>` with a `{target: {}}` selector,
+  covering entities, devices, areas, labels and floors;
 - a **condition editor**;
 - a **replay editor** (`enabled` plus `within`).
 
-Whether HA's `<ha-service-control>` is reliably available to a custom card is
-the one genuine unknown here — it is a frontend internal, not a public API. The
-implementation plan must verify it against 2026.8.2 in a real browser early, and
-fall back to a target picker plus a YAML `data` field if it is not. That
-fallback is materially worse and should not be adopted without checking.
+### Frontend availability — verified, not assumed
+
+These are frontend internals rather than a public API, so all of the below was
+checked in real Chromium against 2026.8.2, with the elements instantiated
+inside a custom element's own shadow root to match how the card will use them.
+
+**`<ha-service-control>` works.** Given
+`{action: 'climate.set_temperature', target: {...}, data: {...}}` it rendered,
+read that service's real schema — producing `temperature` and `hvac_mode` rows,
+not a hand-written guess — and emitted `value-changed` carrying the full
+`{action, target, data}`.
+
+**It does not render its own target row on a dashboard.** It has the internal
+logic (`_targetChanged`, `_entityPicked`) but the UI depends on
+`ha-target-picker`, which is *not* pre-registered outside the automation
+editor. Do not wait for it to appear.
+
+**`<ha-selector>` is the reliable way in.** It is always pre-registered, and it
+dynamically imports whatever sub-selector it is handed — given `{target: {}}`
+it rendered a working picker *and* caused `ha-target-picker` to become defined,
+which it had not been a moment earlier.
+
+So the standing rule for this card: **reach for `ha-selector` with the selector
+you want, never for a specific picker element.** Availability differs
+element-by-element on a dashboard — `ha-entity-picker`, `ha-area-picker`,
+`ha-label-picker`, `ha-form` and `ha-icon-picker` are present, while
+`ha-device-picker`, `ha-floor-picker`, `ha-target-picker` and `ha-textfield`
+are not — and that list is not something to depend on.
+
+No fallback is needed, and the YAML-data fallback previously contemplated here
+is withdrawn.
 
 Everything else the card does — the day-grouped timeline, zmanim markers,
 profile chips and preview, per-day add, duplicate, delete, defaults, warnings,
@@ -303,6 +330,11 @@ exists.
 
 ## Open questions
 
-None blocking. One flagged risk, stated above: whether HA's service-control
-component can be used from a custom card. Plan 2 must establish that in a real
-browser before committing to the action editor's design.
+None. The one risk this design originally carried — whether HA's
+service-control component can be driven from a custom card — was settled
+empirically before the spec was finalised; see *Frontend availability* above.
+
+Plan 2 should still re-check the availability list against whatever Home
+Assistant version it targets, since none of these elements is a public API and
+the pre-registered set can change between releases. The rule that survives a
+change is the one stated above: go through `ha-selector`.

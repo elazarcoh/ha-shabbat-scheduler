@@ -13,33 +13,53 @@ from typing import Any
 
 _CLIMATE_SET_TEMPERATURE = "climate.set_temperature"
 _CLIMATE_SET_HVAC_MODE = "climate.set_hvac_mode"
+_CLIMATE_SET_FAN_MODE = "climate.set_fan_mode"
 _HVAC_MODE = "hvac_mode"
+_FAN_MODE = "fan_mode"
+_TEMPERATURE_KEYS = ("temperature", "target_temp_high", "target_temp_low")
 
 
 def expand_action(action: str, data: dict) -> list[tuple[str, dict]]:
     """The calls one authored action becomes. Usually itself.
 
     THE ONE COMPATIBILITY SHIM. `climate.set_temperature` carrying an
-    `hvac_mode` is split into `set_hvac_mode` then `set_temperature`,
-    because several climate integrations - the `aux_cloud` units this was
-    written for among them - intermittently fail to power on when both
-    arrive together. The most-used third-party scheduler in the ecosystem
-    hardcodes the same split for the same reason, which is the evidence
-    that this is a real hardware quirk and not this project's special
-    case.
+    `hvac_mode` and/or a `fan_mode` is split into up to three calls, in
+    order - `set_hvac_mode`, `set_temperature`, `set_fan_mode` - because
+    Home Assistant's own `set_temperature` schema is PREVENT_EXTRA and
+    accepts only `temperature`, `target_temp_high` and `target_temp_low`:
+    an author-friendly single action carrying `hvac_mode` or `fan_mode`
+    alongside a temperature is rejected outright, not merely a hardware
+    quirk. Several climate integrations - the `aux_cloud` units this was
+    written for among them - also intermittently fail to power on when
+    hvac_mode and temperature arrive together regardless of the schema.
+    The most-used third-party scheduler in the ecosystem hardcodes the
+    same split for the same reason, which is the evidence that this is a
+    real hardware quirk and not this project's special case. `fan_mode`
+    was a first-class v1 feature - how one unit gets `silent` and another
+    gets `quiet` - so it gets its own call rather than being dropped or
+    smuggled into `set_temperature`, where HA would reject it.
+
+    `set_temperature` is only ever emitted if at least one temperature key
+    is present - an empty `{}` is rejected by HA too.
 
     An author writes the one natural action; this makes it work. Every
     other action passes through untouched, and no other domain knowledge
     belongs in this file.
     """
-    if action != _CLIMATE_SET_TEMPERATURE or _HVAC_MODE not in data:
+    if action != _CLIMATE_SET_TEMPERATURE or (
+        _HVAC_MODE not in data and _FAN_MODE not in data
+    ):
         return [(action, data)]
 
-    rest = {key: value for key, value in data.items() if key != _HVAC_MODE}
-    return [
-        (_CLIMATE_SET_HVAC_MODE, {_HVAC_MODE: data[_HVAC_MODE]}),
-        (_CLIMATE_SET_TEMPERATURE, rest),
-    ]
+    calls: list[tuple[str, dict]] = []
+    if _HVAC_MODE in data:
+        calls.append((_CLIMATE_SET_HVAC_MODE, {_HVAC_MODE: data[_HVAC_MODE]}))
+    temperature_data = {key: data[key] for key in _TEMPERATURE_KEYS if key in data}
+    if temperature_data:
+        calls.append((_CLIMATE_SET_TEMPERATURE, temperature_data))
+    if _FAN_MODE in data:
+        calls.append((_CLIMATE_SET_FAN_MODE, {_FAN_MODE: data[_FAN_MODE]}))
+    return calls
 
 
 # --- Deprecated: dead climate-planner remnant, kept only to import -------

@@ -58,6 +58,10 @@ class Rule:
     color: str | None = None
     enabled: bool = True
     migration_error: str | None = None
+    # The raw v1 rule, stashed whole when a migration could not derive a
+    # v2 target/data for it, so a future repair tool has everything
+    # needed to reconstruct the rule rather than a gutted stand-in.
+    migration_source: dict | None = None
 
 
 @dataclass(frozen=True)

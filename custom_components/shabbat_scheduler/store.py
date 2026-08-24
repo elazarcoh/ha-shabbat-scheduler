@@ -16,25 +16,49 @@ from homeassistant.util import dt as dt_util
 from .const import STORAGE_KEY, STORAGE_VERSION
 from .migration import migrate_v1
 from .models import Replay, Rule
+from .rule_schema import RuleValidationError, _duration
+
+
+def _duration_to_str(value: timedelta) -> str:
+    """A timedelta as 'HH:MM:SS' - the form `rule_schema._duration` (and
+    so every API client) accepts. Sub-second precision is not a concept
+    the API exposes, so it is dropped rather than silently rounded away
+    somewhere less visible."""
+    total_seconds = int(value.total_seconds())
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def replay_to_dict(replay: Replay) -> dict:
-    """Serialise a rule's replay policy."""
+    """Serialise a rule's replay policy.
+
+    `within` is written as 'HH:MM:SS', the same shape `rule_schema`
+    validates on the way in - `rule_to_dict` is what every websocket
+    response returns, so a client that reads a rule and writes it back
+    must not be rejected for round-tripping the value verbatim.
+    """
     data: dict = {"enabled": replay.enabled}
     if replay.within is not None:
-        data["within"] = replay.within.total_seconds()
+        data["within"] = _duration_to_str(replay.within)
     return data
 
 
 def replay_from_dict(data) -> Replay:
-    """Deserialise a rule's replay policy, tolerating absence."""
+    """Deserialise a rule's replay policy, tolerating absence or nonsense."""
     if not isinstance(data, dict):
         return Replay()
     within = data.get("within")
-    return Replay(
-        enabled=bool(data.get("enabled", False)),
-        within=timedelta(seconds=within) if within is not None else None,
-    )
+    parsed = None
+    if within is not None:
+        try:
+            parsed = _duration(within)
+        except RuleValidationError:
+            # A hand-edited or pre-fix '.storage' file may still carry a
+            # raw number of seconds. Degrade to "no bound" rather than
+            # fail the whole rule load over one cosmetic field.
+            parsed = None
+    return Replay(enabled=bool(data.get("enabled", False)), within=parsed)
 
 
 def rule_to_dict(rule: Rule) -> dict:
@@ -54,6 +78,9 @@ def rule_to_dict(rule: Rule) -> dict:
         "color": rule.color,
         "enabled": rule.enabled,
         "migration_error": rule.migration_error,
+        "migration_source": (
+            dict(rule.migration_source) if rule.migration_source is not None else None
+        ),
     }
 
 
@@ -74,6 +101,11 @@ def rule_from_dict(data: dict) -> Rule:
         color=data.get("color"),
         enabled=data.get("enabled", True),
         migration_error=data.get("migration_error"),
+        migration_source=(
+            dict(data["migration_source"])
+            if isinstance(data.get("migration_source"), dict)
+            else None
+        ),
     )
 
 

@@ -56,3 +56,30 @@ def test_the_fan_synonym_table_is_gone():
     import custom_components.shabbat_scheduler.const as const
 
     assert not hasattr(const, "FAN_SYNONYMS")
+
+
+def test_fan_mode_gets_its_own_call_not_smuggled_into_set_temperature():
+    """HA's set_temperature schema is PREVENT_EXTRA - fan_mode alongside
+    temperature is rejected outright, not just a hardware quirk."""
+    assert expand_action(
+        "climate.set_temperature",
+        {"temperature": 26, "hvac_mode": "cool", "fan_mode": "high"},
+    ) == [
+        ("climate.set_hvac_mode", {"hvac_mode": "cool"}),
+        ("climate.set_temperature", {"temperature": 26}),
+        ("climate.set_fan_mode", {"fan_mode": "high"}),
+    ]
+
+
+def test_hvac_mode_only_does_not_emit_an_empty_set_temperature_call():
+    """set_temperature requires at least one of temperature/target_temp_*;
+    an empty {} is rejected by HA, so it must not be emitted at all."""
+    assert expand_action("climate.set_temperature", {"hvac_mode": "cool"}) == [
+        ("climate.set_hvac_mode", {"hvac_mode": "cool"})
+    ]
+
+
+def test_fan_mode_only_produces_just_the_fan_mode_call():
+    assert expand_action("climate.set_temperature", {"fan_mode": "silent"}) == [
+        ("climate.set_fan_mode", {"fan_mode": "silent"})
+    ]

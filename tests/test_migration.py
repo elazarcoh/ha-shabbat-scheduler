@@ -1,5 +1,8 @@
-from datetime import time as dt_time, timedelta
+from dataclasses import replace
+from datetime import datetime, time as dt_time, timedelta
+from zoneinfo import ZoneInfo
 
+from custom_components.shabbat_scheduler.block import compute_block, resolve_rules
 from custom_components.shabbat_scheduler.migration import migrate_v1, migrate_v1_rule
 from custom_components.shabbat_scheduler.models import Replay, Rule
 from custom_components.shabbat_scheduler.store import (
@@ -8,6 +11,8 @@ from custom_components.shabbat_scheduler.store import (
     rule_from_dict,
     rule_to_dict,
 )
+
+TZ = ZoneInfo("Asia/Jerusalem")
 
 V1_CLIMATE_ON = {
     "id": "a", "profile": 1, "day": "1", "time": "11:00:00", "action": "on",
@@ -422,3 +427,96 @@ def test_a_rule_missing_day_is_kept_disabled_and_does_not_break_the_load():
     assert survivor["enabled"] is False
     rule_from_dict(survivor)  # must not raise
     assert failed == ["b"]
+
+
+# --- Fix round 4 -----------------------------------------------------------
+
+# IMPORTANT: round 3's `day` check is presence-only - `str()` never raises,
+# so any value passes it. A rule with `day: "tuesday"` therefore migrates
+# down the *success* path and loads cleanly, but `block.resolve_rules` does
+# `index = int(rule.day)` (block.py:88) inside one loop over all rules, with
+# no per-rule isolation and nothing catching `ValueError` between there and
+# `engine.async_refresh`. So one bad `day` does not merely disable its own
+# rule - it aborts resolving *every* rule and nothing at all is scheduled,
+# discovered on Shabbat, after version 2 is already written to disk.
+# Same failure class as rounds 1-3: migrates "successfully" into something
+# the system cannot then handle.
+
+
+def _one_day_block():
+    return compute_block(
+        datetime(2026, 8, 14, 18, 44, tzinfo=TZ),
+        datetime(2026, 8, 15, 20, 1, tzinfo=TZ),
+    )
+
+
+def test_a_rule_with_an_out_of_range_day_cannot_be_migrated():
+    raw = {**V1_SIMPLE_ON, "day": "tuesday"}
+    out, reason = migrate_v1_rule(raw)
+    assert out is None
+    assert "day" in reason.lower()
+
+
+def test_a_rule_with_a_non_positive_day_cannot_be_migrated():
+    """`int()` accepts these, but a day index below 1 names no day."""
+    for value in ("0", "-1"):
+        out, reason = migrate_v1_rule({**V1_SIMPLE_ON, "day": value})
+        assert out is None, value
+        assert "day" in reason.lower()
+
+
+def test_a_valid_numeric_or_erev_day_still_migrates():
+    for value in ("erev", "1", "3", 2):
+        out, reason = migrate_v1_rule({**V1_SIMPLE_ON, "day": value})
+        assert reason is None, value
+        assert out["day"] == value
+
+
+async def test_a_rule_with_a_bad_day_is_kept_disabled_and_others_still_resolve(
+    hass, hass_storage
+):
+    """The whole point: the bad rule is kept, disabled and reported, and the
+    healthy rule alongside it still *resolves* - the step where the crash
+    actually happens. A test that only checked loading would miss it."""
+    bad_day = {**V1_SIMPLE_ON, "day": "tuesday"}
+    hass_storage["shabbat_scheduler.rules"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "shabbat_scheduler.rules",
+        "data": {"rules": [bad_day, V1_CLIMATE_ON], "defaults": {}},
+    }
+    store = RuleStore(hass)
+    await store.async_load()  # must not raise
+
+    assert len(store.rules) == 2
+    assert store.migration_failures == ["b"]
+
+    kept = next(rule for rule in store.rules if rule.id == "b")
+    assert kept.enabled is False
+    assert kept.migration_error and "day" in kept.migration_error.lower()
+    assert kept.migration_source == bad_day
+
+    # The step that used to blow up on `int("tuesday")`, taking every other
+    # rule down with it.
+    resolved = resolve_rules(store.rules, _one_day_block(), TZ)
+    assert [item.rule.id for item in resolved] == ["a"]
+    assert resolved[0].when == datetime(2026, 8, 15, 11, 0, tzinfo=TZ)
+
+
+def test_a_bad_day_cannot_ride_along_into_the_placeholder():
+    """Round 2's lesson, applied to `day`: a rule failing for an *unrelated*
+    reason must not carry a bad `day` into the supposedly safe record."""
+    # No id, so it is rejected by a check that runs *before* the new `day`
+    # one - the bad `day` is incidental to why it failed, exactly the shape
+    # that slipped through in round 2.
+    raw = {key: value for key, value in V1_SIMPLE_ON.items() if key != "id"}
+    raw["day"] = "tuesday"
+    out, failed = migrate_v1({"rules": [raw], "defaults": {}})
+    survivor = out["rules"][0]
+    assert failed == ["unmigrated-0"]
+    assert survivor["migration_error"] == "a rule with no id cannot be migrated"
+    assert survivor["day"] == "erev"
+
+    # And the placeholder is resolvable even if a repair tool re-enables it.
+    rule = rule_from_dict(survivor)
+    resolve_rules([replace(rule, enabled=True)], _one_day_block(), TZ)  # must not raise

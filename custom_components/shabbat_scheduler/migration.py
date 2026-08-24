@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from datetime import time as _time
 
+from .models import EREV
+
 _UNCHANGED = ("id", "profile", "day", "time", "name", "icon", "color")
 
 
@@ -30,6 +32,32 @@ def _parses_as_profile(value) -> bool:
     except (TypeError, ValueError):
         return False
     return True
+
+
+def _parses_as_day(value) -> bool:
+    """`erev`, or a string naming a day index `block.py` can use.
+
+    Unlike `time`/`profile`, a bad `day` does not crash `rule_from_dict` -
+    it does `str(data["day"])`, which never raises - so this needs a
+    validity check its siblings' presence checks would not catch. It
+    crashes later and far worse: `block.resolve_rules` does
+    `index = int(rule.day)` inside one loop over every rule, uncaught all
+    the way up to `engine.async_refresh`, so one bad `day` aborts
+    resolving the *whole* schedule rather than just its own rule.
+    """
+    text = str(value)
+    if text == EREV:
+        return True
+    try:
+        return int(text) >= 1
+    except (TypeError, ValueError):
+        return False
+
+
+def safe_day(raw: dict) -> str:
+    """A `day` guaranteed to satisfy `int()` past `EREV`. See `safe_time`."""
+    value = raw.get("day", EREV)
+    return str(value) if _parses_as_day(value) else EREV
 
 
 def safe_time(raw: dict) -> str:
@@ -74,6 +102,8 @@ def migrate_v1_rule(raw: dict) -> tuple[dict | None, str | None]:
         return None, f"profile is not a valid integer: {raw['profile']!r}"
     if "day" not in raw:
         return None, "a rule with no day cannot be migrated"
+    if not _parses_as_day(raw["day"]):
+        return None, f"day must be {EREV!r} or a day number: {raw['day']!r}"
     time_value = raw.get("time")
     if not time_value:
         return None, "a rule with no time cannot be migrated"
@@ -172,7 +202,7 @@ def migrate_v1(data: dict) -> tuple[dict, list[str]]:
                 {
                     "id": fallback_id,
                     "profile": safe_profile(raw),
-                    "day": raw.get("day", "erev"),
+                    "day": safe_day(raw),
                     "time": safe_time(raw),
                     "action": "shabbat_scheduler.unmigrated",
                     "target": {"entity_id": devices} if devices else {},

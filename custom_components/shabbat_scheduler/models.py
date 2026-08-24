@@ -4,8 +4,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
+from enum import Enum
 
 EREV = "erev"
+
+
+class Action(str, Enum):
+    """What a rule does when it fires.
+
+    Dead to `Rule` as of the v2 model - a rule's `action` is now a plain
+    "domain.service" string. Left in place because `block.py`,
+    `device_ops.py` and `engine.py` still reference it at module level;
+    deleting it here would make `custom_components/shabbat_scheduler/
+    __init__.py` unimportable, and every test in the repo uncollectable
+    along with it. It dies in Task 8, once its last consumer is gone.
+    """
+
+    ON = "on"
+    OFF = "off"
+    CUSTOM = "custom"
 
 
 @dataclass(frozen=True)

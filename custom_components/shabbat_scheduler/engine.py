@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 
 from homeassistant.components import persistent_notification
 from homeassistant.core import Context, CoreState, HomeAssistant
+from homeassistant.helpers import condition
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_time
 from homeassistant.helpers.service import async_call_from_config
@@ -102,6 +104,15 @@ class ShabbatEngine:
             context=context,
         )
 
+        if rule.condition and not await self._conditions_pass(rule):
+            results = [{"outcome": "blocked", "reason": "condition not met"}]
+            self.last_run = results
+            self.last_run_at = dt_util.utcnow()
+            self.hass.bus.async_fire(
+                EVENT_RULE_COMPLETED, {"rule_id": rule.id, "results": results}
+            )
+            return results
+
         async with self._locks[rule.id]:
             results = []
             for action, data in expand_action(rule.action, dict(rule.data)):
@@ -118,6 +129,37 @@ class ShabbatEngine:
             EVENT_RULE_COMPLETED, {"rule_id": rule.id, "results": results}
         )
         return results
+
+    async def _conditions_pass(self, rule: Rule) -> bool:
+        """Every condition must pass. An error counts as not passing.
+
+        Erring towards NOT acting: an unexpected error is not consent to
+        drive an appliance on a day nobody can undo it.
+
+        `async_from_config` builds its checker straight from the raw dict
+        without normalising it first (e.g. a bare `entity_id: "a.b"` string
+        is never turned into `["a.b"]"), so a config that skipped schema
+        validation is silently misread rather than rejected -
+        `cv.CONDITION_SCHEMA` + `async_validate_condition_config` is what
+        does that normalising, same as `ha_validation.py` does at
+        authoring time for the identical reason.
+        """
+        for item in rule.condition:
+            try:
+                validated = cv.CONDITION_SCHEMA(dict(item))
+                validated = await condition.async_validate_condition_config(
+                    self.hass, validated
+                )
+                checker = await condition.async_from_config(self.hass, validated)
+                if not checker(self.hass, {}):
+                    return False
+            except Exception:  # noqa: BLE001 - a broken condition blocks
+                _LOGGER.exception(
+                    "Condition on rule %s could not be evaluated; not acting",
+                    rule.id,
+                )
+                return False
+        return True
 
     @property
     def current_block(self) -> Block | None:

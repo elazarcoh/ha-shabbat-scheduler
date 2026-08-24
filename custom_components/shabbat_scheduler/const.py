@@ -3,7 +3,7 @@
 DOMAIN = "shabbat_scheduler"
 
 STORAGE_KEY = "shabbat_scheduler.rules"
-STORAGE_VERSION = 1
+STORAGE_VERSION = 2
 
 EVENT_RULE_APPLIED = "shabbat_scheduler_rule_applied"
 EVENT_RULE_COMPLETED = "shabbat_scheduler_rule_completed"

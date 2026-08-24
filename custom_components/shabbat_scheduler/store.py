@@ -7,14 +7,34 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import STORAGE_KEY, STORAGE_VERSION
-from .models import Action, Rule
+from .migration import migrate_v1
+from .models import Replay, Rule
+
+
+def replay_to_dict(replay: Replay) -> dict:
+    """Serialise a rule's replay policy."""
+    data: dict = {"enabled": replay.enabled}
+    if replay.within is not None:
+        data["within"] = replay.within.total_seconds()
+    return data
+
+
+def replay_from_dict(data) -> Replay:
+    """Deserialise a rule's replay policy, tolerating absence."""
+    if not isinstance(data, dict):
+        return Replay()
+    within = data.get("within")
+    return Replay(
+        enabled=bool(data.get("enabled", False)),
+        within=timedelta(seconds=within) if within is not None else None,
+    )
 
 
 def rule_to_dict(rule: Rule) -> dict:
@@ -24,16 +44,16 @@ def rule_to_dict(rule: Rule) -> dict:
         "profile": rule.profile,
         "day": rule.day,
         "time": rule.time.isoformat(),
-        "action": rule.action.value,
-        "devices": list(rule.devices),
-        "settings": dict(rule.settings),
+        "action": rule.action,
+        "target": dict(rule.target),
+        "data": dict(rule.data),
+        "condition": [dict(item) for item in rule.condition],
+        "replay": replay_to_dict(rule.replay),
         "name": rule.name,
         "icon": rule.icon,
-        "enabled": rule.enabled,
-        "script": rule.script,
-        "variables": dict(rule.variables),
-        "replay_on_restart": rule.replay_on_restart,
         "color": rule.color,
+        "enabled": rule.enabled,
+        "migration_error": rule.migration_error,
     }
 
 
@@ -44,16 +64,16 @@ def rule_from_dict(data: dict) -> Rule:
         profile=int(data["profile"]),
         day=str(data["day"]),
         time=time.fromisoformat(data["time"]),
-        action=Action(data["action"]),
-        devices=tuple(data.get("devices", ())),
-        settings=dict(data.get("settings", {})),
+        action=str(data["action"]),
+        target=dict(data.get("target") or {}),
+        data=dict(data.get("data") or {}),
+        condition=tuple(dict(item) for item in data.get("condition") or ()),
+        replay=replay_from_dict(data.get("replay")),
         name=data.get("name"),
         icon=data.get("icon"),
-        enabled=data.get("enabled", True),
-        script=data.get("script"),
-        variables=dict(data.get("variables", {})),
-        replay_on_restart=data.get("replay_on_restart", False),
         color=data.get("color"),
+        enabled=data.get("enabled", True),
+        migration_error=data.get("migration_error"),
     )
 
 
@@ -84,11 +104,32 @@ def active_block_from_dict(data) -> tuple[datetime, datetime] | None:
     return candle, havdalah
 
 
+class _MigratingStore(Store):
+    """Home Assistant calls this when the stored version is behind.
+
+    Whatever it returns is saved automatically, so the conversion happens
+    exactly once per upgrade.
+    """
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        super().__init__(hass, STORAGE_VERSION, STORAGE_KEY)
+        self.migration_failures: list[str] = []
+
+    async def _async_migrate_func(
+        self, old_major_version: int, old_minor_version: int, old_data: dict
+    ) -> dict:
+        if old_major_version == 1:
+            migrated, failed = migrate_v1(old_data)
+            self.migration_failures = failed
+            return migrated
+        return old_data
+
+
 class RuleStore:
     """Loads, mutates and persists the rule set."""
 
     def __init__(self, hass: HomeAssistant) -> None:
-        self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self._store: _MigratingStore = _MigratingStore(hass)
         self._rules: list[Rule] = []
         self._defaults: dict = {}
         self._enabled: bool = False
@@ -111,6 +152,15 @@ class RuleStore:
     @property
     def dry_run(self) -> bool:
         return self._dry_run
+
+    @property
+    def migration_failures(self) -> list[str]:
+        """Ids of rules a v1 -> v2 upgrade could not convert.
+
+        Populated once, by `_MigratingStore._async_migrate_func`, during
+        `async_load`. Empty for a store that was never migrated.
+        """
+        return list(self._store.migration_failures)
 
     @property
     def active_block(self) -> tuple[datetime, datetime] | None:

@@ -57,6 +57,7 @@ class Rule:
     icon: str | None = None
     color: str | None = None
     enabled: bool = True
+    migration_error: str | None = None
 
 
 @dataclass(frozen=True)

@@ -1,70 +1,50 @@
-import dataclasses
-from datetime import date, datetime, time, timezone
+from datetime import time, timedelta
 
 import pytest
 
-from custom_components.shabbat_scheduler.models import (
-    Action,
-    Block,
-    Conflict,
-    EREV,
-    ResolvedRule,
-    Rule,
-)
+from custom_components.shabbat_scheduler.models import Replay, Rule
 
 
-def test_rule_defaults():
-    rule = Rule(id="r1", profile=1, day=EREV, time=time(23, 0), action=Action.OFF)
-    assert rule.enabled is True
-    assert rule.devices == ()
-    assert rule.settings == {}
-    assert rule.replay_on_restart is False
-
-
-def test_action_is_str_enum():
-    assert Action.ON == "on"
-    assert Action("off") is Action.OFF
-
-
-def test_block_is_frozen():
-    block = Block(
-        candle_lighting=datetime(2026, 8, 14, 18, 44, tzinfo=timezone.utc),
-        havdalah=datetime(2026, 8, 15, 20, 1, tzinfo=timezone.utc),
-        length=1,
-        erev_date=date(2026, 8, 14),
-        day_dates=(date(2026, 8, 15),),
+def _rule(**over):
+    base = dict(
+        id="r1", profile=1, day="1", time=time(11, 0),
+        action="climate.set_temperature",
+        target={"entity_id": ["climate.salon"]},
+        data={"temperature": 26},
     )
-    assert block.length == 1
-    try:
-        block.length = 2
-    except Exception as err:  # frozen dataclass raises FrozenInstanceError
-        assert "frozen" in type(err).__name__.lower()
-    else:
-        raise AssertionError("Block should be immutable")
+    base.update(over)
+    return Rule(**base)
 
 
-def test_resolved_rule_and_conflict_construct():
-    rule = Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON)
-    resolved = ResolvedRule(
-        when=datetime(2026, 8, 15, 11, 0, tzinfo=timezone.utc), rule=rule
-    )
-    assert resolved.rule.id == "r1"
-
-    conflict = Conflict(
-        profile=1, day="1", time=time(11, 0), device="climate.a", rule_ids=("r1", "r2")
-    )
-    assert conflict.rule_ids == ("r1", "r2")
+def test_a_rule_is_a_service_call():
+    rule = _rule()
+    assert rule.action == "climate.set_temperature"
+    assert rule.target == {"entity_id": ["climate.salon"]}
+    assert rule.data == {"temperature": 26}
 
 
-def test_rule_is_frozen():
-    rule = Rule(id="r1", profile=1, day=EREV, time=time(23, 0), action=Action.OFF)
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        rule.enabled = False
+def test_a_rule_needs_no_condition_or_replay():
+    rule = _rule()
+    assert rule.condition == ()
+    assert rule.replay == Replay()
+    assert rule.replay.enabled is False
+    assert rule.replay.within is None
 
 
-def test_rule_replace_produces_a_new_rule():
-    rule = Rule(id="r1", profile=1, day=EREV, time=time(23, 0), action=Action.OFF)
-    updated = dataclasses.replace(rule, enabled=False)
-    assert updated.enabled is False
-    assert rule.enabled is True
-    assert updated is not rule
+def test_replay_carries_its_window():
+    rule = _rule(replay=Replay(enabled=True, within=timedelta(hours=2)))
+    assert rule.replay.enabled is True
+    assert rule.replay.within == timedelta(hours=2)
+
+
+def test_a_rule_is_immutable():
+    rule = _rule()
+    with pytest.raises(Exception):
+        rule.action = "switch.turn_on"
+
+
+def test_the_action_enum_is_gone():
+    """v1's three-value vocabulary is what made this a climate controller."""
+    import custom_components.shabbat_scheduler.models as models
+
+    assert not hasattr(models, "Action")

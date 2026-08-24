@@ -20,7 +20,6 @@ from .rule_schema import (
     changes_from_api,
     rule_from_api,
     validate_defaults,
-    validate_rule,
 )
 from .store import rule_to_dict
 
@@ -158,12 +157,12 @@ async def ws_update(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
         connection.send_error(msg["id"], "not_found", f"No rule {msg['rule_id']}")
         return
 
+    # No whole-rule invariant remains to check here: field-level validation
+    # in changes_from_api is now the whole story. (Task 3 removed
+    # validate_rule, which enforced v1's custom-action-needs-a-script rule;
+    # ha_validation.py, Task 4, is where a whole-rule HA-aware check would
+    # belong if one is ever needed again.)
     updated = replace(existing, **changes)
-    try:
-        validate_rule(updated)
-    except RuleValidationError as err:
-        connection.send_error(msg["id"], "invalid_rule", str(err))
-        return
 
     await store.async_update(msg["rule_id"], **changes)
 

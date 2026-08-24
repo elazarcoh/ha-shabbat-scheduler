@@ -2,21 +2,27 @@
 
 Kept pure so it is testable without a running instance and usable from both
 the websocket layer and YAML import.
+
+Validates shape and type only. Whether `action` names a real service, or
+`target`/`condition` are valid for it, is Home Assistant's own business -
+`ha_validation.py` applies HA's own schemas for that.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import time
+from datetime import time, timedelta
 
-from .models import Action, EREV, Rule
+from .models import EREV, Replay, Rule
 
 _FIELDS = {
-    "profile", "day", "time", "action", "devices", "settings", "name",
-    "icon", "enabled", "script", "variables", "replay_on_restart", "color",
+    "profile", "day", "time", "action", "target", "data",
+    "condition", "replay", "name", "icon", "color", "enabled",
 }
 
-_DEFAULTS_FIELDS = {"devices", "settings"}
+_DEFAULTS_FIELDS = {"target", "data"}
+
+_V1_FIELDS = {"devices", "settings", "script", "variables", "replay_on_restart"}
 
 
 class RuleValidationError(ValueError):
@@ -25,6 +31,12 @@ class RuleValidationError(ValueError):
 
 def _check_unknown_fields(data: dict, allowed: set[str] = _FIELDS) -> None:
     """Check for unknown fields in data."""
+    stale = set(data) & _V1_FIELDS
+    if stale:
+        raise RuleValidationError(
+            f"{sorted(stale)} belong to the v1 rule format. A rule is now an "
+            "action with a target and data; see the README."
+        )
     unknown = set(data) - allowed
     if unknown:
         raise RuleValidationError(f"unknown field(s): {sorted(unknown)}")
@@ -56,13 +68,68 @@ def _time(value) -> time:
         raise RuleValidationError(f"time is not a valid clock time: {value!r}") from err
 
 
-def _action(value) -> Action:
-    try:
-        return Action(value)
-    except ValueError as err:
+def _action(value) -> str:
+    """A Home Assistant service, "domain.service".
+
+    Only the shape is checked here: whether the service EXISTS is Home
+    Assistant's business, and asking it would drag an instance into this
+    module. ha_validation.py does not check it either - a service can be
+    added or removed at any time, so a rule naming one that is missing
+    today may be perfectly correct tomorrow. The failure surfaces at fire
+    time, reported, which is the honest place for it.
+    """
+    if not isinstance(value, str):
+        raise RuleValidationError(f"action must be a string, got {value!r}")
+    parts = value.split(".")
+    if len(parts) != 2 or not all(parts):
         raise RuleValidationError(
-            f"action must be one of on/off/custom, got {value!r}"
-        ) from err
+            f"action must be 'domain.service', got {value!r}"
+        )
+    return value
+
+
+def _mapping(field: str, value) -> dict:
+    if not isinstance(value, Mapping):
+        raise RuleValidationError(f"{field} must be a mapping, got {value!r}")
+    return dict(value)
+
+
+def _condition(value) -> tuple:
+    if isinstance(value, Mapping) or not isinstance(value, (list, tuple)):
+        raise RuleValidationError(
+            f"condition must be a list of conditions, got {value!r}"
+        )
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise RuleValidationError(
+                f"each condition must be a mapping, got {item!r}"
+            )
+    return tuple(dict(item) for item in value)
+
+
+def _duration(value) -> timedelta:
+    """'HH:MM:SS' into a timedelta."""
+    text = str(value)
+    parts = text.split(":")
+    if len(parts) != 3 or not all(p.isdecimal() for p in parts):
+        raise RuleValidationError(
+            f"replay.within must be 'HH:MM:SS', got {value!r}"
+        )
+    hours, minutes, seconds = (int(p) for p in parts)
+    return timedelta(hours=hours, minutes=minutes, seconds=seconds)
+
+
+def _replay(value) -> Replay:
+    data = _mapping("replay", value)
+    unknown = set(data) - {"enabled", "within"}
+    if unknown:
+        raise RuleValidationError(f"unknown replay field(s): {sorted(unknown)}")
+    enabled = _bool("replay.enabled", data.get("enabled", False))
+    within = data.get("within")
+    return Replay(
+        enabled=enabled,
+        within=None if within is None else _duration(within),
+    )
 
 
 def _bool(field: str, value) -> bool:
@@ -98,41 +165,28 @@ def _coerce(field: str, value):
         return _time(value)
     if field == "action":
         return _action(value)
-    if field == "devices":
-        if isinstance(value, str):
-            raise RuleValidationError(f"devices must be a list or tuple, got {value!r}")
-        return tuple(value or ())
-    if field == "settings":
-        if not isinstance(value, Mapping):
-            raise RuleValidationError(f"settings must be a mapping, got {value!r}")
-        return dict(value)
-    if field == "variables":
-        if not isinstance(value, Mapping):
-            raise RuleValidationError(f"variables must be a mapping, got {value!r}")
-        return dict(value)
-    if field in ("enabled", "replay_on_restart"):
+    if field in ("target", "data"):
+        return _mapping(field, value)
+    if field == "condition":
+        return _condition(value)
+    if field == "replay":
+        return _replay(value)
+    if field == "enabled":
         return _bool(field, value)
-    if field in ("name", "icon", "script", "color"):
+    if field in ("name", "icon", "color"):
         return _text(field, value)
     # Every rule field is now typed; only the defaults payload, which
     # shares this helper for its own two keys, ever reaches here.
     return value
 
 
-def validate_rule(rule: Rule) -> None:
-    """Invariants that need the whole rule, not one field."""
-    if rule.action is Action.CUSTOM and not rule.script:
-        raise RuleValidationError("a custom action requires a script")
-
-
 def validate_defaults(data: dict) -> dict:
     """Validate a defaults payload into coerced kwargs.
 
-    Shares the same 'devices'/'settings' shape guards as rule fields,
-    coerced via the same helpers used for rules - a bare string for
-    'devices' or a non-mapping 'settings' is rejected here rather than
-    persisted, so a malformed defaults payload cannot blow up later at
-    rule-resolution time.
+    Shares the same 'target'/'data' shape guards as rule fields, coerced
+    via the same helpers used for rules - a non-mapping value is rejected
+    here rather than persisted, so a malformed defaults payload cannot
+    blow up later at rule-resolution time.
     """
     _check_unknown_fields(data, _DEFAULTS_FIELDS)
     return {field: _coerce(field, value) for field, value in data.items()}
@@ -156,7 +210,4 @@ def rule_from_api(data: dict, rule_id: str) -> Rule:
             raise RuleValidationError(f"missing required field: {required}")
 
     kwargs = {field: _coerce(field, value) for field, value in payload.items()}
-    rule = Rule(id=rule_id, **kwargs)
-
-    validate_rule(rule)
-    return rule
+    return Rule(id=rule_id, **kwargs)

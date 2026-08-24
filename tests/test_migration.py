@@ -520,3 +520,120 @@ def test_a_bad_day_cannot_ride_along_into_the_placeholder():
     # And the placeholder is resolvable even if a repair tool re-enables it.
     rule = rule_from_dict(survivor)
     resolve_rules([replace(rule, enabled=True)], _one_day_block(), TZ)  # must not raise
+
+
+# --- Fix round 5 -----------------------------------------------------------
+
+# IMPORTANT: round 4 bounded `day` to "erev or any positive integer", on the
+# reasoning that a longer Chag block might legitimately use a higher index.
+# That reasoning was wrong, and the looser bound is itself an instance of
+# this task's failure class - a silent no-op rather than a crash:
+#
+#   * `rule_schema._profile` hard-caps `profile` to 1..3.
+#   * `resolve_rules` skips any rule whose `profile != block.length`.
+#   * so a rule can only fire when block.length == its profile, max 3,
+#     and `resolve_rules` then `continue`s whenever `index > block.length`.
+#
+# A `day: "7"` rule therefore migrates clean and enabled, is never
+# reported, shows healthy in the UI, and hits that `continue` for every
+# block that can ever exist. It never fires, and nobody is told.
+
+
+async def test_a_day_beyond_the_cap_is_kept_disabled_not_a_silent_no_op(
+    hass, hass_storage
+):
+    """`day: "7"` can never fire (profile caps at 3, and resolve_rules skips
+    index > block.length), so migrating it clean is a permanent silent
+    no-op. It must be kept-disabled-and-reported like any other rule this
+    code cannot convert - and the healthy rule beside it must still
+    resolve."""
+    bad_day = {**V1_SIMPLE_ON, "day": "7"}
+    hass_storage["shabbat_scheduler.rules"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "shabbat_scheduler.rules",
+        "data": {"rules": [bad_day, V1_CLIMATE_ON], "defaults": {}},
+    }
+    store = RuleStore(hass)
+    await store.async_load()
+
+    assert len(store.rules) == 2
+    assert store.migration_failures == ["b"]
+
+    kept = next(rule for rule in store.rules if rule.id == "b")
+    assert kept.enabled is False
+    assert kept.migration_error and "day" in kept.migration_error.lower()
+
+    resolved = resolve_rules(store.rules, _one_day_block(), TZ)
+    assert [item.rule.id for item in resolved] == ["a"]
+
+
+def test_a_day_above_three_cannot_be_migrated():
+    for value in ("4", "7", 9):
+        out, reason = migrate_v1_rule({**V1_SIMPLE_ON, "day": value})
+        assert out is None, value
+        assert "day" in reason.lower()
+
+
+def test_a_day_beyond_the_cap_cannot_ride_into_the_placeholder():
+    raw = {key: value for key, value in V1_SIMPLE_ON.items() if key != "id"}
+    raw["day"] = "7"
+    out, failed = migrate_v1({"rules": [raw], "defaults": {}})
+    survivor = out["rules"][0]
+    assert failed == ["unmigrated-0"]
+    assert survivor["day"] == "erev"
+
+
+# The same trace applied to `profile`, which `migrate_v1_rule` only ever
+# checked with a bare `int()`. A migrated rule never passes through
+# `rule_schema._profile`, so `profile: 7` survives migration clean and
+# enabled - and then `resolve_rules` skips it for every block that can
+# exist, because no block is 7 days long. Identical silent no-op.
+
+
+async def test_a_profile_beyond_the_cap_is_kept_disabled_not_a_silent_no_op(
+    hass, hass_storage
+):
+    bad_profile = {**V1_SIMPLE_ON, "profile": 7}
+    hass_storage["shabbat_scheduler.rules"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "shabbat_scheduler.rules",
+        "data": {"rules": [bad_profile, V1_CLIMATE_ON], "defaults": {}},
+    }
+    store = RuleStore(hass)
+    await store.async_load()
+
+    assert store.migration_failures == ["b"]
+    kept = next(rule for rule in store.rules if rule.id == "b")
+    assert kept.enabled is False
+    assert kept.migration_error and "profile" in kept.migration_error.lower()
+
+    resolved = resolve_rules(store.rules, _one_day_block(), TZ)
+    assert [item.rule.id for item in resolved] == ["a"]
+
+
+def test_a_profile_outside_one_to_three_cannot_be_migrated():
+    for value in (0, 4, 7, -1):
+        out, reason = migrate_v1_rule({**V1_SIMPLE_ON, "profile": value})
+        assert out is None, value
+        assert "profile" in reason.lower()
+
+
+def test_a_profile_beyond_the_cap_cannot_ride_into_the_placeholder():
+    raw = {key: value for key, value in V1_SIMPLE_ON.items() if key != "id"}
+    raw["profile"] = 7
+    out, _ = migrate_v1({"rules": [raw], "defaults": {}})
+    assert out["rules"][0]["profile"] == 1
+
+
+def test_every_in_range_profile_and_day_still_migrates():
+    """The bound must not be so tight it rejects what v1 legitimately wrote."""
+    for profile in (1, 2, 3):
+        for day in ("erev", "1", "2", "3"):
+            out, reason = migrate_v1_rule(
+                {**V1_SIMPLE_ON, "profile": profile, "day": day}
+            )
+            assert reason is None, (profile, day)
+            assert out["profile"] == profile
+            assert out["day"] == day

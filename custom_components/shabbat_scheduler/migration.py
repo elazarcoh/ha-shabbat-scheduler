@@ -26,36 +26,61 @@ def _parses_as_time(value) -> bool:
     return True
 
 
+# A block spans at most three calendar days (a two-day Chag adjacent to
+# Shabbat), which is why `rule_schema._profile` hard-caps `profile` to
+# 1..3 and `rule_schema._day` accepts only `erev` or '1'..'3'. Both bounds
+# apply here for a reason beyond tidiness - see `_parses_as_day`.
+_MAX_PROFILE = 3
+
+
 def _parses_as_profile(value) -> bool:
+    """An integer in 1..`_MAX_PROFILE`.
+
+    The range matters as much as the type. A migrated rule never passes
+    through `rule_schema._profile`, so nothing else would catch a
+    `profile` of 7 - and `resolve_rules` skips every rule whose
+    `profile != block.length`, so such a rule is silently unschedulable
+    for every block that can exist. See `_parses_as_day`.
+    """
     try:
-        int(value)
+        number = int(value)
     except (TypeError, ValueError):
         return False
-    return True
+    return 1 <= number <= _MAX_PROFILE
 
 
 def _parses_as_day(value) -> bool:
-    """`erev`, or a string naming a day index `block.py` can use.
+    """`erev`, or a day index in 1..`_MAX_PROFILE`.
 
-    Unlike `time`/`profile`, a bad `day` does not crash `rule_from_dict` -
-    it does `str(data["day"])`, which never raises - so this needs a
-    validity check its siblings' presence checks would not catch. It
-    crashes later and far worse: `block.resolve_rules` does
-    `index = int(rule.day)` inside one loop over every rule, uncaught all
-    the way up to `engine.async_refresh`, so one bad `day` aborts
-    resolving the *whole* schedule rather than just its own rule.
+    Two distinct failures are being prevented here, and the second is why
+    the bound is 1..3 rather than "any positive integer".
+
+    A non-numeric `day` does not break `rule_from_dict` - it does
+    `str(data["day"])`, which never raises - but it crashes far worse
+    later: `resolve_rules` does `index = int(rule.day)` inside one loop
+    over every rule, uncaught all the way up to `engine.async_refresh`,
+    so one bad `day` aborts resolving the *whole* schedule.
+
+    An out-of-range but numeric `day` is quieter and just as bad. A rule
+    only ever fires when `block.length == rule.profile`, and `profile` is
+    capped at `_MAX_PROFILE`; `resolve_rules` then `continue`s whenever
+    `index > block.length`. So `day: "7"` migrates clean, reports no
+    error, looks healthy in the UI, and hits that `continue` for every
+    block that can ever exist - it never fires and nobody is told. This
+    module exists to prevent exactly that.
     """
     text = str(value)
     if text == EREV:
         return True
     try:
-        return int(text) >= 1
+        number = int(text)
     except (TypeError, ValueError):
         return False
+    return 1 <= number <= _MAX_PROFILE
 
 
 def safe_day(raw: dict) -> str:
-    """A `day` guaranteed to satisfy `int()` past `EREV`. See `safe_time`."""
+    """A `day` guaranteed to be `EREV` or a schedulable index. See `safe_time`."""
     value = raw.get("day", EREV)
     return str(value) if _parses_as_day(value) else EREV
 
@@ -99,11 +124,15 @@ def migrate_v1_rule(raw: dict) -> tuple[dict | None, str | None]:
     if "profile" not in raw:
         return None, "a rule with no profile cannot be migrated"
     if not _parses_as_profile(raw["profile"]):
-        return None, f"profile is not a valid integer: {raw['profile']!r}"
+        return None, (
+            f"profile must be an integer 1..{_MAX_PROFILE}: {raw['profile']!r}"
+        )
     if "day" not in raw:
         return None, "a rule with no day cannot be migrated"
     if not _parses_as_day(raw["day"]):
-        return None, f"day must be {EREV!r} or a day number: {raw['day']!r}"
+        return None, (
+            f"day must be {EREV!r} or '1'..'{_MAX_PROFILE}': {raw['day']!r}"
+        )
     time_value = raw.get("time")
     if not time_value:
         return None, "a rule with no time cannot be migrated"

@@ -147,6 +147,10 @@ def find_conflicts(rules: list[Rule], resolve: Resolver) -> list[Conflict]:
         if len(group) < 2:
             continue
         resolved = {rule.id: resolve(rule.target) for rule in group}
+        # One conflict PER PAIR, deliberately, even for a group of 3+: a
+        # single merged conflict would have to summarise non-uniform
+        # overlaps across rules, reintroducing the ambiguity resolving
+        # targets exists to remove.
         for i, first in enumerate(group):
             for second in group[i + 1 :]:
                 overlap = resolved[first.id] & resolved[second.id]

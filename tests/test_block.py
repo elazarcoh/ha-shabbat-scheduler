@@ -144,6 +144,25 @@ def test_resolve_keeps_post_havdalah_times():
     assert resolved[0].when == datetime(2026, 8, 15, 23, 0, tzinfo=TZ)
 
 
+def test_resolve_skips_an_unparsable_day_without_aborting_the_others():
+    """Task 5 round 4's hardening, exercised at the branch that matters.
+
+    Migration always keeps a bad-day rule DISABLED (see test_migration.py),
+    so a test built from migration output never reaches `int(rule.day)` at
+    all - `resolve_rules` filters disabled rules out first. Only an
+    ENABLED rule with an unparsable `day` reaches it - reachable today via
+    a hand-edited `.storage` file or a future YAML path. Before the
+    `try/except ValueError: continue` guard, this raised inside the loop
+    and aborted resolving every OTHER rule too, not just this one.
+    """
+    rules = [
+        Rule(id="a", profile=1, day="1", time=time(11, 0), action="on"),
+        Rule(id="bad", profile=1, day="tuesday", time=time(12, 0), action="on"),
+    ]
+    resolved = resolve_rules(rules, _block_1day(), TZ)
+    assert [r.rule.id for r in resolved] == ["a"]
+
+
 def test_has_profile():
     rules = [Rule(id="a", profile=2, day="1", time=time(11, 0), action="on")]
     assert has_profile(rules, 2) is True

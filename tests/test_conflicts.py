@@ -103,6 +103,18 @@ def test_identical_rules_now_conflict_which_v1_would_not_have_flagged():
     )
 
 
+def test_three_overlapping_rules_yield_one_conflict_per_pair():
+    """Pairwise is deliberate (see the comment in find_conflicts): a merged
+    group of 3+ would have to summarise non-uniform overlaps across rules,
+    reintroducing the ambiguity the resolver exists to remove."""
+    same = {"entity_id": ["climate.salon"]}
+    rules = [rule(id="a", target=same), rule(id="b", target=same), rule(id="c", target=same)]
+    conflicts = find_conflicts(rules, _resolve)
+    assert {frozenset(c.rule_ids) for c in conflicts} == {
+        frozenset(("a", "b")), frozenset(("a", "c")), frozenset(("b", "c")),
+    }
+
+
 # --- conflict_warnings and preview_payload thread the resolver through ---
 #
 # These existed before Task 9 with a v1-shaped `find_conflicts`; kept here,
@@ -157,6 +169,21 @@ def test_preview_payload_finds_conflicts_through_the_defaults():
     )
     assert payload["conflicts"] and payload["conflicts"][0]["kind"] == "conflict"
     assert payload["conflicts"][0]["profile"] == 1
+
+
+def test_preview_payload_honours_a_hypothetical_block_length():
+    """What a user actually opens preview to ask: "what would a 3-day chag
+    do?" - anchored on the real candle lighting, not the real block length."""
+    payload = preview_payload(
+        {},
+        [rule(id="a", profile=1), rule(id="c", profile=3)],
+        BLOCK,
+        TZ,
+        _resolve,
+        block_length=3,
+    )
+    assert payload["profile"] == 3
+    assert [item["rule_id"] for item in payload["rules"]] == ["c"]
 
 
 # --- The real, HA-backed resolver, not just the stub ----------------------

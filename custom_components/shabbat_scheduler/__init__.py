@@ -128,6 +128,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             store.rules,
             engine.current_block,
             dt_util.get_time_zone(hass.config.time_zone),
+            websocket_api._resolver(hass),
             call.data.get("block_length"),
         )
 

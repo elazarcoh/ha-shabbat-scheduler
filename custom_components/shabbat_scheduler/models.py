@@ -68,10 +68,15 @@ class ResolvedRule:
 
 @dataclass(frozen=True)
 class Conflict:
-    """Two or more enabled rules disagree for one device at one moment."""
+    """Two enabled rules at the same moment resolve to overlapping targets.
+
+    `targets` is the intersection of what the two rules actually resolve
+    to (an area expands to its entities before this is computed), never
+    the raw target selectors - see `block.find_conflicts`.
+    """
 
     profile: int
     day: str
     time: time
-    device: str
+    targets: frozenset[str]
     rule_ids: tuple[str, ...]

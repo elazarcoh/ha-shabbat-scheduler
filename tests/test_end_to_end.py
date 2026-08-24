@@ -38,7 +38,7 @@ from custom_components.shabbat_scheduler.const import (
     DOMAIN,
     HAVDALAH_SENSOR,
 )
-from custom_components.shabbat_scheduler.models import Action, Rule
+from custom_components.shabbat_scheduler.models import Rule
 from custom_components.shabbat_scheduler.store import RuleStore
 
 
@@ -59,8 +59,8 @@ async def test_full_one_day_block_drives_test_booleans(
     await store.async_replace_all(
         {"devices": ["input_boolean.salon"]},
         [
-            Rule(id="on", profile=1, day="1", time=time(11, 0), action=Action.ON),
-            Rule(id="off", profile=1, day="1", time=time(18, 0), action=Action.OFF),
+            Rule(id="on", profile=1, day="1", time=time(11, 0), action="on"),
+            Rule(id="off", profile=1, day="1", time=time(18, 0), action="off"),
         ],
     )
     await store.async_set_enabled(True)
@@ -103,7 +103,7 @@ async def test_manual_change_is_not_reverted(hass, jerusalem, test_booleans, fre
     await store.async_load()
     await store.async_replace_all(
         {"devices": ["input_boolean.salon"]},
-        [Rule(id="on", profile=1, day="1", time=time(11, 0), action=Action.ON)],
+        [Rule(id="on", profile=1, day="1", time=time(11, 0), action="on")],
     )
     await store.async_set_enabled(True)
 
@@ -150,7 +150,7 @@ async def test_a_restart_between_havdalah_and_the_tail_still_fires_it(
     await store.async_replace_all(
         {"devices": ["input_boolean.salon"]},
         [Rule(id="late-off", profile=1, day="1", time=time(23, 0),
-              action=Action.OFF)],
+              action="off")],
     )
     await store.async_set_enabled(True)
 

@@ -41,19 +41,3 @@ def test_a_rule_is_immutable():
     rule = _rule()
     with pytest.raises(Exception):
         rule.action = "switch.turn_on"
-
-
-def test_the_action_enum_still_exists_for_now():
-    """Deliberately NOT deleted yet - see the note below.
-
-    `Action` is dead to `Rule` as of this task, but `block.py`,
-    `device_ops.py` and `engine.py` still reference it at module level.
-    Deleting it here makes `custom_components/shabbat_scheduler/__init__.py`
-    unimportable, and because `tests/conftest.py` imports from that
-    package, EVERY test in the repo becomes uncollectable - which would
-    leave Tasks 2-11 with no way to run their own tests. It dies in
-    Task 8, once its last consumer is gone.
-    """
-    import custom_components.shabbat_scheduler.models as models
-
-    assert hasattr(models, "Action")

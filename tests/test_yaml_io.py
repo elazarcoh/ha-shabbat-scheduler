@@ -2,15 +2,15 @@ from datetime import time
 
 import yaml
 
-from custom_components.shabbat_scheduler.models import Action, EREV, Rule
+from custom_components.shabbat_scheduler.models import EREV, Rule
 from custom_components.shabbat_scheduler.yaml_io import export_yaml, import_yaml
 
 
 def _rules():
     return [
-        Rule(id="a", profile=1, day=EREV, time=time(23, 0), action=Action.OFF,
+        Rule(id="a", profile=1, day=EREV, time=time(23, 0), action="off",
              devices=("climate.a",)),
-        Rule(id="b", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        Rule(id="b", profile=1, day="1", time=time(11, 0), action="on",
              devices=("climate.a",), name="בוקר שבת"),
     ]
 
@@ -33,8 +33,8 @@ def test_round_trip_preserves_rules():
     )
     assert defaults == {"settings": {"temperature": 26}}
     assert {(r.profile, r.day, r.time, r.action) for r in rules} == {
-        (1, EREV, time(23, 0), Action.OFF),
-        (1, "1", time(11, 0), Action.ON),
+        (1, EREV, time(23, 0), "off"),
+        (1, "1", time(11, 0), "on"),
     }
     assert {r.id for r in rules} == {"a", "b"}
 
@@ -150,7 +150,7 @@ profiles:
         action: off
 """
     _defaults, rules = import_yaml(text)
-    assert [rule.action for rule in rules] == [Action.ON, Action.OFF]
+    assert [rule.action for rule in rules] == ["on", "off"]
 
 
 # --- Final review C2: unvalidated defaults used to brick the integration ---
@@ -261,4 +261,4 @@ def test_import_still_accepts_unquoted_yaml_booleans_for_action():
     _defaults, rules = import_yaml(
         'profiles:\n  1_day:\n    day_1:\n      - {id: r1, at: "11:00:00", action: on}\n'
     )
-    assert rules[0].action is Action.ON
+    assert rules[0].action == "on"

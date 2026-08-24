@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, time, timezone
 
 from custom_components.shabbat_scheduler.const import STORAGE_KEY, STORAGE_VERSION
-from custom_components.shabbat_scheduler.models import Action, EREV, Rule
+from custom_components.shabbat_scheduler.models import EREV, Rule
 from custom_components.shabbat_scheduler.store import (
     RuleStore,
     rule_from_dict,
@@ -11,12 +11,12 @@ from custom_components.shabbat_scheduler.store import (
 
 def test_rule_dict_round_trip():
     rule = Rule(
-        id="r1", profile=2, day=EREV, time=time(22, 30), action=Action.ON,
+        id="r1", profile=2, day=EREV, time=time(22, 30), action="on",
         devices=("climate.a",), settings={"temperature": 26}, name="test",
     )
     restored = rule_from_dict(rule_to_dict(rule))
     assert restored == rule
-    assert isinstance(restored.action, Action)
+    assert isinstance(restored.action, str)
     assert isinstance(restored.devices, tuple)
     assert isinstance(restored.time, time)
 
@@ -32,7 +32,7 @@ async def test_store_starts_empty_and_disabled(hass):
 async def test_add_and_persist(hass):
     store = RuleStore(hass)
     await store.async_load()
-    rule = Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON)
+    rule = Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on")
     await store.async_add(rule)
 
     reloaded = RuleStore(hass)
@@ -44,7 +44,7 @@ async def test_update_changes_only_named_fields(hass):
     store = RuleStore(hass)
     await store.async_load()
     await store.async_add(
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON)
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on")
     )
     await store.async_update("r1", enabled=False)
     assert store.rules[0].enabled is False
@@ -55,7 +55,7 @@ async def test_delete(hass):
     store = RuleStore(hass)
     await store.async_load()
     await store.async_add(
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON)
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on")
     )
     await store.async_delete("r1")
     assert store.rules == []
@@ -91,7 +91,7 @@ async def test_a_store_without_an_active_block_keeps_its_old_shape(
     store = RuleStore(hass)
     await store.async_load()
     await store.async_add(
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON)
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on")
     )
     assert set(_stored(hass_storage)) == {
         "rules", "defaults", "enabled", "dry_run"
@@ -109,7 +109,7 @@ async def test_load_tolerates_storage_written_before_active_block_existed(
             "rules": [
                 rule_to_dict(
                     Rule(id="r1", profile=1, day="1", time=time(11, 0),
-                         action=Action.ON)
+                         action="on")
                 )
             ],
             "defaults": {"temperature": 26},
@@ -149,7 +149,7 @@ async def test_replace_all_swaps_defaults_and_rules(hass):
     await store.async_load()
     await store.async_replace_all(
         {"temperature": 26},
-        [Rule(id="x", profile=3, day="2", time=time(9, 0), action=Action.OFF)],
+        [Rule(id="x", profile=3, day="2", time=time(9, 0), action="off")],
     )
     assert store.defaults == {"temperature": 26}
     assert [r.id for r in store.rules] == ["x"]
@@ -164,7 +164,7 @@ async def test_change_listener_fires_on_add_update_delete(hass):
     calls = []
     store.async_set_change_listener(lambda: calls.append(1))
 
-    rule = Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON)
+    rule = Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on")
     await store.async_add(rule)
     await store.async_update("r1", enabled=False)
     await store.async_delete("r1")

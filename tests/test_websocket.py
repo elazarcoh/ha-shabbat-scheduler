@@ -6,7 +6,7 @@ from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.shabbat_scheduler.const import DOMAIN
-from custom_components.shabbat_scheduler.models import Action, Rule
+from custom_components.shabbat_scheduler.models import Rule
 from custom_components.shabbat_scheduler.store import RuleStore
 
 ZMANIM = {
@@ -35,7 +35,7 @@ async def _setup(hass, rules=(), defaults=None, enabled=False):
 async def test_rules_list_returns_rules_and_defaults(hass, hass_ws_client):
     await _setup(
         hass,
-        [Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        [Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on",
               devices=("climate.a",))],
         defaults={"temperature": 26},
     )
@@ -51,9 +51,9 @@ async def test_rules_list_returns_rules_and_defaults(hass, hass_ws_client):
 
 async def test_rules_list_reports_conflicts_as_warnings(hass, hass_ws_client):
     await _setup(hass, [
-        Rule(id="a", profile=1, day="1", time=time(18, 0), action=Action.ON,
+        Rule(id="a", profile=1, day="1", time=time(18, 0), action="on",
              devices=("climate.a",)),
-        Rule(id="b", profile=1, day="1", time=time(18, 0), action=Action.OFF,
+        Rule(id="b", profile=1, day="1", time=time(18, 0), action="off",
              devices=("climate.a",)),
     ])
     client = await hass_ws_client(hass)
@@ -66,7 +66,7 @@ async def test_rules_list_reports_conflicts_as_warnings(hass, hass_ws_client):
 
 async def test_preview_resolves_the_upcoming_block(hass, hass_ws_client):
     await _setup(hass, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on",
              devices=("climate.a",)),
     ])
     client = await hass_ws_client(hass)
@@ -84,9 +84,9 @@ async def test_preview_with_block_length_resolves_a_hypothetical_block(
 ):
     """block_length re-derives a hypothetical block, mirroring the `simulate` service."""
     await _setup(hass, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on",
              devices=("climate.a",)),
-        Rule(id="r3", profile=3, day="1", time=time(11, 0), action=Action.ON,
+        Rule(id="r3", profile=3, day="1", time=time(11, 0), action="on",
              devices=("climate.b",)),
     ])
     client = await hass_ws_client(hass)
@@ -104,9 +104,9 @@ async def test_preview_without_block_length_uses_the_real_upcoming_block(
     hass, hass_ws_client
 ):
     await _setup(hass, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on",
              devices=("climate.a",)),
-        Rule(id="r3", profile=3, day="1", time=time(11, 0), action=Action.ON,
+        Rule(id="r3", profile=3, day="1", time=time(11, 0), action="on",
              devices=("climate.b",)),
     ])
     client = await hass_ws_client(hass)
@@ -151,7 +151,7 @@ async def test_preview_reports_no_block_when_zmanim_missing(hass, hass_ws_client
     store = RuleStore(hass)
     await store.async_load()
     await store.async_replace_all({}, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on",
              devices=("climate.a",)),
     ])
     entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
@@ -233,7 +233,7 @@ async def test_create_rejects_malformed_input(hass, hass_ws_client):
 
 async def test_create_succeeds_but_warns_on_a_conflict(hass, hass_ws_client):
     await _setup(hass, [
-        Rule(id="a", profile=1, day="1", time=time(11, 0), action=Action.OFF,
+        Rule(id="a", profile=1, day="1", time=time(11, 0), action="off",
              devices=("climate.a",)),
     ])
     client = await hass_ws_client(hass)
@@ -248,7 +248,7 @@ async def test_create_succeeds_but_warns_on_a_conflict(hass, hass_ws_client):
 
 async def test_update_changes_only_supplied_fields(hass, hass_ws_client):
     await _setup(hass, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on",
              devices=("climate.a",)),
     ])
     client = await hass_ws_client(hass)
@@ -284,7 +284,7 @@ async def test_update_of_unknown_rule_errors(hass, hass_ws_client):
 
 async def test_delete_removes_the_rule(hass, hass_ws_client):
     await _setup(hass, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON),
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on"),
     ])
     client = await hass_ws_client(hass)
     await client.send_json(
@@ -369,7 +369,7 @@ async def test_update_to_custom_action_without_script_is_rejected(
     """changes_from_api is field-scoped; ws_update must still enforce
     validate_rule's whole-rule invariant before persisting."""
     await _setup(hass, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on",
              devices=("climate.a",)),
     ])
     client = await hass_ws_client(hass)
@@ -387,16 +387,16 @@ async def test_update_to_custom_action_without_script_is_rejected(
     reloaded = RuleStore(hass)
     await reloaded.async_load()
     assert reloaded.rules == [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on",
              devices=("climate.a",)),
     ]
 
 
 async def test_update_succeeds_but_warns_on_a_conflict(hass, hass_ws_client):
     await _setup(hass, [
-        Rule(id="a", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        Rule(id="a", profile=1, day="1", time=time(11, 0), action="on",
              devices=("climate.a",)),
-        Rule(id="b", profile=1, day="1", time=time(12, 0), action=Action.OFF,
+        Rule(id="b", profile=1, day="1", time=time(12, 0), action="off",
              devices=("climate.a",)),
     ])
     client = await hass_ws_client(hass)
@@ -455,7 +455,7 @@ async def test_delete_over_the_websocket_disarms_its_timer(
     freezer.move_to("2026-08-15T05:00:00+00:00")
     entry = await _setup(
         hass,
-        [Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        [Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on",
               devices=("climate.a",))],
         enabled=True,
     )
@@ -478,7 +478,7 @@ async def test_update_over_the_websocket_moves_the_armed_time(
     freezer.move_to("2026-08-15T05:00:00+00:00")
     entry = await _setup(
         hass,
-        [Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        [Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on",
               devices=("climate.a",))],
         enabled=True,
     )
@@ -517,7 +517,7 @@ async def test_subscribe_pushes_on_change(hass, hass_ws_client):
     await store.async_load()
     entry_store = list(hass.data[DOMAIN].values())[0]["store"]
     await entry_store.async_add(
-        Rule(id="pushed", profile=1, day="1", time=time(11, 0), action=Action.ON)
+        Rule(id="pushed", profile=1, day="1", time=time(11, 0), action="on")
     )
     await hass.async_block_till_done()
 
@@ -530,7 +530,7 @@ async def test_subscribe_pushes_the_current_state_immediately(hass, hass_ws_clie
     """Otherwise a client needs list AND subscribe, and a change landing
     between the two is lost silently and never re-reported."""
     await _setup(hass, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON),
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on"),
     ])
     client = await hass_ws_client(hass)
 
@@ -557,7 +557,7 @@ async def test_subscribe_stops_pushing_after_unsubscribe(hass, hass_ws_client):
 
     entry_store = list(hass.data[DOMAIN].values())[0]["store"]
     await entry_store.async_add(
-        Rule(id="quiet", profile=1, day="1", time=time(11, 0), action=Action.ON)
+        Rule(id="quiet", profile=1, day="1", time=time(11, 0), action="on")
     )
     await hass.async_block_till_done()
 
@@ -589,7 +589,7 @@ async def test_a_read_only_user_cannot_mutate(
     hass, hass_ws_client, hass_read_only_access_token, mutation
 ):
     await _setup(hass, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on",
              devices=("climate.a",)),
     ])
     client = await hass_ws_client(hass, hass_read_only_access_token)
@@ -613,7 +613,7 @@ async def test_a_read_only_user_can_still_read(
 ):
     """Reading is what the card does for everyone; only writing is admin."""
     await _setup(hass, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on",
              devices=("climate.a",)),
     ])
     client = await hass_ws_client(hass, hass_read_only_access_token)
@@ -637,8 +637,8 @@ async def test_a_read_only_user_can_still_read(
 # contribute nothing, and the card was told the schedule was clean.
 
 CONFLICTING_PAIR = [
-    Rule(id="a", profile=1, day="1", time=time(18, 0), action=Action.ON),
-    Rule(id="b", profile=1, day="1", time=time(18, 0), action=Action.OFF),
+    Rule(id="a", profile=1, day="1", time=time(18, 0), action="on"),
+    Rule(id="b", profile=1, day="1", time=time(18, 0), action="off"),
 ]
 DEFAULT_DEVICES = {"devices": ["climate.a"]}
 
@@ -679,8 +679,8 @@ async def test_update_finds_a_conflict_when_devices_come_from_defaults(
     await _setup(
         hass,
         [
-            Rule(id="a", profile=1, day="1", time=time(18, 0), action=Action.ON),
-            Rule(id="b", profile=1, day="1", time=time(12, 0), action=Action.OFF),
+            Rule(id="a", profile=1, day="1", time=time(18, 0), action="on"),
+            Rule(id="b", profile=1, day="1", time=time(12, 0), action="off"),
         ],
         defaults=DEFAULT_DEVICES,
     )
@@ -781,9 +781,9 @@ async def test_preview_and_simulate_return_the_same_payload(
     trusting it.
     """
     await _setup(hass, [
-        Rule(id="a", profile=1, day="1", time=time(18, 0), action=Action.ON),
-        Rule(id="b", profile=1, day="1", time=time(18, 0), action=Action.OFF),
-        Rule(id="c", profile=3, day="1", time=time(11, 0), action=Action.ON),
+        Rule(id="a", profile=1, day="1", time=time(18, 0), action="on"),
+        Rule(id="b", profile=1, day="1", time=time(18, 0), action="off"),
+        Rule(id="c", profile=3, day="1", time=time(11, 0), action="on"),
     ], defaults={"devices": ["climate.a"]})
 
     service_data = {} if length is None else {"block_length": length}

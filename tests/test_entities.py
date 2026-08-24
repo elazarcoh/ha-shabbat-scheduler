@@ -5,7 +5,7 @@ from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.shabbat_scheduler.const import DOMAIN
-from custom_components.shabbat_scheduler.models import Action, Rule
+from custom_components.shabbat_scheduler.models import Rule
 from custom_components.shabbat_scheduler.store import RuleStore
 
 
@@ -68,7 +68,7 @@ async def test_master_switch_turns_on_and_persists(hass):
 async def test_one_switch_per_rule(hass, rule_switch_entity_id):
     entry = await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, name="בוקר שבת"),
+             action="on", name="בוקר שבת"),
     ])
     entity_id = rule_switch_entity_id(entry, "r1")
     assert entity_id is not None
@@ -80,7 +80,7 @@ async def test_one_switch_per_rule(hass, rule_switch_entity_id):
 
 async def test_rule_switch_toggle_persists(hass, rule_switch_entity_id):
     entry = await _setup(hass, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON),
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on"),
     ])
     entity_id = rule_switch_entity_id(entry, "r1")
     assert entity_id is not None
@@ -116,7 +116,7 @@ async def test_next_action_sensor_unknown_when_master_off(hass):
         "sensor.jewish_calendar_upcoming_havdalah", "2026-08-15T17:01:00+00:00"
     )
     await _setup(hass, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action=Action.ON),
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on"),
     ])
     assert hass.states.get("sensor.shabbat_scheduler_next_action").state == "unknown"
 
@@ -136,7 +136,7 @@ async def test_last_run_sensor_reports_timestamp_after_a_run(hass, test_booleans
     await engine.async_apply_rule(
         Rule(
             id="r1", profile=1, day="1", time=time(11, 0),
-            action=Action.ON, devices=("input_boolean.t",),
+            action="on", devices=("input_boolean.t",),
         )
     )
     await hass.async_block_till_done()
@@ -164,7 +164,7 @@ async def test_last_run_sensor_distinguishes_empty_run_from_never_ran(hass):
     results = await engine.async_apply_rule(
         Rule(
             id="r1", profile=1, day="1", time=time(11, 0),
-            action=Action.CUSTOM, devices=(),
+            action="custom", devices=(),
         )
     )
     assert results == []  # confirms this is the ambiguous empty-results path
@@ -214,7 +214,7 @@ async def test_catch_up_runs_when_zmanim_arrive_after_setup(
     freezer.move_to("2026-08-15T08:30:00+00:00")  # 11:30 Asia/Jerusalem
     entry = await _entry_with(hass, [
         Rule(id="on", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("input_boolean.t",)),
+             action="on", devices=("input_boolean.t",)),
     ])
     hass.states.async_set("input_boolean.t", "off")
 
@@ -245,7 +245,7 @@ async def test_catch_up_runs_at_most_once_per_setup(
     _zmanim(hass)
     entry = await _entry_with(hass, [
         Rule(id="on", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("input_boolean.t",)),
+             action="on", devices=("input_boolean.t",)),
     ])
     hass.states.async_set("input_boolean.t", "off")
 
@@ -282,7 +282,7 @@ async def test_setup_completes_while_an_unavailable_device_is_retried(
 
     entry = await _entry_with(hass, [
         Rule(id="on", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("fan.ac",)),
+             action="on", devices=("fan.ac",)),
     ])
 
     assert await hass.config_entries.async_setup(entry.entry_id)

@@ -19,7 +19,7 @@ from homeassistant.setup import async_setup_component
 
 from custom_components.shabbat_scheduler.const import EVENT_RULE_APPLIED
 from custom_components.shabbat_scheduler.engine import ShabbatEngine
-from custom_components.shabbat_scheduler.models import Action, Rule
+from custom_components.shabbat_scheduler.models import Rule
 from custom_components.shabbat_scheduler.store import RuleStore
 
 
@@ -30,7 +30,7 @@ async def engine(hass, jerusalem, test_booleans):
     return ShabbatEngine(hass, store)
 
 
-def _rule(action=Action.ON, devices=("input_boolean.t",), **kwargs):
+def _rule(action="on", devices=("input_boolean.t",), **kwargs):
     return Rule(
         id="r", profile=1, day="1", time=time(11, 0),
         action=action, devices=devices, **kwargs,
@@ -85,7 +85,7 @@ async def test_custom_rule_calls_its_script(hass, engine):
 
     hass.services.async_register("script", "turn_on", record)
     await engine.async_apply_rule(
-        _rule(action=Action.CUSTOM, devices=(), script="script.demo")
+        _rule(action="custom", devices=(), script="script.demo")
     )
     await hass.async_block_till_done()
 
@@ -229,7 +229,7 @@ async def test_concurrent_rules_on_same_device_do_not_interleave(hass, engine):
         settings={"hvac_mode": "cool", "temperature": 22, "fan_mode": "high"},
     )
     rule_b = Rule(
-        id="r2", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        id="r2", profile=1, day="1", time=time(11, 0), action="on",
         devices=("climate.ac",),
         settings={"hvac_mode": "heat", "temperature": 24, "fan_mode": "quiet"},
     )
@@ -379,7 +379,7 @@ async def test_no_matching_profile_notifies(hass, engine):
     # The master must be on, otherwise refresh returns before the check.
     await engine.store.async_set_enabled(True)
     await engine.store.async_add(
-        Rule(id="r", profile=3, day="1", time=time(11, 0), action=Action.ON)
+        Rule(id="r", profile=3, day="1", time=time(11, 0), action="on")
     )
     await engine.async_refresh()
 
@@ -399,7 +399,7 @@ async def test_disabled_master_schedules_nothing(hass, engine):
     _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
     await engine.store.async_add(
         Rule(id="r", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("input_boolean.t",))
+             action="on", devices=("input_boolean.t",))
     )
     await engine.async_refresh()  # master defaults OFF
     assert engine.upcoming() == []
@@ -430,7 +430,7 @@ async def test_enabled_master_lists_upcoming_rules(hass, engine, freezer):
     await engine.store.async_set_enabled(True)
     await engine.store.async_add(
         Rule(id="r", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("input_boolean.t",))
+             action="on", devices=("input_boolean.t",))
     )
     await engine.async_refresh()
     assert [item.rule.id for item in engine.upcoming()] == ["r"]
@@ -451,7 +451,7 @@ async def test_implausible_zmanim_notifies_and_schedules_nothing(hass, engine):
     await engine.store.async_set_enabled(True)
     await engine.store.async_add(
         Rule(id="r", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("input_boolean.t",))
+             action="on", devices=("input_boolean.t",))
     )
     await engine.async_refresh()
 
@@ -482,9 +482,9 @@ async def test_catch_up_applies_the_last_passed_rule(hass, engine):
     hass.states.async_set("input_boolean.t", "off")
     await engine.store.async_replace_all({}, [
         Rule(id="on", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("input_boolean.t",)),
+             action="on", devices=("input_boolean.t",)),
         Rule(id="off", profile=1, day="1", time=time(18, 0),
-             action=Action.OFF, devices=("input_boolean.t",)),
+             action="off", devices=("input_boolean.t",)),
     ])
     await engine.async_refresh()
 
@@ -503,7 +503,7 @@ async def test_catch_up_before_any_rule_does_nothing(hass, engine):
     hass.states.async_set("input_boolean.t", "off")
     await engine.store.async_replace_all({}, [
         Rule(id="on", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("input_boolean.t",)),
+             action="on", devices=("input_boolean.t",)),
     ])
     await engine.async_refresh()
 
@@ -522,7 +522,7 @@ async def test_catch_up_skips_custom_rules_by_default(hass, engine):
     hass.services.async_register("script", "turn_on", record)
     await engine.store.async_replace_all({}, [
         Rule(id="c", profile=1, day="1", time=time(11, 0),
-             action=Action.CUSTOM, script="script.demo"),
+             action="custom", script="script.demo"),
     ])
     await engine.async_refresh()
 
@@ -546,7 +546,7 @@ async def test_catch_up_replays_a_passed_replay_on_restart_custom_rule(hass, eng
     hass.services.async_register("script", "turn_on", record)
     await engine.store.async_replace_all({}, [
         Rule(id="c", profile=1, day="1", time=time(11, 0),
-             action=Action.CUSTOM, script="script.demo",
+             action="custom", script="script.demo",
              replay_on_restart=True),
     ])
     await engine.async_refresh()
@@ -574,7 +574,7 @@ async def test_catch_up_does_not_replay_a_custom_rule_that_has_not_passed(hass, 
     hass.services.async_register("script", "turn_on", record)
     await engine.store.async_replace_all({}, [
         Rule(id="c", profile=1, day="1", time=time(18, 0),
-             action=Action.CUSTOM, script="script.demo",
+             action="custom", script="script.demo",
              replay_on_restart=True),
     ])
     await engine.async_refresh()
@@ -597,7 +597,7 @@ async def test_catch_up_does_not_replay_a_disabled_custom_rule(hass, engine):
     hass.services.async_register("script", "turn_on", record)
     await engine.store.async_replace_all({}, [
         Rule(id="c", profile=1, day="1", time=time(11, 0),
-             action=Action.CUSTOM, script="script.demo",
+             action="custom", script="script.demo",
              replay_on_restart=True, enabled=False),
     ])
     await engine.async_refresh()
@@ -614,9 +614,9 @@ async def test_catch_up_declines_to_act_on_a_conflicting_pair(hass, engine):
     hass.states.async_set("input_boolean.t", "off")
     await engine.store.async_replace_all({}, [
         Rule(id="on", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("input_boolean.t",)),
+             action="on", devices=("input_boolean.t",)),
         Rule(id="off-same-time", profile=1, day="1", time=time(11, 0),
-             action=Action.OFF, devices=("input_boolean.t",)),
+             action="off", devices=("input_boolean.t",)),
     ])
     await engine.async_refresh()
 
@@ -655,7 +655,7 @@ async def test_rolled_forward_zmanim_keep_the_current_blocks_tail(
     hass.states.async_set("input_boolean.t", "on")
     await engine.store.async_replace_all({}, [
         Rule(id="late-off", profile=1, day="1", time=time(23, 0),
-             action=Action.OFF, devices=("input_boolean.t",)),
+             action="off", devices=("input_boolean.t",)),
     ])
     await engine.async_refresh()
     assert [item.rule.id for item in engine.upcoming()] == ["late-off"]
@@ -686,7 +686,7 @@ async def test_next_block_is_adopted_once_the_tail_has_passed(
     await engine.store.async_set_enabled(True)
     await engine.store.async_replace_all({}, [
         Rule(id="late-off", profile=1, day="1", time=time(23, 0),
-             action=Action.OFF, devices=("input_boolean.t",)),
+             action="off", devices=("input_boolean.t",)),
     ])
     await engine.async_refresh()
     assert engine.current_block.erev_date == date(2026, 8, 14)
@@ -724,9 +724,9 @@ async def test_the_hold_releases_itself_and_arms_the_next_block(
     hass.states.async_set("input_boolean.t", "on")
     await engine.store.async_replace_all({}, [
         Rule(id="morning-on", profile=1, day="1", time=time(9, 0),
-             action=Action.ON, devices=("input_boolean.t",)),
+             action="on", devices=("input_boolean.t",)),
         Rule(id="late-off", profile=1, day="1", time=time(23, 0),
-             action=Action.OFF, devices=("input_boolean.t",)),
+             action="off", devices=("input_boolean.t",)),
     ])
     await engine.async_refresh()
     assert engine.current_block.erev_date == date(2026, 8, 14)
@@ -792,7 +792,7 @@ async def test_a_restart_inside_the_hold_still_fires_the_pending_tail(
     await store.async_set_enabled(True)
     await store.async_replace_all({}, [
         Rule(id="late-off", profile=1, day="1", time=time(23, 0),
-             action=Action.OFF, devices=("input_boolean.t",)),
+             action="off", devices=("input_boolean.t",)),
     ])
     engine = ShabbatEngine(hass, store)
     hass.states.async_set("input_boolean.t", "on")
@@ -841,7 +841,7 @@ async def test_a_restart_after_the_tail_adopts_the_next_block(
     await store.async_set_enabled(True)
     await store.async_replace_all({}, [
         Rule(id="late-off", profile=1, day="1", time=time(23, 0),
-             action=Action.OFF, devices=("input_boolean.t",)),
+             action="off", devices=("input_boolean.t",)),
     ])
     engine = ShabbatEngine(hass, store)
     await engine.async_refresh()
@@ -881,7 +881,7 @@ async def test_concurrent_refreshes_do_not_double_up_timers(
     hass.states.async_set("input_boolean.t", "on")
     await engine.store.async_replace_all({}, [
         Rule(id="off", profile=1, day="1", time=time(11, 0),
-             action=Action.OFF, devices=("input_boolean.t",)),
+             action="off", devices=("input_boolean.t",)),
     ])
 
     fired = []
@@ -979,7 +979,7 @@ async def test_unsupported_domain_reports_skipped_not_ok(hass, engine, caplog):
     """A cover./media_player. rule used to report success and do nothing."""
     hass.states.async_set("cover.a", "open")
     results = await engine.async_apply_rule(
-        _rule(action=Action.OFF, devices=("cover.a",))
+        _rule(action="off", devices=("cover.a",))
     )
 
     assert [item["outcome"] for item in results] == ["skipped"]
@@ -1042,7 +1042,7 @@ async def test_all_disabled_rules_notify_like_a_missing_profile(hass, engine):
     _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
     await engine.store.async_set_enabled(True)
     await engine.store.async_replace_all({}, [
-        Rule(id="r", profile=1, day="1", time=time(11, 0), action=Action.ON,
+        Rule(id="r", profile=1, day="1", time=time(11, 0), action="on",
              devices=("input_boolean.t",), enabled=False),
     ])
     await engine.async_refresh()
@@ -1073,7 +1073,7 @@ async def test_event_is_self_describing_and_fires_before_the_calls(hass, engine)
 
     hass.bus.async_listen(EVENT_CALL_SERVICE, _call)
 
-    rule = _rule(action=Action.ON, devices=("input_boolean.t",))
+    rule = _rule(action="on", devices=("input_boolean.t",))
     rule = dataclasses.replace(rule, name="בוקר שבת")
     await engine.async_apply_rule(rule)
     await hass.async_block_till_done()
@@ -1104,7 +1104,7 @@ async def test_all_calls_of_one_rule_share_the_events_context(hass, engine):
     hass.bus.async_listen(EVENT_CALL_SERVICE, _call)
 
     await engine.async_apply_rule(
-        _rule(action=Action.ON, devices=("input_boolean.t", "input_boolean.salon"))
+        _rule(action="on", devices=("input_boolean.t", "input_boolean.salon"))
     )
     await hass.async_block_till_done()
 
@@ -1127,12 +1127,12 @@ async def test_concurrent_rules_get_distinct_contexts(hass, engine):
     await asyncio.gather(
         engine.async_apply_rule(
             dataclasses.replace(
-                _rule(action=Action.ON, devices=("input_boolean.t",)), id="one"
+                _rule(action="on", devices=("input_boolean.t",)), id="one"
             )
         ),
         engine.async_apply_rule(
             dataclasses.replace(
-                _rule(action=Action.OFF, devices=("input_boolean.salon",)), id="two"
+                _rule(action="off", devices=("input_boolean.salon",)), id="two"
             )
         ),
     )

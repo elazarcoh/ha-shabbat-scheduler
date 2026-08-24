@@ -5,7 +5,7 @@ from homeassistant.exceptions import ServiceValidationError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.shabbat_scheduler.const import DOMAIN
-from custom_components.shabbat_scheduler.models import Action, Rule
+from custom_components.shabbat_scheduler.models import Rule
 from custom_components.shabbat_scheduler.store import RuleStore
 
 
@@ -32,7 +32,7 @@ async def test_simulate_returns_resolved_rules(hass):
     )
     await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="on", devices=("climate.a",)),
     ])
 
     response = await hass.services.async_call(
@@ -53,9 +53,9 @@ async def test_simulate_reports_conflicts(hass):
     )
     await _setup(hass, [
         Rule(id="a", profile=1, day="1", time=time(18, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="on", devices=("climate.a",)),
         Rule(id="b", profile=1, day="1", time=time(18, 0),
-             action=Action.OFF, devices=("climate.a",)),
+             action="off", devices=("climate.a",)),
     ])
 
     response = await hass.services.async_call(
@@ -73,7 +73,7 @@ async def test_simulate_warns_when_profile_missing(hass):
         "sensor.jewish_calendar_upcoming_havdalah", "2026-08-15T17:01:00+00:00"
     )
     await _setup(hass, [
-        Rule(id="r1", profile=3, day="1", time=time(11, 0), action=Action.ON),
+        Rule(id="r1", profile=3, day="1", time=time(11, 0), action="on"),
     ])
 
     response = await hass.services.async_call(
@@ -95,7 +95,7 @@ async def test_set_dry_run(hass):
 async def test_yaml_export_then_import(hass):
     await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="on", devices=("climate.a",)),
     ])
     exported = await hass.services.async_call(
         DOMAIN, "export_yaml", {}, blocking=True, return_response=True
@@ -113,7 +113,7 @@ async def test_yaml_export_then_import(hass):
 async def test_import_yaml_rejects_syntactically_invalid_yaml(hass):
     await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="on", devices=("climate.a",)),
     ])
 
     with pytest.raises(ServiceValidationError):
@@ -130,7 +130,7 @@ async def test_import_yaml_rejects_syntactically_invalid_yaml(hass):
 async def test_import_yaml_rejects_entry_missing_action(hass):
     await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="on", devices=("climate.a",)),
     ])
     bad_yaml = """
 defaults: {}
@@ -156,7 +156,7 @@ profiles:
 async def test_import_yaml_rejects_invalid_action_value(hass):
     await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="on", devices=("climate.a",)),
     ])
     bad_yaml = """
 defaults: {}
@@ -200,7 +200,7 @@ async def test_import_yaml_rejects_an_unknown_day_key_and_keeps_the_store(hass):
     """
     await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="on", devices=("climate.a",)),
     ])
     bad_yaml = """
 defaults: {}
@@ -233,7 +233,7 @@ async def test_import_yaml_rebuilds_the_rule_switches(hass, rule_switch_entity_i
     """
     entry = await _setup(hass, [
         Rule(id="old", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="on", devices=("climate.a",)),
     ])
     assert rule_switch_entity_id(entry, "old") is not None
 
@@ -285,7 +285,7 @@ async def test_import_yaml_rejects_malformed_defaults_and_persists_nothing(hass)
     )
     await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="on", devices=("climate.a",)),
     ])
 
     bad_yaml = """

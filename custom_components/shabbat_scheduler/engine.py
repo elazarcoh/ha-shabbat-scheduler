@@ -18,7 +18,6 @@ from homeassistant.util import dt as dt_util
 
 from .block import (
     compute_block,
-    desired_state_at,
     has_profile,
     merge_defaults,
     resolve_rules,
@@ -33,7 +32,7 @@ from .const import (
     SIGNAL_RULES_CHANGED,
 )
 from .device_ops import expand_action
-from .models import Action, Block, Conflict, ResolvedRule, Rule
+from .models import Block, ResolvedRule, Rule
 from .store import RuleStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -79,6 +78,15 @@ class ShabbatEngine:
         self._unsubscribes: list = []
         self._upcoming: list[ResolvedRule] = []
         self._refresh_lock = asyncio.Lock()
+        # Which block async_catch_up has already run for. Compared by
+        # value (Block is a frozen dataclass), so a genuinely new block
+        # naturally re-arms this without any explicit reset - but the
+        # SAME block cannot be caught up twice. Application through
+        # async_call_from_config has no "already in that state" check the
+        # way v1's device comparison did, so without this a second call
+        # (setup races, a manual re-trigger) would repeat every side
+        # effect rather than harmlessly no-op.
+        self._caught_up_for: Block | None = None
 
     async def async_apply_rule(self, rule: Rule, force: bool = False) -> list[dict]:
         """Apply one rule, returning a per-attribute outcome report.
@@ -439,49 +447,49 @@ class ShabbatEngine:
         return _fire
 
     async def async_catch_up(self) -> list[dict]:
-        """Re-apply the current desired state after a restart.
+        """Replay the rules that opted in to it, after a restart.
 
-        Only the most recent already-passed rule per device is applied, and
-        because application is idempotent this is safe to repeat.
+        An opaque service call has no queryable desired state the way
+        v1's `hvac_mode`/`temperature`/`fan_mode` did, so catch-up can no
+        longer ask "what state should this device be in now?". Instead
+        the rule's own author says what is safe to repeat
+        (`rule.replay.enabled`), how stale it may be and still be worth
+        repeating (`rule.replay.within`), and the rule's own condition -
+        evaluated through the normal `async_apply_rule` path - still
+        guards it.
+
+        A rule that does not fire must say why: a rule replayed too late
+        is reported as `skipped_stale` rather than silently dropped.
+
+        At most once per block: application through
+        `async_call_from_config` has no "already in that state" check to
+        make a repeat harmless the way v1's device comparison did.
         """
         if self._block is None or not self.store.enabled:
             return []
+        if self._block == self._caught_up_for:
+            return []
 
-        tz = self._tz()
         now = dt_util.now()
-        rules = self._merged_rules()
-
-        devices = {device for rule in rules for device in rule.devices}
         results: list[dict] = []
-
-        for device in sorted(devices):
-            wanted = desired_state_at(rules, self._block, now, device, tz)
-            if wanted is None:
-                continue
-            if isinstance(wanted, Conflict):
-                _LOGGER.warning(
-                    "%s: ambiguous desired state (rules %s); not acting",
-                    device, ", ".join(wanted.rule_ids),
+        for item in resolve_rules(self._merged_rules(), self._block, self._tz()):
+            if item.when > now:
+                continue                      # future: armed, not replayed
+            if not item.rule.replay.enabled:
+                continue                      # the author did not opt in
+            within = item.rule.replay.within
+            if within is not None and now - item.when > within:
+                results.append(
+                    {
+                        "rule_id": item.rule.id,
+                        "outcome": "skipped_stale",
+                        "reason": f"{now - item.when} late, window {within}",
+                    }
                 )
                 continue
-            results.extend(
-                await self._apply_device(wanted, device, force=False, context=Context())
-            )
+            results.extend(await self.async_apply_rule(item.rule))
 
-        # Custom rules are excluded above because desired_state_at ignores
-        # them; replay them only where explicitly opted in, and only once
-        # they have actually passed. Reuse resolve_rules rather than
-        # hand-rolling profile/enabled/time filtering a second time - it
-        # already binds each rule to the concrete datetime the on/off path
-        # trusts.
-        for item in resolve_rules(rules, self._block, tz):
-            if (
-                item.rule.action is Action.CUSTOM
-                and item.rule.replay_on_restart
-                and item.when <= now
-            ):
-                results.extend(await self._apply_custom(item.rule, Context()))
-
+        self._caught_up_for = self._block
         self.last_run = results
         self.last_run_at = dt_util.utcnow()
         self.hass.bus.async_fire(

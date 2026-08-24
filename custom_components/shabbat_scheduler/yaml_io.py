@@ -11,7 +11,7 @@ from collections.abc import Mapping
 
 import yaml
 
-from .models import Action, EREV, Rule
+from .models import EREV, Rule
 from .rule_schema import rule_from_api, validate_defaults
 
 _OPTIONAL_FIELDS = (
@@ -55,17 +55,17 @@ def _profile_from_key(key) -> int:
     return int(number)
 
 
-def _action_from_value(value) -> Action:
+def _action_from_value(value) -> str:
     """Accept YAML 1.1 booleans for actions.
 
     An unquoted `action: on` - the most natural thing to hand-write - parses
     as the boolean True. Export always quotes, so only hand-edits land here.
     """
     if value is True:
-        return Action.ON
+        return "on"
     if value is False:
-        return Action.OFF
-    return Action(str(value))
+        return "off"
+    return str(value)
 
 
 def _rule_from_entry(entry, profile: int, day: str) -> Rule:

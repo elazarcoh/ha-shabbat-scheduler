@@ -11,7 +11,7 @@ from custom_components.shabbat_scheduler.block import (
     merge_defaults,
     resolve_rules,
 )
-from custom_components.shabbat_scheduler.models import Action, EREV, Rule
+from custom_components.shabbat_scheduler.models import EREV, Rule
 
 TZ = ZoneInfo("Asia/Jerusalem")
 
@@ -76,41 +76,41 @@ def _block_1day():
 
 def test_merge_defaults_fills_unset_keys_only():
     defaults = {
-        "devices": ["climate.a"],
-        "settings": {"temperature": 26, "fan_mode": "quiet"},
+        "target": {"entity_id": ["climate.a"]},
+        "data": {"temperature": 26, "fan_mode": "quiet"},
     }
     rule = Rule(
         id="r1",
         profile=1,
         day="1",
         time=time(11, 0),
-        action=Action.ON,
-        settings={"temperature": 24},
+        action="on",
+        data={"temperature": 24},
     )
     merged = merge_defaults(defaults, rule)
-    assert merged.devices == ("climate.a",)
-    assert merged.settings == {"temperature": 24, "fan_mode": "quiet"}
+    assert merged.target == {"entity_id": ["climate.a"]}
+    assert merged.data == {"temperature": 24, "fan_mode": "quiet"}
     # The original must not be mutated.
-    assert rule.settings == {"temperature": 24}
+    assert rule.data == {"temperature": 24}
 
 
-def test_merge_defaults_keeps_explicit_devices():
-    defaults = {"devices": ["climate.a"]}
+def test_merge_defaults_keeps_explicit_target():
+    defaults = {"target": {"entity_id": ["climate.a"]}}
     rule = Rule(
         id="r1",
         profile=1,
         day="1",
         time=time(11, 0),
-        action=Action.ON,
-        devices=("climate.b",),
+        action="on",
+        target={"entity_id": ["climate.b"]},
     )
-    assert merge_defaults(defaults, rule).devices == ("climate.b",)
+    assert merge_defaults(defaults, rule).target == {"entity_id": ["climate.b"]}
 
 
 def test_resolve_binds_erev_and_days_to_dates():
     rules = [
-        Rule(id="a", profile=1, day="1", time=time(11, 0), action=Action.ON),
-        Rule(id="b", profile=1, day=EREV, time=time(23, 0), action=Action.OFF),
+        Rule(id="a", profile=1, day="1", time=time(11, 0), action="on"),
+        Rule(id="b", profile=1, day=EREV, time=time(23, 0), action="off"),
     ]
     resolved = resolve_rules(rules, _block_1day(), TZ)
     assert [r.rule.id for r in resolved] == ["b", "a"]  # sorted by datetime
@@ -120,8 +120,8 @@ def test_resolve_binds_erev_and_days_to_dates():
 
 def test_resolve_selects_only_the_matching_profile():
     rules = [
-        Rule(id="a", profile=1, day="1", time=time(11, 0), action=Action.ON),
-        Rule(id="b", profile=3, day="1", time=time(11, 0), action=Action.ON),
+        Rule(id="a", profile=1, day="1", time=time(11, 0), action="on"),
+        Rule(id="b", profile=3, day="1", time=time(11, 0), action="on"),
     ]
     resolved = resolve_rules(rules, _block_1day(), TZ)
     assert [r.rule.id for r in resolved] == ["a"]
@@ -131,7 +131,7 @@ def test_resolve_drops_disabled_rules():
     rules = [
         Rule(
             id="a", profile=1, day="1", time=time(11, 0),
-            action=Action.ON, enabled=False,
+            action="on", enabled=False,
         )
     ]
     assert resolve_rules(rules, _block_1day(), TZ) == []
@@ -139,13 +139,13 @@ def test_resolve_drops_disabled_rules():
 
 def test_resolve_keeps_post_havdalah_times():
     # 23:00 on the last day is after havdalah (20:01) and must still resolve.
-    rules = [Rule(id="a", profile=1, day="1", time=time(23, 0), action=Action.OFF)]
+    rules = [Rule(id="a", profile=1, day="1", time=time(23, 0), action="off")]
     resolved = resolve_rules(rules, _block_1day(), TZ)
     assert resolved[0].when == datetime(2026, 8, 15, 23, 0, tzinfo=TZ)
 
 
 def test_has_profile():
-    rules = [Rule(id="a", profile=2, day="1", time=time(11, 0), action=Action.ON)]
+    rules = [Rule(id="a", profile=2, day="1", time=time(11, 0), action="on")]
     assert has_profile(rules, 2) is True
     assert has_profile(rules, 1) is False
 
@@ -158,12 +158,12 @@ def test_has_profile_ignores_disabled_rules():
     """
     rules = [
         Rule(id="a", profile=2, day="1", time=time(11, 0),
-             action=Action.ON, enabled=False),
+             action="on", enabled=False),
     ]
     assert has_profile(rules, 2) is False
 
     rules.append(
-        Rule(id="b", profile=2, day="1", time=time(12, 0), action=Action.ON)
+        Rule(id="b", profile=2, day="1", time=time(12, 0), action="on")
     )
     assert has_profile(rules, 2) is True
 

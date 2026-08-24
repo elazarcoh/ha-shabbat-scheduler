@@ -53,25 +53,32 @@ def safe_profile(raw: dict) -> int:
 
 def migrate_v1_rule(raw: dict) -> tuple[dict | None, str | None]:
     """One v1 rule as v2, or None plus the reason it could not be."""
-    # id and time are required identity/scheduling fields on the v2 Rule
-    # dataclass - `rule_from_dict` does `data["id"]` and
-    # `time.fromisoformat(data["time"])` unconditionally, and
-    # `int(data["profile"])`. A "successfully" migrated rule with any of
-    # these missing or malformed would raise on load, aborting every
-    # other rule in the store along with it - and by then HA has already
-    # written version 2, so every subsequent start fails identically with
-    # no way back. Treating any of this as unmigratable instead routes it
+    # id, time, profile and day are required fields on the v2 Rule
+    # dataclass - `rule_from_dict` does `data["id"]`, `data["profile"]`,
+    # `data["day"]` and `data["time"]` unconditionally. A "successfully"
+    # migrated rule with any of these missing or malformed would raise on
+    # load, aborting every other rule in the store along with it - and by
+    # then HA has already written version 2, so every subsequent start
+    # fails identically with no way back. `_UNCHANGED` below only copies a
+    # key when it is present in `raw`, so a v1 rule missing one of these
+    # outright - not just malformed - would otherwise sail through this
+    # function's success path and only fail once the store tries to load
+    # it back. Treating any of this as unmigratable instead routes it
     # through keep-disable-report, same as any other rule this code
     # cannot safely convert.
     if not raw.get("id"):
         return None, "a rule with no id cannot be migrated"
+    if "profile" not in raw:
+        return None, "a rule with no profile cannot be migrated"
+    if not _parses_as_profile(raw["profile"]):
+        return None, f"profile is not a valid integer: {raw['profile']!r}"
+    if "day" not in raw:
+        return None, "a rule with no day cannot be migrated"
     time_value = raw.get("time")
     if not time_value:
         return None, "a rule with no time cannot be migrated"
     if not _parses_as_time(time_value):
         return None, f"time is not a valid clock time: {time_value!r}"
-    if not _parses_as_profile(raw.get("profile", 1)):
-        return None, f"profile is not a valid integer: {raw.get('profile')!r}"
 
     action = raw.get("action")
     out = {key: raw[key] for key in _UNCHANGED if key in raw}

@@ -368,3 +368,57 @@ def test_migration_source_survives_a_storage_round_trip():
 
     round_tripped = rule_from_dict(rule_to_dict(rule))
     assert round_tripped.migration_source == raw
+
+
+# --- Fix round 3 -----------------------------------------------------------
+
+# IMPORTANT: a v1 rule with `profile` (or, found by the same sweep, `day`)
+# entirely absent migrates down the *success* path with that key missing
+# altogether, because `_UNCHANGED` only copies keys present in `raw`.
+# `rule_from_dict` then does `int(data["profile"])` / `str(data["day"])`
+# unconditionally and raises KeyError - after the store is already at
+# version 2, so every subsequent start fails identically with no way back.
+# Same failure class as the missing id/time (round 1) and malformed
+# time/profile (round 2) holes; this closes the last two.
+
+
+def test_a_rule_with_no_profile_cannot_be_migrated():
+    raw = {key: value for key, value in V1_SIMPLE_ON.items() if key != "profile"}
+    out, reason = migrate_v1_rule(raw)
+    assert out is None
+    assert "profile" in reason.lower()
+
+
+def test_a_rule_with_no_day_cannot_be_migrated():
+    raw = {key: value for key, value in V1_SIMPLE_ON.items() if key != "day"}
+    out, reason = migrate_v1_rule(raw)
+    assert out is None
+    assert "day" in reason.lower()
+
+
+def test_a_rule_missing_profile_is_kept_disabled_and_does_not_break_the_load():
+    """The failing rule loads without raising, disabled and reported, and a
+    normal rule alongside it in the same store still migrates and loads
+    normally - nothing else in the batch is taken down with it."""
+    missing_profile = {key: value for key, value in V1_SIMPLE_ON.items() if key != "profile"}
+    out, failed = migrate_v1({"rules": [missing_profile, V1_CLIMATE_ON], "defaults": {}})
+    assert len(out["rules"]) == 2
+
+    survivor = next(r for r in out["rules"] if r["id"] == "b")
+    assert survivor["enabled"] is False
+    rule_from_dict(survivor)  # must not raise
+    assert failed == ["b"]
+
+    healthy = next(r for r in out["rules"] if r["id"] == "a")
+    assert healthy["enabled"] is True
+    healthy_rule = rule_from_dict(healthy)  # must not raise
+    assert healthy_rule.action == "climate.set_temperature"
+
+
+def test_a_rule_missing_day_is_kept_disabled_and_does_not_break_the_load():
+    missing_day = {key: value for key, value in V1_SIMPLE_ON.items() if key != "day"}
+    out, failed = migrate_v1({"rules": [missing_day], "defaults": {}})
+    survivor = out["rules"][0]
+    assert survivor["enabled"] is False
+    rule_from_dict(survivor)  # must not raise
+    assert failed == ["b"]

@@ -56,3 +56,44 @@ async def test_an_unknown_condition_type_is_rejected(hass):
 async def test_an_empty_target_is_accepted(hass):
     """Some actions need none - notify.persistent_notification, for one."""
     await async_validate_rule(hass, _rule(action="notify.persistent_notification", target={}))
+
+
+async def test_a_valid_sun_condition_is_accepted(hass):
+    """`sun` dispatches to homeassistant.components.sun's own condition platform,
+
+    unlike `state`/`numeric_state`/`vibes` above, which never leave core
+    condition.py. This exercises `SunCondition.async_validate_config`.
+    """
+    await async_validate_rule(hass, _rule(condition=(
+        {"condition": "sun", "before": "sunset"},
+    )))
+
+
+async def test_a_malformed_sun_condition_is_rejected(hass):
+    """Neither `before` nor `after` given - rejected by the sun platform's
+
+    own `cv.has_at_least_one_key("before", "after")`, not by core condition.py.
+    """
+    with pytest.raises(RuleValidationError):
+        await async_validate_rule(hass, _rule(condition=(
+            {"condition": "sun"},
+        )))
+
+
+async def test_a_valid_zone_condition_is_accepted(hass):
+    """`zone` dispatches to homeassistant.components.zone's own condition
+
+    platform. No zone or device_tracker entity needs to exist for shape
+    validation - `cv.entity_ids` only checks the entity_id format.
+    """
+    await async_validate_rule(hass, _rule(condition=(
+        {"condition": "zone", "entity_id": "device_tracker.x", "zone": "zone.home"},
+    )))
+
+
+async def test_a_malformed_zone_condition_is_rejected(hass):
+    """No `zone` given - rejected by the zone platform's own schema."""
+    with pytest.raises(RuleValidationError):
+        await async_validate_rule(hass, _rule(condition=(
+            {"condition": "zone", "entity_id": "device_tracker.x"},
+        )))

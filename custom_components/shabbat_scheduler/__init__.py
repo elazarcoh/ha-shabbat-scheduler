@@ -31,6 +31,8 @@ from .const import (
 )
 from .engine import ShabbatEngine
 from .frontend import async_register_frontend, async_unregister_frontend
+from .ha_validation import async_validate_rule
+from .rule_schema import RuleValidationError
 from .store import RuleStore
 from .yaml_io import export_yaml, import_yaml
 
@@ -172,6 +174,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             raise ServiceValidationError(
                 f"Invalid rule set: {err}"
             ) from err
+
+        # yaml_io only checks shape (rule_schema.rule_from_api); target and
+        # condition still need Home Assistant's own schemas, which yaml_io
+        # cannot import without crossing the purity boundary. Applied here,
+        # before anything is persisted, for the same reason the malformed-
+        # defaults guard runs first: a rule that fails this after being
+        # written to .storage would brick every later setup.
+        for rule in rules:
+            try:
+                await async_validate_rule(hass, rule)
+            except RuleValidationError as err:
+                raise ServiceValidationError(
+                    f"Invalid rule set: {err}"
+                ) from err
+
         await store.async_replace_all(defaults, rules)
         await engine.async_refresh()
 

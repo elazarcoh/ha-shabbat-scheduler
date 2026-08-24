@@ -8,15 +8,14 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping
+from datetime import timedelta
 
 import yaml
 
-from .models import EREV, Rule
+from .models import EREV, Replay, Rule
 from .rule_schema import rule_from_api, validate_defaults
 
-_OPTIONAL_FIELDS = (
-    "name", "icon", "script", "color", "replay_on_restart", "variables",
-)
+_OPTIONAL_FIELDS = ("name", "icon", "color")
 
 
 def _day_key(day: str) -> str:
@@ -55,17 +54,35 @@ def _profile_from_key(key) -> int:
     return int(number)
 
 
-def _action_from_value(value) -> str:
-    """Accept YAML 1.1 booleans for actions.
+def _duration_to_str(value: timedelta) -> str:
+    """A timedelta as 'HH:MM:SS' - the one form `rule_schema._duration`
+    (and so every API client) accepts.
 
-    An unquoted `action: on` - the most natural thing to hand-write - parses
-    as the boolean True. Export always quotes, so only hand-edits land here.
+    Task 5 hit the real bug this guards against: the store briefly wrote
+    `replay.within` as a raw number of seconds while the API accepted only
+    this string form, so a rule read then written straight back was
+    rejected. Sub-second precision is not a concept the API exposes, so it
+    is dropped rather than silently rounded away somewhere less visible.
     """
-    if value is True:
-        return "on"
-    if value is False:
-        return "off"
-    return str(value)
+    total_seconds = int(value.total_seconds())
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _replay_entry(replay: Replay) -> dict:
+    """A rule's replay policy as YAML, omitting the untouched default.
+
+    An all-default `Replay()` (not opted in, no window) writes nothing at
+    all - matching how an empty `target`/`condition` is omitted below,
+    rather than round-tripping as a `replay: {enabled: false}` no one wrote.
+    """
+    entry: dict = {}
+    if replay.enabled:
+        entry["enabled"] = True
+    if replay.within is not None:
+        entry["within"] = _duration_to_str(replay.within)
+    return entry
 
 
 def _rule_from_entry(entry, profile: int, day: str) -> Rule:
@@ -74,27 +91,28 @@ def _rule_from_entry(entry, profile: int, day: str) -> Rule:
     This used to construct the Rule by hand, which meant the YAML door had
     no typing behind it at all: a quoted `enabled: "false"` imported as a
     truthy string, so the rule read as OFF everywhere it was displayed and
-    RAN anyway; `action: custom` with no script imported silently inert;
-    and a misspelt key was dropped without a word. Translating to the API
-    shape and handing it to rule_from_api means one set of rules for both
-    doors, and any new field is typed in one place.
+    RAN anyway; and a misspelt key was dropped without a word. Translating
+    to the API shape and handing it to rule_from_api means one set of rules
+    for both doors, and any new field - `target`, `data`, `condition`,
+    `replay` - is typed in exactly one place, including the v1-field
+    rejection: an entry still carrying `devices`/`settings`/`script`/
+    `variables`/`replay_on_restart` fails there with a message naming v1,
+    not as a bare parse error here.
 
     Only the genuinely YAML-shaped parts are handled here: the `at` key
-    (the API calls it `time`), YAML 1.1's `on`/`off` booleans, and an id
-    that - unlike the API's - is preserved so a round trip keeps entities.
+    (the API calls it `time`), and an id that - unlike the API's - is
+    preserved so a round trip keeps each rule's entity and history.
     """
     if not isinstance(entry, Mapping):
         raise ValueError(f"each rule must be a mapping, got {entry!r}")
-    for required in ("at", "action"):
-        if required not in entry:
-            raise ValueError(f"a {_day_key(day)} rule is missing {required!r}")
+    if "at" not in entry:
+        raise ValueError(f"a {_day_key(day)} rule is missing 'at'")
 
     payload = {
         key: value for key, value in entry.items()
-        if key not in ("id", "at", "action")
+        if key not in ("id", "at")
     }
     payload["time"] = str(entry["at"])
-    payload["action"] = _action_from_value(entry["action"])
     payload["profile"] = profile
     payload["day"] = day
 
@@ -114,12 +132,17 @@ def export_yaml(defaults: dict, rules: list[Rule]) -> str:
         entry: dict = {
             "id": rule.id,
             "at": rule.time.isoformat(),
-            "action": rule.action.value,
+            "action": rule.action,
         }
-        if rule.devices:
-            entry["devices"] = list(rule.devices)
-        if rule.settings:
-            entry["settings"] = dict(rule.settings)
+        if rule.target:
+            entry["target"] = dict(rule.target)
+        if rule.data:
+            entry["data"] = dict(rule.data)
+        if rule.condition:
+            entry["condition"] = [dict(item) for item in rule.condition]
+        replay_entry = _replay_entry(rule.replay)
+        if replay_entry:
+            entry["replay"] = replay_entry
         if not rule.enabled:
             entry["enabled"] = False
         for name in _OPTIONAL_FIELDS:

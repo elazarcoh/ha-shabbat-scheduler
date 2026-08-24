@@ -2,7 +2,12 @@ from datetime import time as dt_time, timedelta
 
 from custom_components.shabbat_scheduler.migration import migrate_v1, migrate_v1_rule
 from custom_components.shabbat_scheduler.models import Replay, Rule
-from custom_components.shabbat_scheduler.store import RuleStore, rule_from_dict, rule_to_dict
+from custom_components.shabbat_scheduler.store import (
+    RuleStore,
+    replay_from_dict,
+    rule_from_dict,
+    rule_to_dict,
+)
 
 V1_CLIMATE_ON = {
     "id": "a", "profile": 1, "day": "1", "time": "11:00:00", "action": "on",
@@ -275,3 +280,91 @@ def test_replay_within_round_trips_through_hh_mm_ss():
     )
     round_tripped = rule_from_dict(rule_to_dict(rule))
     assert round_tripped.replay.within == timedelta(hours=1, minutes=30, seconds=5)
+
+
+# --- Fix round 2 -----------------------------------------------------------
+
+# IMPORTANT: regression - a pre-fix-round-1 store (written by e39449b, which
+# serialised `within` as raw seconds) must not have its bound silently
+# widened to "unbounded" when read by the fixed code.
+
+
+def test_replay_from_dict_parses_a_pre_fix_numeric_within_as_seconds():
+    """A store written by e39449b has `within` as a raw number of seconds,
+    e.g. 3600.0. Treating that as unparsable and dropping it to None would
+    silently convert a bounded replay into an unbounded one - the exact
+    class of silent widening this project treats as its cardinal sin."""
+    replay = replay_from_dict({"enabled": True, "within": 3600.0})
+    assert replay.within == timedelta(seconds=3600)
+
+
+def test_replay_from_dict_raises_rather_than_silently_widening_on_nonsense():
+    """A within value that is neither a legacy number of seconds nor a
+    valid 'HH:MM:SS' string must not quietly become 'unbounded' either -
+    it must raise."""
+    import pytest
+
+    from custom_components.shabbat_scheduler.rule_schema import RuleValidationError
+
+    with pytest.raises(RuleValidationError):
+        replay_from_dict({"enabled": True, "within": "not-a-duration"})
+
+
+# IMPORTANT: a malformed (not merely missing) time or profile must not brick
+# every subsequent load either - the store is already at version 2 by the
+# time the crash happens, so there is no way back.
+
+
+def test_a_rule_with_an_unparsable_time_cannot_be_migrated():
+    raw = {**V1_SIMPLE_ON, "time": "not-a-time"}
+    out, reason = migrate_v1_rule(raw)
+    assert out is None
+    assert "time" in reason.lower()
+
+
+def test_a_rule_with_a_non_string_time_cannot_be_migrated():
+    out, reason = migrate_v1_rule({**V1_SIMPLE_ON, "time": 12345})
+    assert out is None
+    assert "time" in reason.lower()
+
+
+def test_a_rule_with_an_unparsable_profile_cannot_be_migrated():
+    out, reason = migrate_v1_rule({**V1_SIMPLE_ON, "profile": "not-a-number"})
+    assert out is None
+    assert "profile" in reason.lower()
+
+
+def test_a_rule_with_an_unparsable_time_is_kept_disabled_and_does_not_break_the_load():
+    """Before this fix the placeholder rule for a *different* failure
+    reason could still carry the original malformed `time` straight
+    through, crashing the very keep-disable-report record meant to be
+    the safe fallback."""
+    raw = {**V1_SIMPLE_ON, "time": "not-a-time"}
+    out, failed = migrate_v1({"rules": [raw], "defaults": {}})
+    assert len(out["rules"]) == 1
+    survivor = out["rules"][0]
+    assert survivor["enabled"] is False
+    rule_from_dict(survivor)  # must not raise
+    assert failed == [survivor["id"]]
+
+
+def test_a_rule_with_an_unparsable_profile_is_kept_disabled_and_does_not_break_the_load():
+    raw = {**V1_SIMPLE_ON, "profile": "not-a-number"}
+    out, _ = migrate_v1({"rules": [raw], "defaults": {}})
+    survivor = out["rules"][0]
+    assert survivor["enabled"] is False
+    rule_from_dict(survivor)  # must not raise
+
+
+# IMPORTANT: migration_source must survive a storage round trip - the exact
+# gap Important 3 raised for migration_error, reintroduced for this field.
+
+
+def test_migration_source_survives_a_storage_round_trip():
+    raw = {**V1_CUSTOM, "script": None}
+    out, _ = migrate_v1({"rules": [raw], "defaults": {}})
+    rule = rule_from_dict(out["rules"][0])
+    assert rule.migration_source == raw
+
+    round_tripped = rule_from_dict(rule_to_dict(rule))
+    assert round_tripped.migration_source == raw

@@ -83,3 +83,19 @@ def test_fan_mode_only_produces_just_the_fan_mode_call():
     assert expand_action("climate.set_temperature", {"fan_mode": "silent"}) == [
         ("climate.set_fan_mode", {"fan_mode": "silent"})
     ]
+
+
+def test_an_unrecognized_climate_key_rides_along_on_the_temperature_call():
+    """swing_mode/humidity are not among the three keys this shim knows
+    about, and were never a v1 concept either way. Silently dropping an
+    authored key is the wrong default: it should ride along on
+    set_temperature and be loudly rejected by HA's PREVENT_EXTRA schema,
+    the same way it would be rejected if hvac_mode/fan_mode were absent
+    and no split happened at all."""
+    assert expand_action(
+        "climate.set_temperature",
+        {"temperature": 26, "hvac_mode": "cool", "swing_mode": "vertical"},
+    ) == [
+        ("climate.set_hvac_mode", {"hvac_mode": "cool"}),
+        ("climate.set_temperature", {"temperature": 26, "swing_mode": "vertical"}),
+    ]

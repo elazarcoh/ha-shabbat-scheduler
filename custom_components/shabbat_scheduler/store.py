@@ -45,19 +45,29 @@ def replay_to_dict(replay: Replay) -> dict:
 
 
 def replay_from_dict(data) -> Replay:
-    """Deserialise a rule's replay policy, tolerating absence or nonsense."""
+    """Deserialise a rule's replay policy, tolerating absence only.
+
+    `within` bounds how late a rule may fire - dropping it silently turns
+    a bounded replay into an unbounded one, exactly the kind of silent
+    widening this project treats as unacceptable. So a value that cannot
+    be understood is never quietly discarded: it is either parsed
+    correctly or raised.
+    """
     if not isinstance(data, dict):
         return Replay()
     within = data.get("within")
     parsed = None
     if within is not None:
-        try:
+        if isinstance(within, bool):
+            raise RuleValidationError(f"replay.within must be a duration, got {within!r}")
+        if isinstance(within, (int, float)):
+            # A store written by the pre-fix-round-1 migration (e39449b)
+            # serialised `within` as a raw number of seconds. Parsing it
+            # as such keeps that store's bound intact instead of
+            # silently turning it into "no bound".
+            parsed = timedelta(seconds=within)
+        else:
             parsed = _duration(within)
-        except RuleValidationError:
-            # A hand-edited or pre-fix '.storage' file may still carry a
-            # raw number of seconds. Degrade to "no bound" rather than
-            # fail the whole rule load over one cosmetic field.
-            parsed = None
     return Replay(enabled=bool(data.get("enabled", False)), within=parsed)
 
 

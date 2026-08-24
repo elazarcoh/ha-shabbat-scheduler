@@ -11,22 +11,67 @@ nothing can be fixed.
 
 from __future__ import annotations
 
+from datetime import time as _time
+
 _UNCHANGED = ("id", "profile", "day", "time", "name", "icon", "color")
+
+
+def _parses_as_time(value) -> bool:
+    try:
+        _time.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _parses_as_profile(value) -> bool:
+    try:
+        int(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def safe_time(raw: dict) -> str:
+    """A `time` string guaranteed to satisfy `time.fromisoformat`.
+
+    Used for the keep-disable-report placeholder too: that record must
+    load cleanly regardless of *why* the original rule failed - a rule
+    that failed for an unrelated reason (no devices, say) might still
+    carry a malformed `time`, and the fallback record must not repeat
+    the same crash it exists to avoid.
+    """
+    value = raw.get("time")
+    return str(value) if _parses_as_time(value) else "00:00:00"
+
+
+def safe_profile(raw: dict) -> int:
+    """A `profile` guaranteed to satisfy `int()`. See `safe_time`."""
+    value = raw.get("profile", 1)
+    return int(value) if _parses_as_profile(value) else 1
 
 
 def migrate_v1_rule(raw: dict) -> tuple[dict | None, str | None]:
     """One v1 rule as v2, or None plus the reason it could not be."""
     # id and time are required identity/scheduling fields on the v2 Rule
     # dataclass - `rule_from_dict` does `data["id"]` and
-    # `time.fromisoformat(data["time"])` unconditionally. A "successfully"
-    # migrated rule missing either would raise on load, aborting every
-    # other rule in the store along with it. Treating that as unmigratable
-    # instead routes it through keep-disable-report, same as any other
-    # rule this code cannot safely convert.
+    # `time.fromisoformat(data["time"])` unconditionally, and
+    # `int(data["profile"])`. A "successfully" migrated rule with any of
+    # these missing or malformed would raise on load, aborting every
+    # other rule in the store along with it - and by then HA has already
+    # written version 2, so every subsequent start fails identically with
+    # no way back. Treating any of this as unmigratable instead routes it
+    # through keep-disable-report, same as any other rule this code
+    # cannot safely convert.
     if not raw.get("id"):
         return None, "a rule with no id cannot be migrated"
-    if not raw.get("time"):
+    time_value = raw.get("time")
+    if not time_value:
         return None, "a rule with no time cannot be migrated"
+    if not _parses_as_time(time_value):
+        return None, f"time is not a valid clock time: {time_value!r}"
+    if not _parses_as_profile(raw.get("profile", 1)):
+        return None, f"profile is not a valid integer: {raw.get('profile')!r}"
 
     action = raw.get("action")
     out = {key: raw[key] for key in _UNCHANGED if key in raw}
@@ -119,9 +164,9 @@ def migrate_v1(data: dict) -> tuple[dict, list[str]]:
             rules.append(
                 {
                     "id": fallback_id,
-                    "profile": raw.get("profile", 1),
+                    "profile": safe_profile(raw),
                     "day": raw.get("day", "erev"),
-                    "time": raw.get("time") or "00:00:00",
+                    "time": safe_time(raw),
                     "action": "shabbat_scheduler.unmigrated",
                     "target": {"entity_id": devices} if devices else {},
                     "data": dict(settings) if isinstance(settings, dict) else {},

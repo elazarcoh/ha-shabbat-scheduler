@@ -16,7 +16,6 @@ _CLIMATE_SET_HVAC_MODE = "climate.set_hvac_mode"
 _CLIMATE_SET_FAN_MODE = "climate.set_fan_mode"
 _HVAC_MODE = "hvac_mode"
 _FAN_MODE = "fan_mode"
-_TEMPERATURE_KEYS = ("temperature", "target_temp_high", "target_temp_low")
 
 
 def expand_action(action: str, data: dict) -> list[tuple[str, dict]]:
@@ -39,8 +38,13 @@ def expand_action(action: str, data: dict) -> list[tuple[str, dict]]:
     gets `quiet` - so it gets its own call rather than being dropped or
     smuggled into `set_temperature`, where HA would reject it.
 
-    `set_temperature` is only ever emitted if at least one temperature key
-    is present - an empty `{}` is rejected by HA too.
+    `set_temperature` is only ever emitted if at least one key besides
+    `hvac_mode`/`fan_mode` remains - an empty `{}` is rejected by HA too.
+    Any key this shim does not recognise (`swing_mode`, `humidity`, a
+    future addition) rides along on that call rather than being silently
+    dropped - the same outcome as if hvac_mode/fan_mode were absent and
+    no split happened at all, so HA rejects it loudly instead of it
+    vanishing with no trace.
 
     An author writes the one natural action; this makes it work. Every
     other action passes through untouched, and no other domain knowledge
@@ -54,7 +58,9 @@ def expand_action(action: str, data: dict) -> list[tuple[str, dict]]:
     calls: list[tuple[str, dict]] = []
     if _HVAC_MODE in data:
         calls.append((_CLIMATE_SET_HVAC_MODE, {_HVAC_MODE: data[_HVAC_MODE]}))
-    temperature_data = {key: data[key] for key in _TEMPERATURE_KEYS if key in data}
+    temperature_data = {
+        key: value for key, value in data.items() if key not in (_HVAC_MODE, _FAN_MODE)
+    }
     if temperature_data:
         calls.append((_CLIMATE_SET_TEMPERATURE, temperature_data))
     if _FAN_MODE in data:

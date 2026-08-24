@@ -23,14 +23,15 @@ from .block import (
     resolve_rules,
 )
 from .const import (
-    CANDLE_SENSOR,
+    DEFAULT_CANDLE_SENSOR,
+    DEFAULT_HAVDALAH_SENSOR,
     EVENT_RULE_APPLIED,
     EVENT_RULE_COMPLETED,
-    HAVDALAH_SENSOR,
     RETRY_ATTEMPTS,
     RETRY_DELAY_SECONDS,
     SIGNAL_RULES_CHANGED,
 )
+from . import repairs
 from .device_ops import expand_action
 from .models import Block, ResolvedRule, Rule
 from .store import RuleStore
@@ -61,9 +62,21 @@ _HOLD_RELEASE_GRACE = timedelta(seconds=1)
 class ShabbatEngine:
     """Applies rules by handing their action to Home Assistant to execute."""
 
-    def __init__(self, hass: HomeAssistant, store: RuleStore) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        store: RuleStore,
+        candle_sensor: str = DEFAULT_CANDLE_SENSOR,
+        havdalah_sensor: str = DEFAULT_HAVDALAH_SENSOR,
+    ) -> None:
         self.hass = hass
         self.store = store
+        # Configurable since Task 10: the Jewish Calendar integration derives
+        # these entity ids from its own config entry's title, so there is no
+        # name every install shares. Defaulted, not required, so every
+        # pre-existing direct construction of this class keeps working.
+        self._candle_sensor = candle_sensor
+        self._havdalah_sensor = havdalah_sensor
         self.last_run: list[dict] = []
         self.last_run_at: datetime | None = None
         # Keyed on rule id, not entity_id: a target may be an area or a
@@ -184,14 +197,25 @@ class ShabbatEngine:
         return [merge_defaults(self.store.defaults, r) for r in self.store.rules]
 
     def _read_zmanim(self) -> tuple[datetime, datetime] | None:
-        candle = self.hass.states.get(CANDLE_SENSOR)
-        havdalah = self.hass.states.get(HAVDALAH_SENSOR)
-        if candle is None or havdalah is None:
-            return None
-        start = dt_util.parse_datetime(candle.state)
-        end = dt_util.parse_datetime(havdalah.state)
+        """Read the two configured zmanim entities, reporting via a repair
+        issue - not just a log line - when they cannot be read at all.
+
+        v1 hardcoded the entity ids and logged a warning on this path; that
+        warning is invisible on the one day anyone would need to see it, and
+        the entity ids it hardcoded are only the Jewish Calendar integration's
+        own default names, derived from ITS config entry's title. A second
+        Jewish Calendar entry, or one simply renamed, never matches.
+        """
+        candle = self.hass.states.get(self._candle_sensor)
+        havdalah = self.hass.states.get(self._havdalah_sensor)
+        start = dt_util.parse_datetime(candle.state) if candle else None
+        end = dt_util.parse_datetime(havdalah.state) if havdalah else None
         if start is None or end is None:
+            repairs.async_create_zmanim_issue(
+                self.hass, self._candle_sensor, self._havdalah_sensor
+            )
             return None
+        repairs.async_delete_zmanim_issue(self.hass)
         # HA serialises timestamp sensor states as UTC. compute_block takes
         # `.date()` of each instant while resolve_rules combines those dates
         # with the LOCAL timezone, so they must be localised here or every
@@ -281,7 +305,7 @@ class ShabbatEngine:
                 _LOGGER.warning("Ignoring implausible zmanim pair %s", zmanim)
                 persistent_notification.async_create(
                     self.hass,
-                    f"The {CANDLE_SENSOR} and {HAVDALAH_SENSOR} sensors "
+                    f"The {self._candle_sensor} and {self._havdalah_sensor} sensors "
                     "don't describe a valid Shabbat/Chag block (havdalah "
                     "must be after candle lighting). The schedule is not "
                     "running until this is fixed.",
@@ -422,13 +446,13 @@ class ShabbatEngine:
             return
         _LOGGER.warning(
             "Cannot read %s / %s; no block is known, so nothing is scheduled",
-            CANDLE_SENSOR,
-            HAVDALAH_SENSOR,
+            self._candle_sensor,
+            self._havdalah_sensor,
         )
         persistent_notification.async_create(
             self.hass,
-            f"Shabbat Scheduler cannot read {CANDLE_SENSOR} and "
-            f"{HAVDALAH_SENSOR}. Is the Jewish Calendar integration set up, "
+            f"Shabbat Scheduler cannot read {self._candle_sensor} and "
+            f"{self._havdalah_sensor}. Is the Jewish Calendar integration set up, "
             "and are those entity ids still correct? Nothing is scheduled "
             "until they can be read.",
             title="Shabbat Scheduler",

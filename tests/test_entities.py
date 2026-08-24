@@ -36,6 +36,16 @@ async def test_only_one_instance_allowed(hass):
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": "user"}
     )
+    assert result["type"] == "form"
+    # Neither default zmanim entity exists in this hass instance, so the
+    # form has no default to fall back on and must be filled explicitly.
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "candle_sensor": "sensor.jewish_calendar_upcoming_candle_lighting",
+            "havdalah_sensor": "sensor.jewish_calendar_upcoming_havdalah",
+        },
+    )
     assert result["type"] == "create_entry"
 
     second = await hass.config_entries.flow.async_init(

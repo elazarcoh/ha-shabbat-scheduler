@@ -2,6 +2,42 @@
   "config": {
     "abort": {
       "single_instance_allowed": "Shabbat Scheduler is already set up. Only one instance is supported."
+    },
+    "step": {
+      "user": {
+        "data": {
+          "candle_sensor": "Candle lighting sensor",
+          "havdalah_sensor": "Havdalah sensor"
+        },
+        "data_description": {
+          "candle_sensor": "The Jewish Calendar sensor giving the upcoming candle-lighting time. Its entity id is derived from that integration's own title, so it may not be the default shown here.",
+          "havdalah_sensor": "The Jewish Calendar sensor giving the upcoming havdalah time. Its entity id is derived from that integration's own title, so it may not be the default shown here."
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "candle_sensor": "[%key:component::shabbat_scheduler::config::step::user::data::candle_sensor%]",
+          "havdalah_sensor": "[%key:component::shabbat_scheduler::config::step::user::data::havdalah_sensor%]"
+        },
+        "data_description": {
+          "candle_sensor": "[%key:component::shabbat_scheduler::config::step::user::data_description::candle_sensor%]",
+          "havdalah_sensor": "[%key:component::shabbat_scheduler::config::step::user::data_description::havdalah_sensor%]"
+        }
+      }
+    }
+  },
+  "issues": {
+    "zmanim_sensor_missing": {
+      "title": "The configured zmanim sensors can't be read",
+      "description": "Shabbat Scheduler cannot read {candle_sensor} and/or {havdalah_sensor}. Check that the Jewish Calendar integration is set up and that those entity ids are still correct, then change them from the integration's Configure options if not. Nothing is scheduled until they can be read."
+    },
+    "unmigrated_rules": {
+      "title": "Some rules could not be migrated",
+      "description": "Upgrading from the previous version could not convert these rules automatically, so they were kept, disabled: {rule_ids}. Open each one to see why, then re-enable or recreate it."
     }
   },
   "services": {

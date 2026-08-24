@@ -19,9 +19,16 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 
-from . import websocket_api
+from . import repairs, websocket_api
 from .block import preview_payload
-from .const import CANDLE_SENSOR, DOMAIN, HAVDALAH_SENSOR, SIGNAL_RULES_CHANGED
+from .const import (
+    CONF_CANDLE_SENSOR,
+    CONF_HAVDALAH_SENSOR,
+    DEFAULT_CANDLE_SENSOR,
+    DEFAULT_HAVDALAH_SENSOR,
+    DOMAIN,
+    SIGNAL_RULES_CHANGED,
+)
 from .engine import ShabbatEngine
 from .frontend import async_register_frontend, async_unregister_frontend
 from .store import RuleStore
@@ -30,10 +37,26 @@ from .yaml_io import export_yaml, import_yaml
 PLATFORMS = [Platform.SWITCH, Platform.SENSOR]
 
 
+def _configured_sensor(entry: ConfigEntry, key: str, default: str) -> str:
+    """The entity id for `key`: options override data, which overrides the
+    Jewish Calendar's own default name - the same precedence `ConfigEntry`
+    uses everywhere else a value can be both set at setup and changed later.
+    """
+    return entry.options.get(key) or entry.data.get(key, default)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     store = RuleStore(hass)
     await store.async_load()
-    engine = ShabbatEngine(hass, store)
+
+    if store.migration_failures:
+        repairs.async_create_unmigrated_rules_issue(hass, store.migration_failures)
+
+    candle_sensor = _configured_sensor(entry, CONF_CANDLE_SENSOR, DEFAULT_CANDLE_SENSOR)
+    havdalah_sensor = _configured_sensor(
+        entry, CONF_HAVDALAH_SENSOR, DEFAULT_HAVDALAH_SENSOR
+    )
+    engine = ShabbatEngine(hass, store, candle_sensor, havdalah_sensor)
 
     @callback
     def _rules_changed() -> None:
@@ -114,7 +137,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(
         async_track_state_change_event(
-            hass, [CANDLE_SENSOR, HAVDALAH_SENSOR], _zmanim_changed
+            hass, [candle_sensor, havdalah_sensor], _zmanim_changed
         )
     )
 

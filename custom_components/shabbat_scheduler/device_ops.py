@@ -8,9 +8,6 @@ so that exception is testable without an instance.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
-
 _CLIMATE_SET_TEMPERATURE = "climate.set_temperature"
 _CLIMATE_SET_HVAC_MODE = "climate.set_hvac_mode"
 _CLIMATE_SET_FAN_MODE = "climate.set_fan_mode"
@@ -66,32 +63,3 @@ def expand_action(action: str, data: dict) -> list[tuple[str, dict]]:
     if _FAN_MODE in data:
         calls.append((_CLIMATE_SET_FAN_MODE, {_FAN_MODE: data[_FAN_MODE]}))
     return calls
-
-
-# --- Deprecated: dead climate-planner remnant, kept only to import -------
-#
-# `engine.py` still does `from .device_ops import Skip, plan_calls` at
-# module level, and `__init__.py` imports `engine` at module level too -
-# deleting these here would make the whole package unimportable and every
-# test in the repo uncollectable, per the plan's standing rule (a task may
-# break behaviour, never importability). `engine.py`'s caller already
-# passes `rule.action` as a plain string where this expects the old
-# `Action` enum, so it is not functionally reachable in a working state
-# today regardless. Task 6 replaces `_apply_device` with a path built on
-# `expand_action` above and deletes this stub along with the import.
-@dataclass(frozen=True)
-class Skip:
-    """Superseded by `expand_action`'s plain pass-through. See Task 6."""
-
-    attribute: str
-    requested: Any = None
-    reason: str = ""
-
-
-def plan_calls(*_args, **_kwargs):
-    """Superseded by `expand_action`. See Task 6."""
-    raise NotImplementedError(
-        "plan_calls was removed in Task 2 (climate execution planner is "
-        "gone); engine.py's caller is rewritten against expand_action in "
-        "Task 6"
-    )

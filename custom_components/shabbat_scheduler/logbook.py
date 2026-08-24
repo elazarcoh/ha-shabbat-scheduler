@@ -25,12 +25,17 @@ def async_describe_events(
     def async_describe_rule_applied(event: Event) -> dict:
         data = event.data
         rule = data.get("name") or data.get("rule_id", "")
-        devices = ", ".join(data.get("devices") or [])
         action = data.get("action", "")
+        target = data.get("target") or {}
+        target_desc = ", ".join(
+            str(v)
+            for values in target.values()
+            for v in (values if isinstance(values, list) else [values])
+        )
 
         message = f"rule {rule} ({action})"
-        if devices:
-            message = f"{message} — {devices}"
+        if target_desc:
+            message = f"{message} — {target_desc}"
         if data.get("dry_run"):
             message = f"{message} [dry run]"
 

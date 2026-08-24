@@ -11,6 +11,7 @@ from homeassistant.components import persistent_notification
 from homeassistant.core import Context, CoreState, HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_time
+from homeassistant.helpers.service import async_call_from_config
 from homeassistant.util import dt as dt_util
 
 from .block import (
@@ -29,13 +30,11 @@ from .const import (
     RETRY_DELAY_SECONDS,
     SIGNAL_RULES_CHANGED,
 )
-from .device_ops import Skip, plan_calls
+from .device_ops import expand_action
 from .models import Action, Block, Conflict, ResolvedRule, Rule
 from .store import RuleStore
 
 _LOGGER = logging.getLogger(__name__)
-
-_UNTRUSTED_STATES = ("unknown", "unavailable")
 
 # Fixed notification ids so a condition that is re-evaluated on every state
 # change replaces its own notification instead of stacking dozens of copies,
@@ -43,11 +42,13 @@ _UNTRUSTED_STATES = ("unknown", "unavailable")
 _NOTIFY_ZMANIM = "shabbat_scheduler_zmanim"
 _NOTIFY_NO_PROFILE = "shabbat_scheduler_no_profile"
 
-# How many of our own recent context ids we remember per device. Bounded so a
+# How many of our own recent context ids we remember. Bounded so a
 # long-running instance cannot grow this without limit; generous enough that
-# no realistic burst of calls to one device evicts a context before anything
-# could plausibly ask about it.
-_CONTEXT_HISTORY_PER_DEVICE = 20
+# no realistic burst of rule applications evicts a context before anything
+# could plausibly ask about it. No longer keyed per device: a target may be
+# an area or a label rather than a single entity, so there is nothing to key
+# on but the context itself.
+_CONTEXT_HISTORY = 200
 
 # How long after a held block's last rule the candidate block is adopted.
 # Strictly greater than zero so the refresh it schedules is guaranteed to
@@ -57,18 +58,21 @@ _HOLD_RELEASE_GRACE = timedelta(seconds=1)
 
 
 class ShabbatEngine:
-    """Applies rules idempotently, one device at a time."""
+    """Applies rules by handing their action to Home Assistant to execute."""
 
     def __init__(self, hass: HomeAssistant, store: RuleStore) -> None:
         self.hass = hass
         self.store = store
         self.last_run: list[dict] = []
         self.last_run_at: datetime | None = None
+        # Keyed on rule id, not entity_id: a target may be an area or a
+        # label rather than one device, so there is no single entity to key
+        # a lock on. This still guarantees one rule's own calls do not
+        # interleave with a re-entrant application of that SAME rule; it no
+        # longer guarantees that two DIFFERENT rules targeting the same
+        # device cannot interleave with each other.
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-        self._last_command: dict[str, datetime] = {}
-        self._our_contexts: dict[str, deque[str]] = defaultdict(
-            lambda: deque(maxlen=_CONTEXT_HISTORY_PER_DEVICE)
-        )
+        self._our_contexts: deque[str] = deque(maxlen=_CONTEXT_HISTORY)
         self._block: Block | None = None
         self._unsubscribes: list = []
         self._upcoming: list[ResolvedRule] = []
@@ -84,27 +88,24 @@ class ShabbatEngine:
         device's own change back to this rule, the same way automations do.
         """
         context = Context()
+        self._our_contexts.append(context.id)
 
         self.hass.bus.async_fire(
             EVENT_RULE_APPLIED,
             {
                 "rule_id": rule.id,
                 "name": rule.name,
-                "action": rule.action.value,
-                "devices": list(rule.devices),
+                "action": rule.action,
+                "target": dict(rule.target),
                 "dry_run": self.store.dry_run,
             },
             context=context,
         )
 
-        if rule.action is Action.CUSTOM:
-            results = await self._apply_custom(rule, context)
-        else:
+        async with self._locks[rule.id]:
             results = []
-            for entity_id in rule.devices:
-                results.extend(
-                    await self._apply_device(rule, entity_id, force, context)
-                )
+            for action, data in expand_action(rule.action, dict(rule.data)):
+                results.append(await self._call(action, rule.target, data, context))
 
         self.last_run = results
         self.last_run_at = dt_util.utcnow()
@@ -450,160 +451,61 @@ class ShabbatEngine:
             cancel()
         self._unsubscribes = []
 
-    async def _apply_custom(self, rule: Rule, context: Context) -> list[dict]:
-        if not rule.script:
-            return []
-        if self.store.dry_run:
-            return [
-                {
-                    "entity_id": rule.script, "attribute": "script",
-                    "outcome": "changed", "from": None, "to": "run",
-                }
-            ]
-        await self.hass.services.async_call(
-            "script", "turn_on",
-            {"entity_id": rule.script, "variables": dict(rule.variables)},
-            blocking=True, context=self._record_context(rule.script, context),
-        )
-        return [
-            {
-                "entity_id": rule.script, "attribute": "script",
-                "outcome": "changed", "from": None, "to": "run",
-            }
-        ]
+    def is_our_context(self, context: Context) -> bool:
+        """Was `context` one this engine itself issued?
 
-    async def _apply_device(
-        self, rule: Rule, entity_id: str, force: bool, context: Context
-    ) -> list[dict]:
-        state = self.hass.states.get(entity_id)
-        if state is None:
-            _LOGGER.warning("%s: entity not found", entity_id)
-            return [
-                {
-                    "entity_id": entity_id, "attribute": "state",
-                    "outcome": "failed", "from": None, "to": None,
-                }
-            ]
-
-        must_apply = force or state.state in _UNTRUSTED_STATES or self._is_stale(
-            entity_id, state.last_updated
-        )
-        calls = plan_calls(
-            entity_id, state.state, dict(state.attributes),
-            rule.action, rule.settings, must_apply,
-        )
-
-        if not calls:
-            return [
-                {
-                    "entity_id": entity_id, "attribute": "state",
-                    "outcome": "ok", "from": state.state, "to": state.state,
-                }
-            ]
-
-        results: list[dict] = []
-        async with self._locks[entity_id]:
-            for call in calls:
-                if isinstance(call, Skip):
-                    # Nothing retries a dropped sub-call, so it is reported
-                    # rather than passed over in silence.
-                    _LOGGER.warning(
-                        "%s: cannot apply %s=%r: %s",
-                        entity_id, call.attribute, call.requested, call.reason,
-                    )
-                    results.append(
-                        {
-                            "entity_id": entity_id,
-                            "attribute": call.attribute,
-                            "outcome": "skipped",
-                            "from": None,
-                            "to": call.requested,
-                            "reason": call.reason,
-                        }
-                    )
-                    continue
-                results.append(await self._execute(entity_id, call, context))
-        return results
-
-    def _is_stale(self, entity_id: str, last_updated: datetime) -> bool:
-        """True when the reading predates our own most recent command.
-
-        The aux_cloud units lag several seconds on fan_mode, so a naive read
-        would skip a command that never actually landed.
+        No longer keyed per entity: a target may be an area or a label, so
+        there is no single entity to key on, and the calls a rule makes may
+        not even carry an `entity_id` at all (e.g. a `notify.*` action).
         """
-        sent = self._last_command.get(entity_id)
-        return sent is not None and last_updated < sent
+        return context.id in self._our_contexts
 
-    def _record_context(self, entity_id: str, context: Context) -> Context:
-        """Remember a context as ours, for the given entity.
+    async def _call(
+        self, action: str, target: dict, data: dict, context: Context
+    ) -> dict:
+        """One service call, retried, reported either way.
 
-        Retaining our own context ids is what lets a future enforcement
-        feature tell "we changed it" from "a human changed it" when looking
-        at a state_changed event.
+        Everything here is Home Assistant's own service machinery -
+        `async_call_from_config` validates the config, resolves the target
+        and makes the call. This integration's contribution is deciding
+        that now is the moment.
         """
-        self._our_contexts[entity_id].append(context.id)
-        return context
-
-    def is_our_context(self, entity_id: str, context: Context) -> bool:
-        """Was `context` one the engine itself issued for `entity_id`?"""
-        return context.id in self._our_contexts.get(entity_id, ())
-
-    async def _execute(self, entity_id: str, call, context: Context) -> dict:
-        result = {
-            "entity_id": entity_id,
-            "attribute": call.attribute,
-            "from": call.from_value,
-            "to": call.to_value,
-        }
+        result = {"action": action, "target": dict(target), "data": dict(data)}
 
         if self.store.dry_run:
-            result["outcome"] = "changed"
+            result["outcome"] = "would_call"
             return result
 
-        data = {"entity_id": entity_id, **call.data}
+        config = {"action": action, "data": data}
+        if target:
+            config["target"] = dict(target)
+
         for attempt in range(1, RETRY_ATTEMPTS + 1):
-            # Stamped BEFORE each attempt, deliberately: the entity's own
-            # `last_updated` is written during the awaited call, so a stamp
-            # taken afterwards is always later than that write and the
-            # staleness guard would then report the reading stale forever -
-            # forcing a real service call on every later apply, which is the
-            # re-asserting behaviour this integration exists to avoid.
-            self._last_command[entity_id] = dt_util.utcnow()
             try:
-                await self.hass.services.async_call(
-                    call.domain, call.service, data,
-                    blocking=True, context=self._record_context(entity_id, context),
+                await async_call_from_config(
+                    self.hass, config, blocking=True, validate_config=True,
+                    context=context,
                 )
-            except Exception as err:  # noqa: BLE001 - one device must not abort the rest
-                # The reason matters: this log line and the notification below
-                # are the only forensic surface for a Shabbat-night failure,
-                # when nobody can investigate live. Without it a missing
-                # service, a timeout and a cloud auth error look identical.
-                if attempt < RETRY_ATTEMPTS:
-                    _LOGGER.warning(
-                        "%s: %s.%s failed (attempt %s/%s): %s: %s",
-                        entity_id, call.domain, call.service, attempt,
-                        RETRY_ATTEMPTS, type(err).__name__, err,
+            except Exception as err:  # noqa: BLE001 - reported, never swallowed
+                # This log line is the only forensic surface for a
+                # Shabbat-night failure, when nobody can investigate live.
+                # Without it a missing service, a timeout and a cloud auth
+                # error look identical.
+                if attempt == RETRY_ATTEMPTS:
+                    _LOGGER.error(
+                        "%s failed after %s attempts: %s: %s",
+                        action, RETRY_ATTEMPTS, type(err).__name__, err,
+                        exc_info=True,
                     )
-                    await asyncio.sleep(RETRY_DELAY_SECONDS)
-                    continue
-
-                _LOGGER.error(
-                    "%s: %s.%s failed after %s attempts: %s: %s",
-                    entity_id, call.domain, call.service, RETRY_ATTEMPTS,
-                    type(err).__name__, err, exc_info=True,
+                    result["outcome"] = "failed"
+                    result["error"] = str(err)
+                    return result
+                _LOGGER.warning(
+                    "%s failed (attempt %s/%s): %s: %s",
+                    action, attempt, RETRY_ATTEMPTS, type(err).__name__, err,
                 )
-                reason = f"{type(err).__name__}: {err}" if str(err) else type(err).__name__
-                persistent_notification.async_create(
-                    self.hass,
-                    f"{entity_id}: {call.domain}.{call.service} failed after "
-                    f"{RETRY_ATTEMPTS} attempts. Reason: {reason}",
-                    title="Shabbat Scheduler",
-                    notification_id=f"shabbat_scheduler_fail_{entity_id}_{call.service}",
-                )
-                result["outcome"] = "failed"
-                result["reason"] = reason
+                await asyncio.sleep(RETRY_DELAY_SECONDS)
+            else:
+                result["outcome"] = "called"
                 return result
-
-            result["outcome"] = "changed"
-            return result
+        return result

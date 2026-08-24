@@ -2,6 +2,9 @@
 the options flow that lets them be changed without removing the
 integration."""
 
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
 from custom_components.shabbat_scheduler.const import (
     CONF_CANDLE_SENSOR,
     CONF_HAVDALAH_SENSOR,
@@ -9,7 +12,6 @@ from custom_components.shabbat_scheduler.const import (
     DEFAULT_HAVDALAH_SENSOR,
     DOMAIN,
 )
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 
 async def test_the_flow_offers_the_zmanim_sensors(hass):
@@ -58,6 +60,43 @@ async def test_a_second_instance_is_refused(hass):
 
     assert result["type"] == "abort"
     assert result["reason"] == "single_instance_allowed"
+
+
+async def test_the_engine_reads_the_configured_sensors(hass, jerusalem):
+    """The whole point, proven end to end: an entry configured with
+    non-default sensor names must actually resolve a block from THOSE
+    entities, not merely accept their names in the form. A test that only
+    checks the config entry's stored data, or only the failure path, would
+    pass identically whether `_read_zmanim` used `self._candle_sensor` or
+    the old hardcoded `DEFAULT_CANDLE_SENSOR` constant - this one would not,
+    because the default entity ids are deliberately never set here at all.
+    """
+    candle_sensor = "sensor.jc_home_upcoming_candle_lighting"
+    havdalah_sensor = "sensor.jc_home_upcoming_havdalah"
+    hass.states.async_set(candle_sensor, "2026-08-14T15:44:00+00:00")
+    hass.states.async_set(havdalah_sensor, "2026-08-15T17:01:00+00:00")
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Shabbat Scheduler",
+        data={
+            CONF_CANDLE_SENSOR: candle_sensor,
+            CONF_HAVDALAH_SENSOR: havdalah_sensor,
+        },
+    )
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    engine = hass.data[DOMAIN][entry.entry_id]["engine"]
+
+    assert engine.current_block is not None
+    assert engine.current_block.candle_lighting.astimezone(dt_util.UTC) == dt_util.parse_datetime(
+        "2026-08-14T15:44:00+00:00"
+    )
+    assert engine.current_block.havdalah.astimezone(dt_util.UTC) == dt_util.parse_datetime(
+        "2026-08-15T17:01:00+00:00"
+    )
 
 
 async def test_the_options_flow_can_change_them_later(hass):

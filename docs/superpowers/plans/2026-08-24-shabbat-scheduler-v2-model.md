@@ -321,7 +321,7 @@ def expand_action(action: str, data: dict) -> list[tuple[str, dict]]:
 
 - [ ] **Step 4: Delete `FAN_SYNONYMS` from `const.py`**
 
-Remove the whole `FAN_SYNONYMS` dict. Add `STORAGE_VERSION = 2` in place of the existing `= 1` (Task 5 relies on it).
+Remove the whole `FAN_SYNONYMS` dict. **Leave `STORAGE_VERSION` at 1** — Task 5 raises it to 2 in the same commit that adds the migration. Raising it here would mean every load between this task and Task 5 sees a version it has no migration for.
 
 - [ ] **Step 5: Run the tests**
 
@@ -954,7 +954,9 @@ class _MigratingStore(Store):
         return old_data
 ```
 
-Change `RuleStore.__init__` to `self._store = _MigratingStore(hass)`, and expose `migration_failures` as a property reading `self._store.migration_failures`. Add a `migration_error: str | None = None` field to the v2 `Rule` in `models.py` so a failed rule keeps its reason, and carry it through `rule_to_dict`/`rule_from_dict`.
+Change `RuleStore.__init__` to `self._store = _MigratingStore(hass)`, and expose `migration_failures` as a property reading `self._store.migration_failures`. **Raise `STORAGE_VERSION` to 2 in `const.py` in this same commit** — the bump and the migration that services it must land together.
+
+Add a `migration_error: str | None = None` field to the v2 `Rule` in `models.py` so a failed rule keeps its reason, and carry it through `rule_to_dict`/`rule_from_dict`. Deliberately do **not** add it to `rule_schema._FIELDS`: it is written by the migration, never by a client, so the API should keep rejecting it.
 
 - [ ] **Step 5: Add the end-to-end migration test**
 
@@ -1001,7 +1003,7 @@ git commit -m "feat: migrate v1 rules, keeping and reporting what cannot convert
 
 **Interfaces:**
 - Consumes: `expand_action` (Task 2), `Rule` (Task 1).
-- Produces: `ShabbatEngine.async_apply_rule(rule, force=False) -> list[dict]` with per-call results `{action, outcome, error?}` where `outcome` is `called` or `failed`.
+- Produces: `ShabbatEngine.async_apply_rule(rule, force=False) -> list[dict]` with per-call results `{action, target, data, outcome, error?}`. `outcome` is `called`, `failed`, or `would_call` under dry run. (Task 7 adds a fourth, `blocked`, which is a whole-rule result rather than a per-call one and carries `reason` instead of `action`.)
 
 **What changes and what does not.** Replace `_apply_custom`, `_apply_device` and `plan_calls` with one path built on `async_call_from_config` (`helpers/service.py:239`), which accepts a `context` — so the Context attribution survives. **Keep** the retry (3 × 30s), the per-device lock, the two-event split, and the staleness stamp ordering.
 
@@ -1131,7 +1133,7 @@ and add:
                     result["outcome"] = "failed"
                     result["error"] = str(err)
                     return result
-                await asyncio.sleep(RETRY_DELAY)
+                await asyncio.sleep(RETRY_DELAY_SECONDS)
             else:
                 result["outcome"] = "called"
                 return result

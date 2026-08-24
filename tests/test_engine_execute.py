@@ -87,6 +87,42 @@ async def test_a_failing_call_is_reported_not_swallowed(hass):
     assert results[0]["error"]
 
 
+async def test_a_final_failure_notifies_because_a_rule_that_does_not_fire_must_say_why(
+    hass,
+):
+    """last_run is a passive attribute nobody polls, and a log line is
+    invisible on a headless instance during Shabbat - the one scenario this
+    integration exists for. The household must be TOLD, not merely have
+    the failure recorded somewhere queryable."""
+    engine = await _engine(hass)
+    rule = Rule(
+        id="r", profile=1, day="1", time=time(11, 0),
+        name="Havdalah lights",
+        action="nonexistent.service",
+        target={"entity_id": ["light.does_not_exist"]},
+    )
+    with patch("custom_components.shabbat_scheduler.engine.asyncio.sleep"):
+        await engine.async_apply_rule(rule)
+
+    notifications = hass.data.get("persistent_notification", {})
+    assert notifications, "expected a persistent_notification on final failure"
+    message = next(iter(notifications.values()))["message"]
+    assert "Havdalah lights" in message
+    assert "nonexistent.service" in message
+
+
+async def test_a_successful_call_creates_no_notification(hass, test_booleans):
+    engine = await _engine(hass)
+    rule = Rule(
+        id="r", profile=1, day="1", time=time(11, 0),
+        action="input_boolean.turn_on",
+        target={"entity_id": ["input_boolean.salon"]},
+    )
+    await engine.async_apply_rule(rule)
+
+    assert not hass.data.get("persistent_notification")
+
+
 async def test_the_call_carries_our_context_so_changes_attribute_to_us(
     hass, test_booleans
 ):

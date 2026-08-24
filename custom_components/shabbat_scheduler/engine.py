@@ -105,7 +105,9 @@ class ShabbatEngine:
         async with self._locks[rule.id]:
             results = []
             for action, data in expand_action(rule.action, dict(rule.data)):
-                results.append(await self._call(action, rule.target, data, context))
+                results.append(
+                    await self._call(rule, action, rule.target, data, context)
+                )
 
         self.last_run = results
         self.last_run_at = dt_util.utcnow()
@@ -461,7 +463,7 @@ class ShabbatEngine:
         return context.id in self._our_contexts
 
     async def _call(
-        self, action: str, target: dict, data: dict, context: Context
+        self, rule: Rule, action: str, target: dict, data: dict, context: Context
     ) -> dict:
         """One service call, retried, reported either way.
 
@@ -487,15 +489,33 @@ class ShabbatEngine:
                     context=context,
                 )
             except Exception as err:  # noqa: BLE001 - reported, never swallowed
-                # This log line is the only forensic surface for a
-                # Shabbat-night failure, when nobody can investigate live.
-                # Without it a missing service, a timeout and a cloud auth
-                # error look identical.
+                # This log line, and the notification below, are the only
+                # forensic surface for a Shabbat-night failure, when nobody
+                # can investigate live. Without them a missing service, a
+                # timeout and a cloud auth error look identical - and on a
+                # headless instance during Shabbat, a log line is invisible.
+                # A rule that does not fire must say why.
                 if attempt == RETRY_ATTEMPTS:
+                    reason = (
+                        f"{type(err).__name__}: {err}" if str(err)
+                        else type(err).__name__
+                    )
                     _LOGGER.error(
-                        "%s failed after %s attempts: %s: %s",
-                        action, RETRY_ATTEMPTS, type(err).__name__, err,
-                        exc_info=True,
+                        "%s failed after %s attempts: %s",
+                        action, RETRY_ATTEMPTS, reason, exc_info=True,
+                    )
+                    # Keyed on the action, not an entity id: a v2 target may
+                    # be an area or a label, or the call may carry no
+                    # entity at all (e.g. notify.*), so there is no single
+                    # entity to key the notification on the way v1 did.
+                    who = rule.name or rule.id
+                    persistent_notification.async_create(
+                        self.hass,
+                        f"Rule '{who}': {action} (target: {target or 'none'}) "
+                        f"failed after {RETRY_ATTEMPTS} attempts. "
+                        f"Reason: {reason}",
+                        title="Shabbat Scheduler",
+                        notification_id=f"shabbat_scheduler_fail_{action}",
                     )
                     result["outcome"] = "failed"
                     result["error"] = str(err)

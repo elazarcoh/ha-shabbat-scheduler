@@ -682,24 +682,11 @@ async def test_update_succeeds_but_warns_on_a_conflict(hass, hass_ws_client):
 
 
 async def test_create_over_the_websocket_arms_a_timer(
-    hass, hass_ws_client, request
+    hass, hass_ws_client, freezer
 ):
     # Client first: the access token is minted against the real clock and
     # would look not-yet-issued once the freezer moves into the past.
-    #
-    # `freezer` is fetched lazily (not as a plain parameter) for the same
-    # reason: pytest-freezer freezes `time.monotonic()` - the asyncio event
-    # loop's own clock - the moment the fixture is SET UP, before this body
-    # even starts. `hass_ws_client(hass)` drives the http -> auth ->
-    # onboarding -> lovelace setup chain that `shabbat_scheduler` itself
-    # depends on (see manifest.json); running that chain under an
-    # already-frozen event-loop clock races its internal scheduling exactly
-    # the way the `timeout` comment above warns about, and was observed to
-    # fail deterministically on GitHub Actions' runners (never locally).
-    # Requesting `freezer` here, after the client exists, keeps that chain
-    # on the real clock and only freezes time once it no longer matters.
     client = await hass_ws_client(hass)
-    freezer = request.getfixturevalue("freezer")
     freezer.move_to("2026-08-15T05:00:00+00:00")
     entry = await _setup(hass, enabled=True)
     engine = hass.data[DOMAIN][entry.entry_id]["engine"]
@@ -717,12 +704,9 @@ async def test_create_over_the_websocket_arms_a_timer(
 
 
 async def test_delete_over_the_websocket_disarms_its_timer(
-    hass, hass_ws_client, request
+    hass, hass_ws_client, freezer
 ):
-    # See test_create_over_the_websocket_arms_a_timer for why `freezer` is
-    # fetched lazily here rather than taken as a plain parameter.
     client = await hass_ws_client(hass)
-    freezer = request.getfixturevalue("freezer")
     freezer.move_to("2026-08-15T05:00:00+00:00")
     entry = await _setup(
         hass,
@@ -743,12 +727,9 @@ async def test_delete_over_the_websocket_disarms_its_timer(
 
 
 async def test_update_over_the_websocket_moves_the_armed_time(
-    hass, hass_ws_client, request
+    hass, hass_ws_client, freezer
 ):
-    # See test_create_over_the_websocket_arms_a_timer for why `freezer` is
-    # fetched lazily here rather than taken as a plain parameter.
     client = await hass_ws_client(hass)
-    freezer = request.getfixturevalue("freezer")
     freezer.move_to("2026-08-15T05:00:00+00:00")
     entry = await _setup(
         hass,

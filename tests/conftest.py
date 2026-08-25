@@ -4,11 +4,9 @@ pytest-homeassistant-custom-component ships the `hass` fixture; custom
 integrations are only loaded when `enable_custom_integrations` is requested.
 """
 
-import traceback
 from datetime import time
 
 import pytest
-from aiohttp.web_urldispatcher import UrlDispatcher
 from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -17,25 +15,6 @@ from custom_components.shabbat_scheduler.const import DOMAIN
 from custom_components.shabbat_scheduler.engine import ShabbatEngine
 from custom_components.shabbat_scheduler.models import Rule
 from custom_components.shabbat_scheduler.store import RuleStore
-
-# TEMPORARY DIAGNOSTIC - investigating CI-only "frozen router" failures in
-# test_websocket.py. Logs every REAL (non-overridden) UrlDispatcher.freeze()
-# call with a stack trace, to find what freezes the router before the
-# auth-view registration that fails. Remove before merging.
-_real_freeze = UrlDispatcher.freeze
-
-
-def _debug_freeze(self):
-    print(
-        f"\n### REAL UrlDispatcher.freeze() called id={id(self)} "
-        f"already_frozen={self._frozen}",
-        flush=True,
-    )
-    traceback.print_stack()
-    return _real_freeze(self)
-
-
-UrlDispatcher.freeze = _debug_freeze
 
 
 @pytest.fixture

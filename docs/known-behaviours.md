@@ -184,14 +184,23 @@ manage to salvage into `target`/`data` along the way.
 The user is told through a repair issue (Settings → Repairs), not a log
 line during the one week nobody reads logs: `ISSUE_UNMIGRATED_RULES` names
 every affected rule id so they do not have to hunt through the whole rule
-set to find them. What to do with one: open it in the card (it renders the
-migration error inline) or export the rule set to YAML and look at
-`migration_source` directly, then re-author it by hand as a v2
+set to find them. What to do with one: open it in the card, which renders
+the migration error inline, then re-author it by hand as a v2
 `action`/`target`/`data` rule and re-enable it — nothing does this
 automatically, because a migration confident enough to invent a `target`
 on your behalf is exactly the kind of silent guess this project exists to
-avoid. Preserving `migration_source` whole is what makes that
+avoid. Preserving `migration_source` whole in storage is what makes that
 reconstruction possible instead of a rewrite from memory.
+
+**Do not reach for the YAML export to inspect or recover one.**
+`export_yaml` emits neither `migration_source` nor `migration_error`, and
+`import_yaml` strips both on the way back in. So a YAML round trip cannot
+show you the original v1 payload, and it permanently destroys the stashed
+copy — while also clearing the very flag this repair issue keys on, so the
+warning disappears too. The rule is left a disabled stub pointing at a
+service that does not exist, with nothing anywhere saying why. Read
+`migration_source` out of `.storage` directly if you need it, until the
+export learns to carry these two fields.
 
 ## The zmanim sensors roll forward at havdalah
 

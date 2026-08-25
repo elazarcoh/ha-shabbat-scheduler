@@ -162,14 +162,19 @@ def _settings(value) -> dict | None:
 
 
 def migrate_v1_rule(
-    raw: dict, default_settings: dict | None = None
+    raw: dict, defaults: dict | None = None
 ) -> tuple[dict | None, str | None]:
     """One v1 rule as v2, or None plus the reason it could not be.
 
-    `default_settings` is the v1 store's GLOBAL `defaults.settings`. It is
-    inlined here, per rule, rather than migrated into v2's `defaults.data`
-    - see `migrate_v1_defaults` for why.
+    `defaults` is the v1 store's global defaults as `v1_defaults` normalises
+    them - `{"devices": [...], "settings": {...}}`. Both are resolved against
+    this rule HERE, per rule, exactly as v1's own `merge_defaults` did, and
+    for the same reason in both cases: v2's defaults are domain-blind and
+    cannot express what v1's meant. See `migrate_v1_defaults`.
     """
+    defaults = defaults or {}
+    default_devices = defaults.get("devices") or []
+    default_settings = defaults.get("settings") or {}
     # id, time, profile and day are required fields on the v2 Rule
     # dataclass - `rule_from_dict` does `data["id"]`, `data["profile"]`,
     # `data["day"]` and `data["time"]` unconditionally. A "successfully"
@@ -241,13 +246,46 @@ def migrate_v1_rule(
         return None, (
             f"devices must be a list of entity ids: {raw.get('devices')!r}"
         )
+
+    # v1's `merge_defaults` was, verbatim:
+    #     devices = rule.devices or tuple(defaults.get("devices", ()))
+    # so a rule with no devices of its own INHERITED the global ones, and
+    # `defaults.devices` existed for precisely that - the shape the v1
+    # README documented as the common case. Treating such a rule as
+    # "nothing to target" disabled the ENTIRE SCHEDULE of anyone who wrote
+    # their config the documented way, on upgrade, with the whole thing
+    # discovered on a Shabbat when nothing can be fixed. `or`, per rule,
+    # not merged: a rule's own devices win outright.
+    inherited = not devices
+    if inherited:
+        devices = list(default_devices)
     if not devices:
-        return None, "a rule with no devices has nothing to target"
+        return None, (
+            "a rule with no devices, and no shared default devices to "
+            "inherit, has nothing to target"
+        )
 
     domain = devices[0].split(".", 1)[0]
     if any(d.split(".", 1)[0] != domain for d in devices):
+        if inherited:
+            # This one hits EVERY inheriting rule at once, so the reason
+            # must not read as though this rule chose those devices - the
+            # user needs to be pointed at the defaults, not at the rule.
+            return None, (
+                "the shared default devices span several domains "
+                f"({', '.join(devices)}), so a rule inheriting them cannot "
+                "become one action"
+            )
         return None, "a rule targeting several domains cannot become one action"
 
+    # Written into the rule's own target rather than left to v2's defaults
+    # inheritance, even though `merge_defaults` would supply it. The action
+    # below is derived from THESE devices and is then frozen into the rule,
+    # so a floating target could later point at a domain the frozen action
+    # does not belong to; and the card renders `target` verbatim, so an
+    # empty one shows the user nothing about what the rule will act on. A
+    # migrated rule should describe itself. `defaults.devices` still becomes
+    # `defaults.target` for rules authored later.
     out["target"] = {"entity_id": devices}
 
     if action == "off":
@@ -278,28 +316,48 @@ def migrate_v1_rule(
     return out, None
 
 
-def v1_default_settings(raw) -> dict:
-    """The v1 store's global `settings`, for inlining onto climate rules.
+def v1_defaults(raw) -> dict:
+    """The v1 global defaults, normalised to `{"devices": [], "settings": {}}`.
 
-    Tolerant by contract: a `defaults` that is not a mapping, or a
-    `settings` that is not one, yields `{}` rather than raising. See
-    `migrate_v1_defaults` and the module docstring.
+    The single place either field is parsed, so a malformed one is reported
+    once rather than once per rule. Tolerant by contract - see the module
+    docstring: nothing here may raise, whatever `.storage` holds.
     """
+    devices: list[str] = []
+    settings: dict = {}
     if not isinstance(raw, dict):
-        return {}
-    settings = _settings(raw.get("settings"))
-    if settings is None:
+        return {"devices": devices, "settings": settings}
+
+    parsed_devices = _entity_ids(raw.get("devices"))
+    if parsed_devices is None:
+        # Consequential now that rules inherit these: every rule with no
+        # devices of its own becomes unmigratable, kept-disabled-reported,
+        # and the reason names the defaults. So this warning is a second
+        # trace of something the user will already have been told about.
+        _LOGGER.warning(
+            "The v1 defaults' devices are not a list of entity ids (%r); the "
+            "shared default target has been dropped. Any rule that had no "
+            "devices of its own is kept, disabled and reported.",
+            raw.get("devices"),
+        )
+    else:
+        devices = parsed_devices
+
+    parsed_settings = _settings(raw.get("settings"))
+    if parsed_settings is None:
         _LOGGER.warning(
             "The v1 defaults' settings are not a mapping (%r); they have been "
             "dropped. Rules that carried their own settings are unaffected.",
             raw.get("settings"),
         )
-        return {}
-    return settings
+    else:
+        settings = parsed_settings
+
+    return {"devices": devices, "settings": settings}
 
 
-def migrate_v1_defaults(raw) -> dict:
-    """The v1 global defaults as v2 defaults: the TARGET only.
+def migrate_v1_defaults(defaults: dict) -> dict:
+    """The v2 defaults, from the `v1_defaults`-normalised v1 ones: TARGET only.
 
     v1's global `settings` are deliberately NOT migrated into v2's
     `defaults.data`. v1 read `settings` for the climate domain and nowhere
@@ -324,21 +382,21 @@ def migrate_v1_defaults(raw) -> dict:
     The cost, stated plainly: the values are materialised per rule, so
     editing the shared defaults afterwards no longer changes them. That is
     a v1 concept v2 does not have, and copying it is honest where
-    reinterpreting it is not.
+    reinterpreting it is not. The same now goes for `devices`, which
+    `migrate_v1_rule` resolves per rule the way v1's `merge_defaults` did -
+    and it must, because the migrated ACTION is derived from those devices
+    and frozen into the rule.
+
+    `devices` still becomes a shared `defaults.target` as well. Not because
+    any migrated rule needs it - they all carry their own target now - but
+    because it is what the user set, the card's defaults dialog shows it,
+    and a rule authored later inherits it exactly as a v1 rule would have.
+    A shared `target` cannot break a rule of the wrong domain the way a
+    shared `data` can; it is only ever consulted when a rule has none.
     """
     out: dict = {}
-    if not isinstance(raw, dict):
-        return out
-    devices = _entity_ids(raw.get("devices"))
-    if devices is None:
-        _LOGGER.warning(
-            "The v1 defaults' devices are not a list of entity ids (%r); the "
-            "shared default target has been dropped. Every migrated rule "
-            "carries its own target, so nothing that fires is affected.",
-            raw.get("devices"),
-        )
-    elif devices:
-        out["target"] = {"entity_id": devices}
+    if defaults.get("devices"):
+        out["target"] = {"entity_id": list(defaults["devices"])}
     return out
 
 
@@ -363,15 +421,15 @@ def migrate_v1(data) -> tuple[dict, list[str]]:
         # not a rule - so it drops to empty and says so. Refusing to start
         # is the defect being fixed here, and inventing a phantom rule to
         # carry the report would put something in the store the user never
-        # wrote. Every rule a v1 store can migrate carries its own target
-        # already (a v1 rule with no devices cannot be migrated at all), so
-        # nothing that fires is lost.
+        # wrote. A rule that had its own devices and settings is unaffected;
+        # a rule that needed to inherit them is kept, disabled and reported
+        # by name, which is the channel the user actually sees.
         _LOGGER.warning(
             "The v1 defaults are not a mapping (%r); the shared defaults have "
-            "been dropped. Every migrated rule carries its own target, so "
-            "nothing that fires is affected.", raw_defaults
+            "been dropped. Any rule that had no devices of its own is kept, "
+            "disabled and reported.", raw_defaults
         )
-    default_settings = v1_default_settings(raw_defaults)
+    defaults = v1_defaults(raw_defaults)
 
     raw_rules = data.get("rules")
     if raw_rules is not None and not isinstance(raw_rules, (list, tuple)):
@@ -393,7 +451,7 @@ def migrate_v1(data) -> tuple[dict, list[str]]:
             converted, reason = None, f"rule is not a mapping, got {item!r}"
         else:
             try:
-                converted, reason = migrate_v1_rule(raw, default_settings)
+                converted, reason = migrate_v1_rule(raw, defaults)
             except Exception as err:  # noqa: BLE001 - see below
                 # Belt and braces, and the reason this function is total by
                 # construction rather than by enumeration. Eight instances
@@ -456,5 +514,5 @@ def migrate_v1(data) -> tuple[dict, list[str]]:
 
     out = dict(data)
     out["rules"] = rules
-    out["defaults"] = migrate_v1_defaults(raw_defaults)
+    out["defaults"] = migrate_v1_defaults(defaults)
     return out, failed

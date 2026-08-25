@@ -246,7 +246,32 @@ The cost is stated where the code is (`migration.migrate_v1_defaults`): the
 values are **materialised per rule**, so editing the shared defaults
 afterwards no longer changes them. That is unavoidable — "climate only" is a
 v1 concept v2 cannot express — and copying it is honest where reinterpreting
-it is not. Only `defaults.devices` survives as a shared `defaults.target`.
+it is not.
+
+`defaults.devices` is resolved per rule for the same reason, and it matters
+even more. v1's `merge_defaults` was, verbatim:
+
+```python
+devices = rule.devices or tuple(defaults.get("devices", ()))
+```
+
+So **a v1 rule with no `devices` of its own inherited the global ones** —
+which is what `defaults.devices` was for, and the shape the v1 README
+documented as the common case. The migration therefore resolves that
+fallback per rule, `or` not merge (a rule's own devices win outright), and
+writes the result into the rule's **own** `target`. It has to be written
+rather than left to v2's `defaults.target` inheritance, because the migrated
+*action* (`switch.turn_on` vs `climate.set_temperature`) is derived from
+those same devices and is frozen into the rule: a target left floating could
+later be repointed at a domain the frozen action does not belong to. A
+migrated rule describes itself. `defaults.devices` still becomes a shared
+`defaults.target` as well, for rules authored later.
+
+If the shared devices span **several domains**, an inheriting rule cannot
+become one action, and it is kept-disabled-reported like any other — but the
+reason names the *defaults*, because in that case every inheriting rule
+fails at once and the user needs pointing at the one thing that is wrong,
+not at ten rules that are not.
 
 ## `migrate_v1` never raises, by construction
 
@@ -274,11 +299,17 @@ Two rules follow from it, and both are load-bearing:
   the user every rule they have, that is the right way round.
 
 A malformed **`defaults`** is the one case with nothing to disable — it is
-not a rule — so it drops to empty and logs a warning. Nothing that fires is
-lost by that: a v1 rule with no `devices` cannot be migrated at all, so every
-successfully migrated rule already carries its own target. Inventing a
-phantom rule to carry the report would put something in the store the user
-never wrote, which is a worse violation than a log line.
+not a rule — so it drops to empty and logs a warning. Inventing a phantom
+rule to carry the report would put something in the store the user never
+wrote, which is a worse violation than a log line.
+
+That is not free, and the section above says why: a rule with no `devices` of
+its own inherits the shared ones, so a `defaults` that cannot be read costs
+every such rule its target. Those rules are **not** silent about it — each
+one is kept, disabled, and named in the repair issue, with a reason pointing
+at the defaults. The log line is the only trace of the *defaults* being
+unreadable; the consequence for each affected rule is reported through the
+channel the user actually looks at.
 
 ## The zmanim sensors roll forward at havdalah
 

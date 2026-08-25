@@ -97,9 +97,22 @@ def test_defaults_migrate_too():
     which is the defect, not the behaviour: v2's defaults are domain-blind,
     so `block.merge_defaults` then handed `{temperature: 26}` to every
     `switch.turn_on` in the store and Home Assistant refused the call at
-    fire time. The devices half is unchanged; the settings half now lands
-    on the climate rules that would have read it in v1, pinned by the I3
-    tests below."""
+    fire time. The settings half now lands on the climate rules that would
+    have read it in v1, pinned by the I3 tests below.
+
+    RE-CHECKED after I5, when both defaults fields started being resolved
+    per rule. Both halves of this assertion are still what we WANT, not what
+    the code happens to do:
+
+    - `target` is still emitted, even though no migrated rule needs it any
+      more (they all carry their own now). It is what the user set, the
+      card's defaults dialog reads it, and a rule authored later inherits it
+      exactly as a v1 rule would have. Unlike a shared `data`, a shared
+      `target` cannot break a rule of the wrong domain: it is only ever
+      consulted for a rule that has none.
+    - no `data` key, for the I3 reason above. Asserted by equality, not by
+      membership, so a `data` creeping back in fails here.
+    """
     data = {"rules": [], "defaults": {"devices": ["climate.a"], "settings": {"temperature": 26}}}
     out, _ = migrate_v1(data)
     assert out["defaults"] == {"target": {"entity_id": ["climate.a"]}}
@@ -874,3 +887,141 @@ def test_a_mixed_v1_rule_set_migrates_into_calls_home_assistant_accepts():
             payload = {**data, **rule.target}
             # Raises vol.Invalid if HA would refuse the call at fire time.
             schemas[action](payload)
+
+
+# --- I5: the most consequential case in this migration -------------------
+#     v1's own merge_defaults (5192d4c:block.py:61) was
+#         devices = rule.devices or tuple(defaults.get("devices", ()))
+#     so a v1 rule with no `devices` of its own INHERITED the global ones -
+#     and `defaults.devices` existed for exactly that, the shape the v1
+#     README documented as the common case. Migrating such a rule as
+#     "a rule with no devices has nothing to target" disables THE WHOLE
+#     SCHEDULE of anyone who wrote their config the documented way. Not one
+#     rule: every rule. Reachable without a hand edit, and far more likely
+#     than any malformed input.
+
+
+V1_DEFAULTS_SWITCH = {"devices": ["switch.boiler"]}
+V1_NO_DEVICES_ON = {
+    "id": "n1", "profile": 1, "day": "erev", "time": "18:00:00", "action": "on",
+}
+V1_NO_DEVICES_OFF = {
+    "id": "n2", "profile": 1, "day": "1", "time": "23:00:00", "action": "off",
+}
+
+
+def test_a_v1_store_that_kept_its_devices_in_the_defaults_migrates_whole():
+    """Every rule ENABLED and schedulable, not one disabled stub."""
+    out, failed = migrate_v1(
+        {
+            "rules": [V1_NO_DEVICES_ON, V1_NO_DEVICES_OFF],
+            "defaults": V1_DEFAULTS_SWITCH,
+        }
+    )
+
+    assert failed == [], "the whole schedule was disabled, silently"
+    by_id = {rule["id"]: rule for rule in out["rules"]}
+    assert by_id["n1"]["enabled"] is True
+    assert by_id["n2"]["enabled"] is True
+    assert by_id["n1"]["action"] == "switch.turn_on"
+    assert by_id["n2"]["action"] == "switch.turn_off"
+    # Explicit, not left to v2's defaults inheritance - see the report.
+    assert by_id["n1"]["target"] == {"entity_id": ["switch.boiler"]}
+    assert by_id["n2"]["target"] == {"entity_id": ["switch.boiler"]}
+    # ...and they actually resolve, which is the thing that failed.
+    rules = [rule_from_dict(item) for item in out["rules"]]
+    resolved = resolve_rules(rules, _one_day_block(), TZ)
+    assert [item.rule.id for item in resolved] == ["n1", "n2"]
+
+
+def test_a_rules_own_devices_still_win_over_the_shared_ones():
+    """v1's `rule.devices or defaults.devices`, per rule, not merged."""
+    out, failed = migrate_v1(
+        {"rules": [V1_SIMPLE_ON], "defaults": {"devices": ["climate.salon"]}}
+    )
+    assert failed == []
+    assert out["rules"][0]["target"] == {"entity_id": ["switch.boiler"]}
+    assert out["rules"][0]["action"] == "switch.turn_on"
+
+
+def test_an_inherited_climate_default_carries_the_global_settings_too():
+    """The I3 rule, applied to the inherited case: v1 read `settings` for a
+    climate entity whether the entity came from the rule or the defaults."""
+    out, failed = migrate_v1(
+        {"rules": [V1_NO_DEVICES_ON], "defaults": V1_DEFAULTS_CLIMATE}
+    )
+    assert failed == []
+    assert out["rules"][0]["action"] == "climate.set_temperature"
+    assert out["rules"][0]["target"] == {"entity_id": ["climate.salon"]}
+    assert out["rules"][0]["data"] == {"hvac_mode": "cool", "temperature": 24}
+
+
+def test_an_inherited_default_produces_calls_home_assistant_accepts():
+    import voluptuous as vol
+    from homeassistant.components.climate import SET_TEMPERATURE_SCHEMA
+    from homeassistant.helpers import config_validation as cv
+
+    from custom_components.shabbat_scheduler.block import merge_defaults
+    from custom_components.shabbat_scheduler.device_ops import expand_action
+
+    entity_service = cv.make_entity_service_schema(None)
+    schemas = {
+        "switch.turn_on": entity_service,
+        "switch.turn_off": entity_service,
+        "climate.turn_off": entity_service,
+        "climate.set_temperature": SET_TEMPERATURE_SCHEMA,
+        "climate.set_hvac_mode": cv.make_entity_service_schema(
+            {vol.Required("hvac_mode"): cv.string}
+        ),
+    }
+    for defaults in (V1_DEFAULTS_SWITCH, V1_DEFAULTS_CLIMATE):
+        out, failed = migrate_v1(
+            {"rules": [V1_NO_DEVICES_ON, V1_NO_DEVICES_OFF], "defaults": defaults}
+        )
+        assert failed == [], defaults
+        for stored in out["rules"]:
+            rule = merge_defaults(out["defaults"], rule_from_dict(stored))
+            for action, data in expand_action(rule.action, dict(rule.data)):
+                # Raises vol.Invalid if HA would refuse it at fire time.
+                schemas[action]({**data, **rule.target})
+
+
+def test_a_rule_with_neither_its_own_devices_nor_shared_ones_is_still_kept():
+    """The fallback is a fallback, not a licence to invent a target."""
+    for defaults in ({}, {"devices": []}, {"settings": {"temperature": 24}}):
+        out, failed = migrate_v1({"rules": [V1_NO_DEVICES_ON], "defaults": defaults})
+        assert failed == ["n1"], defaults
+        kept = out["rules"][0]
+        assert kept["enabled"] is False
+        assert kept["action"] == "shabbat_scheduler.unmigrated"
+        assert kept["migration_error"] and "device" in kept["migration_error"]
+        assert kept["migration_source"] == V1_NO_DEVICES_ON
+
+
+def test_shared_default_devices_spanning_several_domains_say_which_they_are():
+    """The same "cannot become one action" case, one level up - and it hits
+    EVERY inheriting rule at once, so the reason must not read as though
+    this rule chose those devices."""
+    out, failed = migrate_v1(
+        {
+            "rules": [V1_NO_DEVICES_ON],
+            "defaults": {"devices": ["climate.salon", "switch.boiler"]},
+        }
+    )
+    assert failed == ["n1"]
+    reason = out["rules"][0]["migration_error"]
+    assert "default" in reason.lower() and "domain" in reason.lower(), reason
+    # Salvaged, so "kept" still means repairable.
+    assert out["rules"][0]["migration_source"] == V1_NO_DEVICES_ON
+
+
+def test_a_malformed_shared_devices_list_does_not_disable_a_rule_that_has_its_own():
+    """A corrupt `defaults.devices` is dropped with a warning (I1); a rule
+    carrying its own devices must not care."""
+    out, failed = migrate_v1(
+        {"rules": [V1_SIMPLE_ON, V1_NO_DEVICES_ON], "defaults": {"devices": 5}}
+    )
+    assert failed == ["n1"]  # only the one that needed the fallback
+    survivor = next(rule for rule in out["rules"] if rule["id"] == "b")
+    assert survivor["enabled"] is True
+    assert survivor["action"] == "switch.turn_on"

@@ -279,19 +279,26 @@ describe('shabbat-rule-dialog', () => {
   });
 
   it('seeds every editor from the rule being edited', async () => {
-    const el = await render();
+    // Replay is deliberately seeded NON-default here ({enabled: false} is
+    // both the fixture's usual value and the replay editor's own default,
+    // so asserting that would pass even with the `.value` binding deleted
+    // outright).
+    const el = await render({
+      rule: { ...existing, replay: { enabled: true, within: '02:00:00' } },
+    });
     const found = editors(el);
     expect(found.service.action).toBe('climate.set_temperature');
     expect(found.service.data).toEqual({ temperature: 26 });
     expect(found.target.value).toEqual({ entity_id: ['climate.salon'] });
-    expect(found.replay.value).toEqual({ enabled: false });
+    expect(found.replay.value).toEqual({ enabled: true, within: '02:00:00' });
   });
 
-  it('passes hass to the editors that need it', async () => {
+  it('passes hass and language to the editors that need them', async () => {
     const el = await render();
     const found = editors(el);
     expect(found.service.hass).toBe(el.hass);
     expect(found.target.hass).toBe(el.hass);
+    expect(found.condition.language).toBe('en');
   });
 
   it('gives the target editor the shared defaults to report inheritance', async () => {
@@ -352,6 +359,29 @@ describe('shabbat-rule-dialog', () => {
     expect(saved[0].replay).toEqual({ enabled: true, within: '00:30:00' });
   });
 
+  it('replaces replay wholesale rather than merging, so turning it off drops `within`', async () => {
+    // Starts ENABLED with a `within` - the load-bearing direction. A
+    // fixture that starts at `{enabled: false}` (the replay editor's own
+    // default) can't catch a deep merge here: merging `{enabled: false}`
+    // into an already-`{enabled: false}` form looks identical to
+    // replacing it. `toStrictEqual` (not `toEqual`) so a merge that left
+    // a stale `within: '02:00:00'` key present - which `toEqual` treats
+    // as equal to `within: undefined` - actually fails this assertion.
+    const el = await render({
+      rule: { ...existing, replay: { enabled: true, within: '02:00:00' } },
+    });
+    const saved: any[] = [];
+    el.addEventListener('dialog-save', (e: Event) => {
+      saved.push((e as CustomEvent).detail.form);
+    });
+    editors(el).replay.dispatchEvent(new CustomEvent('replay-changed', {
+      detail: { value: { enabled: false } },
+    }));
+    await el.updateComplete;
+    (el.shadowRoot!.querySelector('button.save') as HTMLElement).click();
+    expect(saved[0].replay).toStrictEqual({ enabled: false });
+  });
+
   it('refuses to save while a condition is unparseable', async () => {
     // Seeded with one condition already present: `area` below is captured
     // from that pre-existing row, and non-keyed list rendering reuses the
@@ -377,9 +407,59 @@ describe('shabbat-rule-dialog', () => {
     await condition.updateComplete;
     await el.updateComplete;
     (el.shadowRoot!.querySelector('button.save') as HTMLElement).click();
+    await el.updateComplete;
     expect(saved).toEqual([]);
-    expect(el.shadowRoot!.querySelector('.error')).not.toBeNull();
+    // The specific blocked-save message, not just any element with
+    // `.error` - the generic error block also matches `.error`.
+    expect(el.shadowRoot!.querySelector('.error.condition-blocked')).not.toBeNull();
     expect(area).not.toBeNull();
+  });
+
+  it('keeps the blocked-save banner up while a second condition row is still broken', async () => {
+    // Two broken rows; fixing one must not clear the banner (and the
+    // save refusal it explains) while the other is still unparseable -
+    // `condition-changed` must ask the editor's CURRENT `hasError`, not
+    // hard-code `false`.
+    const el = await render({
+      rule: {
+        ...existing,
+        condition: [
+          { condition: 'state', entity_id: 'binary_sensor.a', state: 'on' },
+          { condition: 'state', entity_id: 'binary_sensor.b', state: 'on' },
+        ],
+      },
+    });
+    const saved: any[] = [];
+    el.addEventListener('dialog-save', () => { saved.push(true); });
+    const condition = editors(el).condition as any;
+    const boxes = () =>
+      condition.shadowRoot.querySelectorAll('textarea') as NodeListOf<HTMLTextAreaElement>;
+
+    boxes()[0].value = 'condition: [state';
+    boxes()[0].dispatchEvent(new Event('change'));
+    await condition.updateComplete;
+    boxes()[1].value = 'condition: [state';
+    boxes()[1].dispatchEvent(new Event('change'));
+    await condition.updateComplete;
+    await el.updateComplete;
+
+    // Both rows broken: attempting to save raises the banner.
+    (el.shadowRoot!.querySelector('button.save') as HTMLElement).click();
+    await el.updateComplete;
+    expect(saved).toEqual([]);
+    expect(el.shadowRoot!.querySelector('.error.condition-blocked')).not.toBeNull();
+
+    // Fix only the first row. The second is still broken - the banner
+    // (and the refusal it explains) must not vanish.
+    boxes()[0].value = 'condition: state';
+    boxes()[0].dispatchEvent(new Event('change'));
+    await condition.updateComplete;
+    await el.updateComplete;
+
+    expect(el.shadowRoot!.querySelector('.error.condition-blocked')).not.toBeNull();
+    (el.shadowRoot!.querySelector('button.save') as HTMLElement).click();
+    await el.updateComplete;
+    expect(saved).toEqual([]);
   });
 
   it('does not re-seed the form when hass is reassigned', async () => {

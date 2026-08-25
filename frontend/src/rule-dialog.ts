@@ -190,12 +190,6 @@ export class ShabbatRuleDialog extends LitElement {
     ) as (HTMLElement & { hasError?: boolean }) | null;
     if (editor?.hasError) {
       this._conditionError = true;
-      // Lit batches this into a microtask by default, which a synchronous
-      // caller (a plain DOM `click()`) never gets to see before it moves
-      // on. `performUpdate` is the documented escape hatch for forcing the
-      // pending render through immediately, so the blocked-save message is
-      // visible the instant this handler returns, not on the next tick.
-      this.performUpdate();
       return;
     }
     this._conditionError = false;
@@ -273,7 +267,13 @@ export class ShabbatRuleDialog extends LitElement {
               .disabled=${!this.canWrite}
               .language=${this.language}
               @condition-changed=${(event: CustomEvent) => {
-                this._conditionError = false;
+                // Read the editor's OWN current `hasError`, not a
+                // hard-coded `false`: with two broken rows, fixing one
+                // still leaves the other unparseable, and the banner (and
+                // the save refusal it explains) must not vanish while a
+                // save would still be blocked.
+                const editor = event.target as HTMLElement & { hasError?: boolean };
+                this._conditionError = editor.hasError === true;
                 this._patch({ condition: event.detail.value });
               }}
             ></shabbat-condition-editor>

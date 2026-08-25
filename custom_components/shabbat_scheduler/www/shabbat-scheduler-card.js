@@ -94,7 +94,6 @@ const STRINGS = {
         edit_rule: 'Edit rule',
         add_rule: 'Add rule',
         time: 'Time',
-        action: 'Action',
         name: 'Name',
         enabled: 'Enabled',
         advanced: 'Advanced',
@@ -145,7 +144,6 @@ const STRINGS = {
         edit_rule: 'עריכת כלל',
         add_rule: 'הוספת כלל',
         time: 'שעה',
-        action: 'פעולה',
         name: 'שם',
         enabled: 'מופעל',
         advanced: 'מתקדם',
@@ -5175,12 +5173,6 @@ let ShabbatRuleDialog = class ShabbatRuleDialog extends i$1 {
         const editor = this.shadowRoot?.querySelector('shabbat-condition-editor');
         if (editor?.hasError) {
             this._conditionError = true;
-            // Lit batches this into a microtask by default, which a synchronous
-            // caller (a plain DOM `click()`) never gets to see before it moves
-            // on. `performUpdate` is the documented escape hatch for forcing the
-            // pending render through immediately, so the blocked-save message is
-            // visible the instant this handler returns, not on the next tick.
-            this.performUpdate();
             return;
         }
         this._conditionError = false;
@@ -5254,7 +5246,13 @@ let ShabbatRuleDialog = class ShabbatRuleDialog extends i$1 {
               .disabled=${!this.canWrite}
               .language=${this.language}
               @condition-changed=${(event) => {
-            this._conditionError = false;
+            // Read the editor's OWN current `hasError`, not a
+            // hard-coded `false`: with two broken rows, fixing one
+            // still leaves the other unparseable, and the banner (and
+            // the save refusal it explains) must not vanish while a
+            // save would still be blocked.
+            const editor = event.target;
+            this._conditionError = editor.hasError === true;
             this._patch({ condition: event.detail.value });
         }}
             ></shabbat-condition-editor>

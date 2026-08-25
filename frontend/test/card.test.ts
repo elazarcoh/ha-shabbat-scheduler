@@ -942,13 +942,13 @@ describe('authoring', () => {
 
   // ---- defaults: what every rule inherits ----
 
-  // The defaults dialog is READ-ONLY until Plan 2 builds a target/data
-  // editor - see defaults-dialog.ts. v1's form wrote `{devices, settings}`,
-  // which `validate_defaults` now rejects outright, so its save could only
-  // ever have failed. What still has to work is that the gear opens it and
-  // that it shows the real defaults; what must NOT happen is the card
-  // sending a defaults/update the server would refuse.
-  it('opens the defaults dialog from the gear, showing the real defaults', async () => {
+  // v1's editor wrote `{devices, settings}`, which `validate_defaults` now
+  // rejects outright, so its save could only ever have failed - the button
+  // was removed rather than left broken. This dialog composes the same
+  // target/service editors the rule dialog uses, so what has to work here
+  // is that the gear opens it, it seeds the real defaults into those
+  // editors, and a save round-trips exactly `{target, data}`.
+  it('opens the defaults dialog from the gear, seeding the real defaults', async () => {
     const { hass, send } = fakeHass();
     const el = await mount(hass);
     send(state({
@@ -968,11 +968,15 @@ describe('authoring', () => {
     const dialog = el.shadowRoot!.querySelector('shabbat-defaults-dialog') as Card;
     expect(dialog).not.toBeNull();
     await dialog.updateComplete;
-    expect(dialog.shadowRoot!.textContent).toContain('climate.salon');
-    expect(dialog.shadowRoot!.textContent).toContain('26');
+    expect(
+      (dialog.shadowRoot!.querySelector('shabbat-target-editor') as any).value,
+    ).toEqual({ entity_id: ['climate.salon'] });
+    expect(
+      (dialog.shadowRoot!.querySelector('shabbat-service-editor') as any).data,
+    ).toEqual({ temperature: 26 });
   });
 
-  it('never sends a defaults/update, because nothing can ask it to yet', async () => {
+  it('sends defaults/update with exactly what the dialog emits, and closes on success', async () => {
     const { hass, send } = fakeHass();
     const el = await mount(hass);
     send(state());
@@ -981,17 +985,19 @@ describe('authoring', () => {
       .shadowRoot!.querySelector('.gear') as HTMLElement).click();
     await el.updateComplete;
 
-    // The stale listener this replaces would have fired on this event and
-    // sent a v1-shaped payload the server rejects.
     el.shadowRoot!.querySelector('shabbat-defaults-dialog')!.dispatchEvent(
-      new CustomEvent('defaults-save', {
-        detail: { defaults: { devices: ['climate.salon'], settings: {} } },
+      new CustomEvent('dialog-save', {
+        detail: { defaults: { target: { entity_id: ['climate.salon'] }, data: {} } },
       }),
     );
     await flush();
     await el.updateComplete;
 
-    expect(hass.callWS).not.toHaveBeenCalled();
+    expect(hass.callWS).toHaveBeenCalledWith({
+      type: 'shabbat_scheduler/defaults/update',
+      defaults: { target: { entity_id: ['climate.salon'] }, data: {} },
+    });
+    expect(el.shadowRoot!.querySelector('shabbat-defaults-dialog')).toBeNull();
   });
 
   // ---- the block:null dead end this plan's headline fix removes ----

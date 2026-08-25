@@ -107,12 +107,8 @@ const STRINGS = {
         will_conflict: 'This overlaps another rule. You can still save it — nothing is resolved for you.',
         defaults_title: 'Shared defaults',
         defaults_help: 'Rules inherit these unless they set their own.',
-        // Still used by the shared-defaults dialog's own read-only summary
-        // (defaults-dialog.ts) - that block is unchanged by this task.
-        read_only_fields: 'Not editable here yet — shown so you can see what this rule actually carries. Use the YAML import/export service to change them.',
         target: 'Target',
         data: 'Data',
-        none_set: 'none',
         migration_error: 'This rule could not be converted from the old format and will not fire:',
         preview_banner: 'Preview — not the coming Shabbat. Dates are not shown because this block is not scheduled.',
         inherits_target_from_defaults: 'Inherited from the shared defaults:',
@@ -157,10 +153,8 @@ const STRINGS = {
         will_conflict: 'הכלל חופף לכלל אחר. אפשר לשמור בכל זאת — שום דבר לא ייפתר עבורך.',
         defaults_title: 'ברירות מחדל משותפות',
         defaults_help: 'כללים יורשים אותן אלא אם הגדירו משלהם.',
-        read_only_fields: 'לא ניתן לערוך כאן עדיין — מוצג כדי שתראו מה הכלל באמת מכיל. לשינוי השתמשו בשירות ייבוא/ייצוא YAML.',
         target: 'יעד',
         data: 'נתונים',
-        none_set: 'ללא',
         migration_error: 'לא ניתן להמיר את הכלל הזה מהפורמט הישן והוא לא יופעל:',
         preview_banner: 'תצוגה מקדימה — לא השבת הקרובה. התאריכים אינם מוצגים כי הבלוק הזה אינו מתוכנן.',
         inherits_target_from_defaults: 'נורש מברירת המחדל המשותפת:',
@@ -5433,18 +5427,22 @@ ShabbatRuleDialog = __decorate([
 ], ShabbatRuleDialog);
 
 /**
- * The shared defaults, shown but not editable.
+ * The shared defaults: a target and a service payload every rule inherits
+ * unless it sets its own.
  *
  * v1's editor was a device multi-select plus a climate settings form, and
  * it wrote `{devices, settings}`. `validate_defaults` (rule_schema.py) now
  * accepts exactly `{target, data}` - a Home Assistant target selector and
  * an opaque service payload - so the old form's save was already certain
- * to be rejected on every press. A save button that cannot succeed is
- * worse than no save button, and a form that quietly rewrote the defaults
- * into a v1 shape would be worse still.
+ * to be rejected on every press, and the button was removed rather than
+ * left broken.
  *
- * So this shows what the defaults ACTUALLY are and says where to change
- * them. Plan 2 builds the target/data editors.
+ * This composes the same two editors the rule dialog does
+ * (target-editor.ts, service-editor.ts). Defaults carry no action - a
+ * rule's action is always its own - so the service editor's `action` half
+ * is tracked only so its own picker keeps showing what was last chosen,
+ * and is dropped on save: sending one would be refused by
+ * `validate_defaults`, which knows only `target` and `data`.
  */
 let ShabbatDefaultsDialog = class ShabbatDefaultsDialog extends i$1 {
     constructor() {
@@ -5452,7 +5450,7 @@ let ShabbatDefaultsDialog = class ShabbatDefaultsDialog extends i$1 {
         /**
          * Passed straight to the Home Assistant elements the editors embed.
          * Reassigned on every state change in the whole system, so nothing may
-         * key form-seeding off it.
+         * key draft-seeding off it - see `willUpdate`.
          */
         this.hass = null;
         this.defaults = {};
@@ -5460,15 +5458,44 @@ let ShabbatDefaultsDialog = class ShabbatDefaultsDialog extends i$1 {
         this.busy = false;
         this.error = null;
         this.language = 'en';
+        this._draft = {};
+        /**
+         * Not part of `_draft`: `Defaults` has no action key, and this is never
+         * sent. It only keeps `<shabbat-service-editor>`'s own picker showing
+         * whatever service was last chosen, across re-renders of this dialog.
+         */
+        this._action = '';
+        this._seeded = false;
     }
-    _describeData() {
-        const entries = Object.entries(this.defaults.data ?? {});
-        if (!entries.length)
-            return t(this.language, 'none_set');
-        return entries.map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join(', ');
+    willUpdate() {
+        // Seed the draft once for this dialog's whole lifetime. `card.ts`
+        // mounts a fresh `<shabbat-defaults-dialog>` only while `_defaultsOpen`
+        // is true and unmounts it on close - unlike the rule dialog, this
+        // component never gets handed a second, different thing to edit while
+        // it stays mounted, so "once per open" and "once ever for this
+        // instance" are the same fact here. Re-seeding on every update would
+        // throw away what the user has typed each time a push arrives, and
+        // pushes arrive constantly, since `hass` is reassigned on every state
+        // change in the whole system.
+        if (!this._seeded) {
+            this._seeded = true;
+            this._draft = {
+                target: this.defaults.target ?? {},
+                data: this.defaults.data ?? {},
+            };
+        }
+    }
+    _onSave() {
+        this.dispatchEvent(new CustomEvent('dialog-save', {
+            detail: {
+                defaults: {
+                    target: this._draft.target ?? {},
+                    data: this._draft.data ?? {},
+                },
+            },
+        }));
     }
     render() {
-        const target = describeTarget(this.defaults.target ?? {});
         return b `
       <div class="sheet" @click=${(event) => {
             if (event.target === event.currentTarget) {
@@ -5482,18 +5509,47 @@ let ShabbatDefaultsDialog = class ShabbatDefaultsDialog extends i$1 {
             ? b `<div class="error">${this.error}</div>`
             : A}
 
-          <dl>
-            <dt>${t(this.language, 'target')}</dt>
-            <dd class="ro-target">${target !== '' ? target : t(this.language, 'none_set')}</dd>
-            <dt>${t(this.language, 'data')}</dt>
-            <dd class="ro-data">${this._describeData()}</dd>
-          </dl>
-          <div class="note">${t(this.language, 'read_only_fields')}</div>
+          <div class="form">
+            <div class="section">
+              <div class="label">${t(this.language, 'target')}</div>
+              <shabbat-target-editor
+                .hass=${this.hass}
+                .value=${this._draft.target ?? {}}
+                .disabled=${!this.canWrite}
+                .language=${this.language}
+                @target-changed=${(event) => {
+            this._draft = { ...this._draft, target: event.detail.value };
+        }}
+              ></shabbat-target-editor>
+            </div>
+            <div class="section">
+              <div class="label">${t(this.language, 'data')}</div>
+              <shabbat-service-editor
+                .hass=${this.hass}
+                .action=${this._action}
+                .data=${this._draft.data ?? {}}
+                .disabled=${!this.canWrite}
+                @service-changed=${(event) => {
+            this._action = event.detail.action;
+            this._draft = { ...this._draft, data: event.detail.data };
+        }}
+              ></shabbat-service-editor>
+            </div>
+          </div>
 
           <div class="actions">
             <button @click=${() => this.dispatchEvent(new CustomEvent('dialog-close'))}>
               ${t(this.language, 'cancel')}
             </button>
+            ${this.canWrite
+            ? b `<button
+                  class="save"
+                  ?disabled=${this.busy}
+                  @click=${() => this._onSave()}
+                >
+                  ${t(this.language, 'save')}
+                </button>`
+            : A}
           </div>
         </div>
       </div>
@@ -5516,13 +5572,14 @@ ShabbatDefaultsDialog.styles = i$4 `
       border-radius: 12px;
       padding: 16px;
       inline-size: min(28rem, 92vw);
+      max-block-size: 88vh;
+      overflow: auto;
     }
     h2 { margin-block: 0 4px; font-size: 1.1em; }
     .note { color: var(--secondary-text-color, #666); font-size: 0.85em; }
     .error { color: var(--error-color, #d64545); margin-block: 8px; font-size: 0.9em; }
-    dl { margin-block: 12px; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
-    dt { color: var(--secondary-text-color, #666); }
-    dd { margin: 0; overflow-wrap: anywhere; }
+    .section { margin-block: 12px; }
+    .section .label { color: var(--secondary-text-color, #666); font-size: 0.85em; margin-block-end: 4px; }
     .actions {
       display: flex;
       gap: 8px;
@@ -5559,6 +5616,12 @@ __decorate([
 __decorate([
     n()
 ], ShabbatDefaultsDialog.prototype, "language", void 0);
+__decorate([
+    r()
+], ShabbatDefaultsDialog.prototype, "_draft", void 0);
+__decorate([
+    r()
+], ShabbatDefaultsDialog.prototype, "_action", void 0);
 ShabbatDefaultsDialog = __decorate([
     t$1('shabbat-defaults-dialog')
 ], ShabbatDefaultsDialog);
@@ -5684,6 +5747,22 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i$1 {
             this._creatingDay = form.day;
             this._duplicateSeed = form;
             this._dialogError = null;
+        };
+        /**
+         * Same shape as `_onSave`: a plain websocket round trip, nothing
+         * optimistic. `validate_defaults` (rule_schema.py) owns whether the
+         * `{target, data}` the dialog emits is acceptable, so a rejection lands
+         * in `_dialogError` and the dialog stays open exactly like a rule save's
+         * does.
+         */
+        this._onDefaultsSave = async (event) => {
+            const { defaults } = event.detail;
+            if (await this._send({
+                type: 'shabbat_scheduler/defaults/update',
+                defaults,
+            })) {
+                this._closeDialogs();
+            }
         };
     }
     setConfig(config) {
@@ -5881,10 +5960,6 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i$1 {
             changes: formToChanges(form, rule),
         });
     }
-    // NOTE: there is no `_onDefaultsSave`. <shabbat-defaults-dialog> is
-    // read-only until Plan 2 builds a target/data editor, so it emits no
-    // save event - see the comment on that component. A listener for an
-    // event that can never fire reads as a working feature.
     render() {
         // Read once into a local: `_error` is a field, and TypeScript's
         // narrowing of a property access does not survive the intervening
@@ -5982,6 +6057,7 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i$1 {
               .busy=${this._busy}
               .error=${this._dialogError}
               .language=${this._language}
+              @dialog-save=${this._onDefaultsSave}
               @dialog-close=${this._closeDialogs}
             ></shabbat-defaults-dialog>`
             : A}

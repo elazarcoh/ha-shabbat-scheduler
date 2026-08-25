@@ -372,10 +372,24 @@ export class ShabbatSchedulerCard extends LitElement {
     this._dialogError = null;
   };
 
-  // NOTE: there is no `_onDefaultsSave`. <shabbat-defaults-dialog> is
-  // read-only until Plan 2 builds a target/data editor, so it emits no
-  // save event - see the comment on that component. A listener for an
-  // event that can never fire reads as a working feature.
+  /**
+   * Same shape as `_onSave`: a plain websocket round trip, nothing
+   * optimistic. `validate_defaults` (rule_schema.py) owns whether the
+   * `{target, data}` the dialog emits is acceptable, so a rejection lands
+   * in `_dialogError` and the dialog stays open exactly like a rule save's
+   * does.
+   */
+  private _onDefaultsSave = async (event: Event) => {
+    const { defaults } = (event as CustomEvent).detail as {
+      defaults: CardState['defaults'];
+    };
+    if (await this._send({
+      type: 'shabbat_scheduler/defaults/update',
+      defaults,
+    })) {
+      this._closeDialogs();
+    }
+  };
 
   override render() {
     // Read once into a local: `_error` is a field, and TypeScript's
@@ -480,6 +494,7 @@ export class ShabbatSchedulerCard extends LitElement {
               .busy=${this._busy}
               .error=${this._dialogError}
               .language=${this._language}
+              @dialog-save=${this._onDefaultsSave}
               @dialog-close=${this._closeDialogs}
             ></shabbat-defaults-dialog>`
           : nothing}

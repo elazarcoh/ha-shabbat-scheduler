@@ -474,6 +474,26 @@ async def test_dry_run_makes_no_service_calls(hass, jerusalem, test_booleans, _r
     assert results[0]["outcome"] == "would_call"  # reports what WOULD happen
 
 
+async def test_a_dry_run_still_reports_reaching_nothing_live(hass, engine, _rule):
+    """The sibling of test_a_dry_run_still_reports_an_unknown_target.
+
+    A target that resolves to nothing live (every member of an existing
+    group unavailable, say) must still carry the diagnostic under a dry
+    run, exactly as an unknown target already does - a dry run is where
+    you WANT to find out a rule would not have done anything real.
+    """
+    await hass.async_block_till_done()
+    hass.states.async_set("group.g", "unknown", {"entity_id": ["input_boolean.member"]})
+    await engine.store.async_set_dry_run(True)
+    rule = _rule(action="input_boolean.turn_on", entities=("group.g",))
+
+    [result] = await engine.async_apply_rule(rule)
+
+    assert result["outcome"] == "would_call"
+    assert result["no_live_targets"] is True
+    assert "unknown_targets" not in result
+
+
 async def test_a_rule_can_still_call_a_script(hass, engine, _rule ):
     """v1's `Action.CUSTOM` + `script` field is now just an ordinary action."""
     calls = []

@@ -748,6 +748,36 @@ A sibling of the same key-versus-value gating survives in
 an unrecognised key there is reported. The behaviour is right — v1 dropped it
 too — and only the reporting is inconsistent.
 
+## The defaults dialog's service picker is blank on reopen
+
+`<shabbat-defaults-dialog>` composes the same `<shabbat-service-editor>` the
+rule dialog does, and `<ha-service-control>` needs an `action`
+(`domain.service`) to know which service's schema to render its `data` form
+against. `Defaults` (`types.ts`) has no `action` field — only `target` and
+`data`, the two keys `validate_defaults` accepts — because a rule's action is
+always its own; the shared defaults contribute only a target and a payload,
+never a service. So on open the dialog seeds a scratch `_action = ''` that
+lives only in the component's own state, never in `_draft`, and is never sent.
+
+The visible cost: reopening the dialog after saving, say, `{temperature: 26}`
+shows an **empty** service picker, with the saved `data` sitting underneath it
+unlabelled by any service schema — not a blank form, but not obviously the
+temperature you set either, until you re-pick `climate.set_temperature` (or
+whichever service the data was shaped for) and the existing `{temperature:
+26}` becomes visible and editable again under that service's own fields. A
+user who set a default and comes back later may reasonably read the blank
+picker as "my default was lost" when it was not: `hass.callWS` round-tripped
+it, the server has it, and the next rule that inherits `defaults.data` still
+gets it.
+
+The alternative — persisting the picked action into `Defaults` so the picker
+remembers it — is worse than the symptom: it would mean storing a field
+`validate_defaults` neither accepts nor uses, purely to make a UI widget's
+memory outlive the dialog, and would need a schema change and a migration
+story for a value the server has no use for. **What to do:** re-pick the
+service the data belongs to; the stored `data` reappears under it, editable,
+exactly as saved.
+
 ## Deployment note
 
 Nothing here has been installed on the live instance. The integration ships

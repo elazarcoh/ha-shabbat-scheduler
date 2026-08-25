@@ -102,6 +102,50 @@ describe('shabbat-defaults-dialog', () => {
     expect(closed).toBe(true);
   });
 
+  // The direction that actually distinguishes replace from merge: seed a
+  // key the edit does NOT touch (`entity_id`/`fan_mode`) and change to a
+  // shape that shares no keys with it (`area_id`/only `temperature`). A
+  // deep merge and a replace agree on every key the edit *does* touch, so
+  // a test that only checks the touched key would pass under either
+  // implementation - this is why `toStrictEqual`, not `toEqual`, is load
+  // bearing here: an old `entity_id` sitting alongside the new `area_id`
+  // is a key `toEqual` cannot see missing.
+  it('replaces the target wholesale on save, not merges it', async () => {
+    const el = await render({
+      canWrite: true,
+      defaults: { target: { entity_id: ['switch.a'] }, data: {} },
+    });
+    const saved: any[] = [];
+    el.addEventListener('dialog-save', (e: Event) => {
+      saved.push((e as CustomEvent).detail.defaults);
+    });
+    el.shadowRoot!.querySelector('shabbat-target-editor')!
+      .dispatchEvent(new CustomEvent('target-changed', {
+        detail: { value: { area_id: ['salon'] } },
+      }));
+    await el.updateComplete;
+    (el.shadowRoot!.querySelector('button.save') as HTMLButtonElement).click();
+    expect(saved[0].target).toStrictEqual({ area_id: ['salon'] });
+  });
+
+  it('replaces the data wholesale on save, not merges it', async () => {
+    const el = await render({
+      canWrite: true,
+      defaults: { target: {}, data: { temperature: 20, fan_mode: 'high' } },
+    });
+    const saved: any[] = [];
+    el.addEventListener('dialog-save', (e: Event) => {
+      saved.push((e as CustomEvent).detail.defaults);
+    });
+    el.shadowRoot!.querySelector('shabbat-service-editor')!
+      .dispatchEvent(new CustomEvent('service-changed', {
+        detail: { action: '', data: { temperature: 24 } },
+      }));
+    await el.updateComplete;
+    (el.shadowRoot!.querySelector('button.save') as HTMLButtonElement).click();
+    expect(saved[0].data).toStrictEqual({ temperature: 24 });
+  });
+
   it('does not re-seed the draft when hass is reassigned', async () => {
     const el = await render({ canWrite: true, defaults: {} });
     el.shadowRoot!.querySelector('shabbat-target-editor')!

@@ -610,3 +610,123 @@ def test_replay_can_be_switched_on_with_a_window(page, base_url):
             enabled.uncheck()
             dialog.locator("button.save").click()
             dialog.wait_for(state="detached", timeout=15_000)
+
+
+def _visible_target_pickers(scope):
+    """How many target pickers a user can actually see and click.
+
+    Counting `ha-target-picker` elements is not the question - HA's own
+    row is present in the DOM and merely hidden, deliberately (see
+    service-editor.ts). What must be true is that exactly one is
+    VISIBLE, because a second visible one is a picker whose value is
+    thrown away on save.
+    """
+    pickers = scope.locator("ha-target-picker")
+    return sum(
+        1 for index in range(pickers.count()) if pickers.nth(index).is_visible()
+    )
+
+
+def test_only_one_target_picker_is_visible_in_the_rule_dialog(page, base_url):
+    """HA's `ha-service-control` renders a target row of its own, and the
+    card discards its value - so a user could set a target there, see it
+    accepted, save, and lose it. service-editor.ts hides that row; this is
+    the test that says so if it ever stops working.
+
+    It has to be an EDIT, or a create with the action set: HA renders the
+    row only once the chosen service's schema has a `target` key, so a
+    create dialog with an empty action has nothing to hide and would pass
+    this test with the suppression deleted outright. The seeded 11:00 rule
+    has `input_boolean.turn_on`, whose schema does have a target.
+
+    Both halves matter. The first pins that HA's row really is there to be
+    hidden - delete the suppression and the count is 2. The second pins
+    that the card's OWN picker is the one left standing, and is usable:
+    hiding both would satisfy a bare count of 1 while leaving the dialog
+    with no way to set a target at all.
+    """
+    card = _card(page, base_url)
+    dialog = _open_rule(card, "11:00")
+    # Wait for HA's row to have had every chance to render before counting
+    # an absence: `shabbat-target-editor`'s picker arriving is what makes
+    # ha-target-picker defined in the first place, so HA's row cannot
+    # appear before this does.
+    dialog.locator(TARGET_PICKER).wait_for(timeout=15_000)
+    expect(dialog.locator("shabbat-service-editor ha-service-control ha-selector")).to_have_count(
+        1, timeout=15_000
+    )
+
+    assert _visible_target_pickers(dialog) == 1, (
+        "expected exactly one visible target picker; HA's own row inside "
+        "ha-service-control is supposed to be suppressed"
+    )
+    # ...and the visible one is the card's, and it works.
+    assert dialog.locator(TARGET_PICKER).is_visible()
+    expect(dialog.locator(f"{TARGET_PICKER} ha-generic-picker ha-button")).to_have_count(1)
+    # The suppression found something rather than silently matching
+    # nothing - "we looked and found none" is a different state from "we
+    # hid the row", and only one of them is correct here.
+    expect(dialog.locator("shabbat-service-editor")).to_have_attribute(
+        "data-target-rows-suppressed", "1"
+    )
+
+    dialog.locator(CANCEL).click()
+    dialog.wait_for(state="detached", timeout=10_000)
+
+
+def test_only_one_target_picker_is_visible_in_the_defaults_dialog(page, base_url):
+    """The defaults dialog had the same duplicate, and worse.
+
+    Its `<shabbat-service-editor>` exists only to shape the DATA form -
+    defaults carry no action, and `_action` is never saved - so HA's
+    target row appeared inside a section headed "Data", and anything set
+    in it was dropped on save twice over: once by service-editor, and
+    again by the dialog, which reads only `event.detail.data`.
+
+    The action has to be chosen here, because the defaults dialog opens
+    with `_action = ''` and HA renders no target row until a service is
+    picked. That is exactly the sequence a user follows to fill in the
+    data form, so it is the sequence that produced the bug.
+
+    Nothing is saved: this ends on Cancel.
+    """
+    card = _card(page, base_url)
+    dialog = card.locator("shabbat-defaults-dialog")
+    card.locator("shabbat-block-header button.gear").click()
+    dialog.wait_for(state="attached", timeout=10_000)
+    dialog.locator(TARGET_PICKER).wait_for(timeout=15_000)
+
+    # Baseline: with no action there is no row of HA's to hide, so the
+    # count below cannot be satisfied by an empty dialog.
+    assert _visible_target_pickers(dialog) == 1
+    expect(dialog.locator("shabbat-service-editor")).to_have_attribute(
+        "data-target-rows-suppressed", "0"
+    )
+
+    # Now pick a service, the way a user reaches the data form.
+    _set_action(dialog, "climate.set_temperature", "set_temperature", "climate")
+    expect(dialog.locator("shabbat-service-editor")).to_have_attribute(
+        "data-target-rows-suppressed", "1", timeout=15_000
+    )
+    assert _visible_target_pickers(dialog) == 1, (
+        "picking a service in the defaults dialog brought back a second "
+        "visible target picker, under the 'Data' heading"
+    )
+    assert dialog.locator(TARGET_PICKER).is_visible()
+    # The schema-derived form is still there - the suppression must hide
+    # the target row and nothing else.
+    expect(dialog.locator(SERVICE_FIELDS)).to_have_count(1)
+    expect(dialog.locator(SERVICE_FIELDS)).to_contain_text("hvac_mode")
+    # And VISIBLE, not merely present in the DOM. A suppression whose
+    # filter matched every `ha-selector` instead of only the target row
+    # would hide the entire schema-derived form - deleting the whole point
+    # of v2 on the frontend - while still leaving exactly one visible
+    # picker and one settings row for every assertion above to find.
+    # `to_contain_text` reads the DOM, not what a user can see, so it
+    # cannot notice this on its own.
+    assert dialog.locator(f"{SERVICE_FIELDS} ha-selector").is_visible(), (
+        "the schema-derived form was hidden along with the target row"
+    )
+
+    dialog.locator(".actions button").first.click()
+    dialog.wait_for(state="detached", timeout=10_000)

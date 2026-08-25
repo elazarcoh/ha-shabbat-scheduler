@@ -7,7 +7,14 @@ dependencies = ["pyyaml"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+# e2e is collected on purpose, even though a plain run has neither the
+# container nor the token it needs. It skips cleanly without them, and
+# e2e/conftest.py prints a loud banner naming what went unverified. Leaving
+# e2e OUT of the default run is how it stayed red, unnoticed, through a whole
+# plan: "496 passed" was a statement about the Python suite alone and said
+# nothing either way about the card in a real browser. "496 passed, 12
+# skipped" is less flattering and more honest.
+testpaths = ["tests", "e2e"]
 pythonpath = ["."]
 # A hang, not a failure, is this suite's characteristic breakage. Any test
 # using the `freezer` fixture freezes `time.monotonic()`, which IS the

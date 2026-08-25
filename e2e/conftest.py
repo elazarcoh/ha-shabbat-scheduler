@@ -5,6 +5,7 @@ import urllib.error
 import urllib.request
 
 import pytest
+import pytest_socket
 
 BASE = "http://127.0.0.1:8124"
 
@@ -86,10 +87,34 @@ def _real_sockets(socket_enabled):
     re-enables real networking for a test; making it autouse here applies
     it to every test collected under e2e/ without each test asking for it
     by name. It has no effect outside this directory.
+
+    This alone is NOT sufficient for `base_url`/`token` below, and the
+    `enable_socket()` calls in `_up`/`_token_works` are not redundant with
+    it. Both plugins implement `pytest_runtest_setup`, and pytest-socket's
+    own hook decides enable-vs-disable from the test's static
+    `fixturenames` list - a decision that races the *same* hook on
+    pytest's core runner, which is what actually instantiates
+    session-scoped fixtures. Which one wins is plugin registration order,
+    and that is NOT guaranteed across environments: a freshly-`uv sync`-ed
+    CI runner and a long-lived local .venv with identical locked package
+    versions were observed to order pytest-socket differently relative to
+    that runner hook, so `_up()`'s very first request failed with
+    `HASocketBlockedError` in CI while the exact same suite, same
+    versions, passed locally - the same class of nondeterminism already
+    on record for `aiohttp_client` in pyproject.toml's `-p no:aiohttp`
+    comment, here hitting a different pair of plugins. This fixture still
+    covers anything else under e2e/ that touches a real socket from a
+    *function*-scoped fixture or a test body, where ordering happens to
+    not matter for the fixtures actually in this suite - but `base_url`
+    and `token` are session-scoped and must not depend on hook order.
     """
 
 
 def _up() -> bool:
+    # Do not rely on pytest-socket's own hook having already run - see
+    # `_real_sockets` above. Calling enable_socket() directly is
+    # order-independent: it just restores the real socket.socket.
+    pytest_socket.enable_socket()
     try:
         urllib.request.urlopen(f"{BASE}/", timeout=3)
     except (urllib.error.URLError, OSError):
@@ -106,6 +131,7 @@ def base_url() -> str:
 
 def _token_works(value: str) -> bool:
     """Does this token still authenticate?"""
+    pytest_socket.enable_socket()  # see _up()
     request = urllib.request.Request(
         f"{BASE}/api/config", headers={"Authorization": f"Bearer {value}"}
     )
@@ -142,6 +168,16 @@ def token() -> str:
 
 @pytest.fixture
 def page(base_url, token):
+    # Same reasoning as `_up()`/`_token_works()` above: this fixture's own
+    # setup is exactly where the pytest-socket-vs-runner-hook race can
+    # land, and on a freshly-`uv sync`-ed CI runner it did - every test
+    # errored here with HASocketBlockedError before this call was added,
+    # because launching a real Chromium and connecting to it needs real
+    # sockets too, not just the HTTP calls in base_url/token. The
+    # `_real_sockets` autouse fixture's `socket_enabled` request was not
+    # enough to guarantee this ran first; a direct, order-independent call
+    # is.
+    pytest_socket.enable_socket()
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as playwright:

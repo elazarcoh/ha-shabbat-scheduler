@@ -69,4 +69,10 @@ dev = [
     # half of the same guard.
     "pytest-timeout>=2.4.0",
     "websockets>=17.0.1",
+    # Also resolves transitively via pytest-homeassistant-custom-component
+    # today. Declared explicitly because e2e/conftest.py imports it by name
+    # (pytest_socket.enable_socket()) rather than only using its fixtures -
+    # see the `_real_sockets` docstring there for why the fixture alone is
+    # not enough.
+    "pytest-socket>=0.8.0",
 ]

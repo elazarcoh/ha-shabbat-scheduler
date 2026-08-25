@@ -176,6 +176,140 @@ async def test_a_later_expanded_call_still_runs_after_an_earlier_one_fails(
     assert by_action["climate.set_temperature"] == "called"
 
 
+# --- A PROPERTY v2 GAVE UP, recorded rather than left to be discovered -----
+
+
+async def test_two_rules_on_one_device_at_one_instant_can_interleave(hass, engine):
+    """CHARACTERISATION TEST. This records a GUARANTEE v2 NO LONGER MAKES.
+
+    The spec named this exact failure: "the unit left off with a target
+    temperature applied - a state matching neither rule." v1 prevented it
+    with a lock keyed on `entity_id`, so two rules touching one air
+    conditioner at the same minute could not have their calls interleave.
+    v1's `test_concurrent_rules_on_same_device_do_not_interleave` proved
+    it, and this test stands in that one's place.
+
+    Task 6 re-keyed the lock to `rule.id`, of necessity: a v2 target may
+    be an area, a floor or a label, so there is no single entity to key a
+    lock on, and a call may carry no entity at all (`notify.*`). The lock
+    still stops ONE rule interleaving with a re-entrant application of
+    ITSELF. It no longer stops two DIFFERENT rules interleaving with each
+    other. See the comment on `ShabbatEngine._locks`.
+
+    What still protects the household is DETECTION, not prevention:
+    `block.find_conflicts` reports any two enabled rules at the same
+    profile/day/time whose resolved targets overlap, and the card shows
+    that as a conflict. The user is told; the engine no longer refuses on
+    their behalf. That is the whole of the trade.
+
+    The interleave below is forced deterministically rather than raced
+    for: rule A is held inside its first service call while rule B runs
+    to completion. Under v1's per-entity lock, B could not have started.
+    """
+    calls: list[tuple[str, object]] = []
+    rule_a_is_inside = asyncio.Event()
+    release_rule_a = asyncio.Event()
+
+    async def set_hvac_mode(call):
+        mode = call.data.get("hvac_mode")
+        calls.append(("hvac_mode", mode))
+        if mode == "cool":              # rule A: hold it mid-rule
+            rule_a_is_inside.set()
+            await release_rule_a.wait()
+
+    async def set_temperature(call):
+        calls.append(("temperature", call.data.get("temperature")))
+
+    hass.services.async_register("climate", "set_hvac_mode", set_hvac_mode)
+    hass.services.async_register("climate", "set_temperature", set_temperature)
+
+    def _climate_rule(rule_id, hvac_mode, temperature):
+        # Each expands, via the climate shim, into set_hvac_mode then
+        # set_temperature - the only path in v2 that still turns one
+        # authored action into several calls, and so the only place two
+        # rules CAN interleave.
+        return Rule(
+            id=rule_id, profile=1, day="1", time=time(11, 0),
+            action="climate.set_temperature",
+            target={"entity_id": ["climate.ac"]},
+            data={"hvac_mode": hvac_mode, "temperature": temperature},
+        )
+
+    task_a = asyncio.create_task(
+        engine.async_apply_rule(_climate_rule("a", "cool", 22))
+    )
+    await rule_a_is_inside.wait()
+
+    # Rule A is suspended inside its FIRST call, holding only its own
+    # lock. Rule B runs the whole way through, on the same entity.
+    await engine.async_apply_rule(_climate_rule("b", "heat", 24))
+
+    assert calls == [("hvac_mode", "cool"), ("hvac_mode", "heat"),
+                     ("temperature", 24)], calls
+
+    release_rule_a.set()
+    await task_a
+    await hass.async_block_till_done()
+
+    # The damage, spelled out: rule A's temperature lands LAST, after rule
+    # B's mode and B's temperature. The unit is left on rule B's hvac_mode
+    # carrying rule A's temperature - a state matching NEITHER rule, which
+    # is the spec's own words for the outcome v1 existed to prevent.
+    assert calls == [("hvac_mode", "cool"), ("hvac_mode", "heat"),
+                     ("temperature", 24), ("temperature", 22)], calls
+
+
+async def test_one_rule_still_cannot_interleave_with_itself(hass, engine):
+    """The half of v1's guarantee that DID survive the re-keying.
+
+    `_locks` is keyed on `rule.id`, so a rule applied twice concurrently -
+    a timer and a catch-up racing, a manual re-trigger - still runs its
+    expanded calls as two complete, uninterrupted sequences. Without this
+    the test above would read as "locking was simply removed".
+    """
+    calls: list[tuple[str, object]] = []
+    first_is_inside = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def set_hvac_mode(call):
+        calls.append(("hvac_mode", call.data.get("hvac_mode")))
+        if not first_is_inside.is_set():
+            first_is_inside.set()
+            await release_first.wait()
+
+    async def set_temperature(call):
+        calls.append(("temperature", call.data.get("temperature")))
+
+    hass.services.async_register("climate", "set_hvac_mode", set_hvac_mode)
+    hass.services.async_register("climate", "set_temperature", set_temperature)
+
+    rule = Rule(
+        id="same-rule", profile=1, day="1", time=time(11, 0),
+        action="climate.set_temperature",
+        target={"entity_id": ["climate.ac"]},
+        data={"hvac_mode": "cool", "temperature": 22},
+    )
+
+    first = asyncio.create_task(engine.async_apply_rule(rule))
+    await first_is_inside.wait()
+    second = asyncio.create_task(engine.async_apply_rule(rule))
+
+    # The second application is blocked on the SAME lock, so it cannot
+    # have reached any service call while the first is still inside one.
+    await asyncio.sleep(0)
+    assert calls == [("hvac_mode", "cool")], calls
+
+    release_first.set()
+    await asyncio.gather(first, second)
+    await hass.async_block_till_done()
+
+    # Two whole sequences, never interleaved.
+    assert calls == [
+        ("hvac_mode", "cool"), ("temperature", 22),
+        ("hvac_mode", "cool"), ("temperature", 22),
+    ], calls
+
+
 # --- Task 10: retry on failure ----------------------------------------------
 
 

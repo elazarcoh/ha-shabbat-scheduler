@@ -132,6 +132,10 @@ window was, rather than either firing blindly or vanishing without a
 trace. Omitting `within` means no bound at all, matching how every rule
 behaved before this option existed.
 
+What this costs a v1 user specifically — a migrated on/off rule loses the
+unconditional catch-up it used to have — is its own accepted decision, below:
+"v2 does not self-correct after a mid-block restart".
+
 `replay.enabled` and `replay.within` are not the only gate. `async_catch_up`
 replays through the same `async_apply_rule` path a normal fire uses
 (`engine.py`), which means the rule's own `condition` is evaluated again
@@ -325,10 +329,20 @@ before you open the card after an upgrade:
 - Both parts are renamed, rather than one keeping `e`, so that nothing
   implies one is "the real rule". `e` and `e-switch` would leave a reader
   unable to tell whether `e` had always been climate-only.
+- **You are told.** A repair issue (`ISSUE_SPLIT_RULES`, Settings → Repairs)
+  names each original rule and what it became: `e → e-climate, e-switch`. It
+  is the only report here that is not about something being *wrong* — the
+  rules converted correctly and are all enabled — but a rule count changing
+  under someone in silence is exactly the shape of thing this project exists
+  to prevent, so it gets the same channel as everything else. There is
+  nothing to fix, so dismiss it once you have looked at the card; it is
+  persistent, so it survives a restart until you do.
 - Both parts stash the whole original rule in `migration_source`, so the
-  YAML export shows exactly what the single v1 rule was. That field alone
-  raises no repair issue and renders nothing in the card — only
-  `migration_error` does — so it is a paper trail, not a warning.
+  YAML export shows exactly what the single v1 rule was, and the repair issue
+  above is derived from it. That field alone renders nothing in the card —
+  only `migration_error` does — so it is a paper trail, not a warning. A YAML
+  round trip that drops those keys also clears the repair issue, which is the
+  other way to acknowledge it.
 - Each part gets its own rule switch. Both parts share the original's name,
   so Home Assistant dedupes the second entity id.
 - The two parts share a profile, day and time but have disjoint targets, so
@@ -340,11 +354,66 @@ A `custom` (script) rule is never split: `_apply_custom`
 (`5192d4c:engine.py:451-470`) used `script` and `variables` and never looked
 at `devices`, so a custom rule's devices did nothing in v1 either.
 
+## Accepted decision: v2 does not self-correct after a mid-block restart
+
+v1 did. v2 does not, unless a rule opts into replay. **This is a deliberate
+decision by the project owner, not a limitation nobody noticed**, and it is
+the one behaviour on the upgrade path a v1 user will actively miss. "Replay
+is opt-in and bounded", above, describes the v2 mechanism and why v1's could
+not survive the move to a generic action; this is about what the upgrade
+itself does to an existing v1 rule.
+
+What v1 did (`5192d4c:engine.py:396-424`): on every restart, catch-up took
+every device any rule touched, asked `desired_state_at` what state the most
+recent already-passed rule wanted it in, and applied it — with no opt-in of
+any kind. `replay_on_restart` gated **only** `custom` (script) rules
+(`5192d4c:engine.py:430-437`). So a Home Assistant restart or a power cut at
+9pm on Friday re-asserted the air conditioning, and nobody had to know
+anything had happened.
+
+What v2 does: catch-up replays only rules whose author set `replay.enabled`,
+bounded by `replay.within`. The migration maps `replay_on_restart` →
+`replay.enabled` faithfully as a **field**, but that field meant something
+narrower in v1 — so a v1 on/off rule left at the default, which is almost all
+of them, **is not replayed after a restart any more**. If the last rule of the
+day has already passed, the appliance stays as the restart left it for the
+rest of Shabbat.
+
+Why it is not simply switched on for every migrated rule, which was
+considered and rejected: v1 could afford unconditional catch-up because it
+computed a desired state and **compared before acting** — `plan_calls`
+returned no calls at all for a device already in the wanted state, so
+replaying was free. A v2 rule is an opaque service call with no queryable
+desired state, so replay **re-fires** rather than reconciles. Re-firing every
+passed rule of the block on every restart, through the unbounded window a
+migrated rule would inherit, is worse than not acting. Nothing unexpected
+ever firing is the strictest reading of fire-once, and it is the reading this
+project takes.
+
+**If you want the old behaviour**, turn it on per rule, on the rules where
+re-firing is genuinely safe — a `climate.set_temperature` naming an absolute
+temperature usually is; a `script.turn_on` that adds 30 minutes to a timer is
+not. Set `replay.enabled` and give it a `within` window, so a restart hours
+later does not re-fire something long stale:
+
+```yaml
+      - id: b1
+        at: "11:00:00"
+        action: climate.set_temperature
+        target: { entity_id: climate.salon }
+        data: { temperature: 24 }
+        replay: { enabled: true, within: "02:00:00" }
+```
+
+A rule replayed outside its window is reported as `skipped_stale` rather than
+dropped in silence.
+
 ## v1 resolved fan-mode synonyms against the device; v2 does not
 
 Not a migration defect — a capability v2 dropped. Recorded here because
-nothing else in the repo says so, and the v1 README's own example config
-depends on it.
+nothing else in the repo says so, the v1 README's own example config depends
+on it, and **this household's own units disagree about the name**: one accepts
+`quiet`, the other only `silent`.
 
 v1 carried a `FAN_SYNONYMS` table (`5192d4c:const.py:17-21`, mapping
 `quiet`/`silent`/`low` onto each other) and `resolve_fan_mode`
@@ -354,11 +423,21 @@ listed in its `fan_modes` attribute. If none was supported it emitted a
 still ran. v2 has neither — `const.py` has no synonym table — so the migrated
 rule sends the authored `fan_mode` string verbatim.
 
-A v1 rule asking for `fan_mode: quiet` on a unit that exposes only `silent`
-therefore worked in v1 and now fails: loudly, at fire time, with Home
-Assistant rejecting the mode and the retry/notification path reporting it.
-The v1 README's documented example config uses exactly `fan_mode: quiet`, so
-this is not a corner case.
+So a v1 rule saying `fan_mode: quiet`, aimed at the unit that only takes
+`silent`, **worked in v1** — v1 looked at that unit's `fan_modes`, saw
+`silent` in the synonym list, and sent it. In v2 the same rule sends `quiet`
+verbatim and the unit refuses it.
+
+**The symptom, so it is recognisable when it happens:** the whole
+`climate.set_fan_mode` call fails — Home Assistant rejects the mode against
+the entity's `fan_modes`, the engine's three retries all fail the same way,
+and a persistent notification names the rule. The `set_hvac_mode` and
+`set_temperature` calls of the same rule, which the shim splits out
+separately, still succeed: so the unit comes on at the right temperature and
+**stays on the fan speed it was already using**, which is the part someone is
+most likely to notice and least likely to connect to an upgrade. The v1
+README's documented example config uses exactly `fan_mode: quiet`, so this is
+not a corner case for this install.
 
 It cannot be fixed in the migration: choosing a synonym needs the device's
 `fan_modes` attribute, which needs a running instance, and `migration.py`

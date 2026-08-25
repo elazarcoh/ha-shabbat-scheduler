@@ -297,6 +297,17 @@ def _domain_parts(raw: dict, defaults: dict, taken: set[str]) -> list[dict]:
         if rule_id:
             part["id"] = _unique_id(f"{rule_id}-{domain}", taken)
         parts.append(part)
+
+    # The user is told properly through a repair issue, derived from the
+    # `migration_source` each part carries (`repairs.ISSUE_SPLIT_RULES`).
+    # This is the maintainer's copy - a log line on its own would be
+    # invisible during the one upgrade it describes.
+    _LOGGER.warning(
+        "Rule %r targeted several domains, which v1 drove per entity and v2 "
+        "cannot express as one action; it has been split into %s. Every part "
+        "stays enabled and keeps a copy of the original rule.",
+        rule_id, [part.get("id") for part in parts],
+    )
     return parts
 
 

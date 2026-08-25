@@ -53,13 +53,37 @@ def async_create_unmigrated_rules_issue(hass: HomeAssistant, rule_ids: list[str]
     reason on each one (``rule.migration_error``); this is where the user is
     actually told to go look, naming which rules by id so they do not have
     to hunt through the whole rule set to find the ones that need attention.
+
+    ``is_persistent`` is load-bearing, unlike on the zmanim issue above.
+    Home Assistant reloads a non-persistent issue with ``active=False`` and
+    the repairs websocket API filters inactive issues out, so without this
+    the report vanished from Settings > Repairs on the first restart -
+    turning the migration's promise of "kept, disabled and reported" into
+    "kept and disabled", with the rules sitting there permanently inert.
+    The zmanim issue can afford to be transient because it is re-raised
+    from live sensor readings on every single refresh; this one describes
+    durable stored state.
     """
     ir.async_create_issue(
         hass,
         DOMAIN,
         ISSUE_UNMIGRATED_RULES,
         is_fixable=False,
+        is_persistent=True,
         severity=ir.IssueSeverity.WARNING,
         translation_key=ISSUE_UNMIGRATED_RULES,
         translation_placeholders={"rule_ids": ", ".join(rule_ids)},
     )
+
+
+def async_delete_unmigrated_rules_issue(hass: HomeAssistant) -> None:
+    """Clear it once no rule carries a migration error any more.
+
+    Mirrors the zmanim pair: the caller derives the issue from the store's
+    CURRENT contents on every setup and on every rule change, so deleting
+    or re-authoring the broken rules makes the warning go away by itself.
+    An issue the user cannot ever clear is an issue they learn to ignore,
+    and this one shares Settings > Repairs with the zmanim error they must
+    not learn to ignore.
+    """
+    ir.async_delete_issue(hass, DOMAIN, ISSUE_UNMIGRATED_RULES)

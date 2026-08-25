@@ -303,17 +303,63 @@ master and dry-run — is unchanged.
 
 ## Alpha readiness
 
-Distinct from the feature work, and genuinely required before anyone else
-installs this:
+Distinct from the feature work. Updated 2026-08-25 after Plan 2's final
+review, which triaged its own carried findings into this list rather than
+letting them drop, and after elazar's explicit request that the README be a
+guide rather than a reference page.
 
-- README rewritten for someone who has never seen it, with the rule model
-  documented and a worked example that is not about air conditioners.
-- HACS metadata and a brands entry.
-- A diagnostics platform (config entry, rule count, resolved block, last run).
-- Repair issues for the two cases above: zmanim sensors missing, and a rule that
-  failed migration.
-- Translation completeness for `en` and `he`, including the config flow.
-- Upgrade notes describing the v1 → v2 change.
+**Already done, in Plan 1 or Plan 2 — kept here only as a checklist, not
+re-scoped:**
+- Repair issues for zmanim-sensors-missing and a rule that failed migration
+  (`repairs.py`).
+- Translation completeness for `en`/`he`, including the config flow —
+  `strings.json` and `translations/en.json` are byte-identical, and
+  `translations/he.json` has full key parity (29/29).
+- HACS metadata (`hacs.json`, `manifest.json`) exists; what remains is the
+  brands entry (below) and confirming HACS actually installs from a fresh
+  clone of this repo.
+
+**Not yet done — this is what Plan 3 builds:**
+
+- **CI.** Promoted from a footnote to the first task. e2e skipped silently
+  for the whole of Plan 2 and nobody noticed until the final review went
+  looking — nothing runs the suites except a human remembering to. This is
+  the single guard on the most version-fragile code in the card (the
+  target-row suppression), and it does not exist.
+- **The README, rewritten as a guide, not a reference page.** The current
+  one is accurate but written for someone who already knows what this is —
+  no screenshot, no quick start, terminology used before it is defined, and
+  still describing the card as "read-mostly … until Plan 2 builds the real
+  editors," which is now false. Needs, in order: what this is and who it's
+  for (one paragraph); a screenshot of the card showing a real block; a
+  quick start (install → configure → see the timeline → author one rule) a
+  newcomer can follow before reading anything else; then the existing
+  reference material, kept but demoted below the guide part. The worked
+  example already there is real budget-domain material (notify, scene,
+  light, condition, replay) and can stay.
+- HACS brands entry. `home-assistant/brands` is a separate repository whose
+  submission is a PR reviewed by HA's brand team — outside this repo and
+  outside what a plan here can complete. This plan prepares the assets
+  (icon, logo, both @2x) and documents the submission step; it does not
+  claim the PR is merged.
+- A diagnostics platform (config entry, rule count, resolved block, last
+  run — no tokens, no entity states beyond what the integration already
+  exposes).
+- Upgrade notes describing the v1 → v2 change, for the person who installed
+  v1 and is about to update.
+- **Carried from Plan 2's final review, each already triaged there:**
+  - the `1..3` profile bound, duplicated across six sites
+    (`migration.py`, `rule_schema.py` ×2, `websocket_api.py`, `__init__.py`,
+    a comment in `models.py`), consolidated to one constant in `const.py`.
+  - `tests/test_websocket.py::_setup` deleted in favour of the shared
+    `setup_scheduler` fixture in `conftest.py` (~45 call sites to repoint).
+  - a test proving `would_call` composes with `no_live_targets` — the
+    dry-run path is covered for `unknown_targets` already
+    (`test_a_dry_run_still_reports_an_unknown_target`) but not for the
+    "reached nothing live" diagnostic.
+  - bundle minification. The rollup build has no minification step at all;
+    `js-yaml` alone added ~105 KB unminified, and the committed bundle is
+    ~223 KB. One step benefits the whole bundle.
 
 ## Sub-plans
 

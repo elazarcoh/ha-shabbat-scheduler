@@ -5,43 +5,15 @@ import pytest
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-# Imported rather than restated. `tests/test_frontend_fixture.py` generates
-# the card's committed payload fixture through conftest's `setup_scheduler`,
-# whose docstring claims it pins the same block every websocket test does.
-# A second copy of these two timestamps would let that claim go quietly
-# false, and the card's fixture would then answer to a block no websocket
-# test exercises - the shape of failure this whole fixture exists to close.
-#
-# `tests/` is not a package, but pytest (importmode=prepend) puts this
-# directory on sys.path and imports the conftest as top-level `conftest`, so
-# this is the same object the fixtures read.
-from conftest import ZMANIM
-
 from custom_components.shabbat_scheduler.const import DOMAIN
 from custom_components.shabbat_scheduler.models import Rule
 from custom_components.shabbat_scheduler.store import RuleStore
 
 
-async def _setup(hass, rules=(), defaults=None, enabled=False):
-    await hass.config.async_set_time_zone("Asia/Jerusalem")
-    for entity_id, state in ZMANIM.items():
-        hass.states.async_set(entity_id, state)
-    store = RuleStore(hass)
-    await store.async_load()
-    await store.async_replace_all(defaults or {}, list(rules))
-    if enabled:
-        # Timers are only armed while the master switch is on.
-        await store.async_set_enabled(True)
-    entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
-    entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-    return entry
-
-
-async def test_rules_list_returns_rules_and_defaults(hass, hass_ws_client):
-    await _setup(
-        hass,
+async def test_rules_list_returns_rules_and_defaults(
+    hass, hass_ws_client, setup_scheduler
+):
+    await setup_scheduler(
         [Rule(id="r1", profile=1, day="1", time=time(11, 0),
               action="climate.turn_on", target={"entity_id": ["climate.a"]})],
         defaults={"data": {"temperature": 26}},
@@ -56,8 +28,10 @@ async def test_rules_list_returns_rules_and_defaults(hass, hass_ws_client):
     assert msg["result"]["warnings"] == []
 
 
-async def test_rules_list_reports_conflicts_as_warnings(hass, hass_ws_client):
-    await _setup(hass, [
+async def test_rules_list_reports_conflicts_as_warnings(
+    hass, hass_ws_client, setup_scheduler
+):
+    await setup_scheduler([
         Rule(id="a", profile=1, day="1", time=time(18, 0),
              action="climate.turn_on", target={"entity_id": ["climate.a"]}),
         Rule(id="b", profile=1, day="1", time=time(18, 0),
@@ -71,8 +45,10 @@ async def test_rules_list_reports_conflicts_as_warnings(hass, hass_ws_client):
     assert msg["result"]["warnings"]
 
 
-async def test_preview_resolves_the_upcoming_block(hass, hass_ws_client):
-    await _setup(hass, [
+async def test_preview_resolves_the_upcoming_block(
+    hass, hass_ws_client, setup_scheduler
+):
+    await setup_scheduler([
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
              action="climate.turn_on", target={"entity_id": ["climate.a"]}),
     ])
@@ -88,10 +64,10 @@ async def test_preview_resolves_the_upcoming_block(hass, hass_ws_client):
 
 
 async def test_preview_with_block_length_resolves_a_hypothetical_block(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
     """block_length re-derives a hypothetical block, mirroring the `simulate` service."""
-    await _setup(hass, [
+    await setup_scheduler([
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
              action="climate.turn_on", target={"entity_id": ["climate.a"]}),
         Rule(id="r3", profile=3, day="1", time=time(11, 0),
@@ -109,9 +85,9 @@ async def test_preview_with_block_length_resolves_a_hypothetical_block(
 
 
 async def test_preview_without_block_length_uses_the_real_upcoming_block(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
-    await _setup(hass, [
+    await setup_scheduler([
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
              action="climate.turn_on", target={"entity_id": ["climate.a"]}),
         Rule(id="r3", profile=3, day="1", time=time(11, 0),
@@ -126,8 +102,10 @@ async def test_preview_without_block_length_uses_the_real_upcoming_block(
     assert [r["rule_id"] for r in msg["result"]["rules"]] == ["r1"]
 
 
-async def test_rules_list_reports_not_set_up_after_unload(hass, hass_ws_client):
-    entry = await _setup(hass)
+async def test_rules_list_reports_not_set_up_after_unload(
+    hass, hass_ws_client, setup_scheduler
+):
+    entry = await setup_scheduler()
     client = await hass_ws_client(hass)
 
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -140,8 +118,10 @@ async def test_rules_list_reports_not_set_up_after_unload(hass, hass_ws_client):
     assert msg["error"]["code"] == "not_set_up"
 
 
-async def test_preview_reports_not_set_up_after_unload(hass, hass_ws_client):
-    entry = await _setup(hass)
+async def test_preview_reports_not_set_up_after_unload(
+    hass, hass_ws_client, setup_scheduler
+):
+    entry = await setup_scheduler()
     client = await hass_ws_client(hass)
 
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -190,8 +170,10 @@ NEW_RULE = {
 }
 
 
-async def test_create_generates_an_id_and_persists(hass, hass_ws_client):
-    await _setup(hass)
+async def test_create_generates_an_id_and_persists(
+    hass, hass_ws_client, setup_scheduler
+):
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json(
         {"id": 1, "type": "shabbat_scheduler/rules/create", "rule": NEW_RULE}
@@ -206,8 +188,10 @@ async def test_create_generates_an_id_and_persists(hass, hass_ws_client):
     assert [r.id for r in reloaded.rules] == [rule_id]
 
 
-async def test_create_ignores_a_client_supplied_id(hass, hass_ws_client):
-    await _setup(hass)
+async def test_create_ignores_a_client_supplied_id(
+    hass, hass_ws_client, setup_scheduler
+):
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json(
         {
@@ -221,8 +205,8 @@ async def test_create_ignores_a_client_supplied_id(hass, hass_ws_client):
     assert msg["result"]["rule"]["id"] != "client-chosen"
 
 
-async def test_create_rejects_malformed_input(hass, hass_ws_client):
-    await _setup(hass)
+async def test_create_rejects_malformed_input(hass, hass_ws_client, setup_scheduler):
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json(
         {
@@ -239,8 +223,10 @@ async def test_create_rejects_malformed_input(hass, hass_ws_client):
     assert reloaded.rules == []
 
 
-async def test_create_succeeds_but_warns_on_a_conflict(hass, hass_ws_client):
-    await _setup(hass, [
+async def test_create_succeeds_but_warns_on_a_conflict(
+    hass, hass_ws_client, setup_scheduler
+):
+    await setup_scheduler([
         Rule(id="a", profile=1, day="1", time=time(11, 0),
              action="climate.turn_off", target={"entity_id": ["climate.a"]}),
     ])
@@ -254,8 +240,10 @@ async def test_create_succeeds_but_warns_on_a_conflict(hass, hass_ws_client):
     assert msg["result"]["warnings"]
 
 
-async def test_update_changes_only_supplied_fields(hass, hass_ws_client):
-    await _setup(hass, [
+async def test_update_changes_only_supplied_fields(
+    hass, hass_ws_client, setup_scheduler
+):
+    await setup_scheduler([
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
              action="climate.turn_on", target={"entity_id": ["climate.a"]}),
     ])
@@ -275,8 +263,8 @@ async def test_update_changes_only_supplied_fields(hass, hass_ws_client):
     assert msg["result"]["rule"]["time"] == "11:00:00"
 
 
-async def test_update_of_unknown_rule_errors(hass, hass_ws_client):
-    await _setup(hass)
+async def test_update_of_unknown_rule_errors(hass, hass_ws_client, setup_scheduler):
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json(
         {
@@ -290,8 +278,8 @@ async def test_update_of_unknown_rule_errors(hass, hass_ws_client):
     assert not msg["success"]
 
 
-async def test_delete_removes_the_rule(hass, hass_ws_client):
-    await _setup(hass, [
+async def test_delete_removes_the_rule(hass, hass_ws_client, setup_scheduler):
+    await setup_scheduler([
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
              action="climate.turn_on"),
     ])
@@ -307,8 +295,8 @@ async def test_delete_removes_the_rule(hass, hass_ws_client):
     assert reloaded.rules == []
 
 
-async def test_defaults_update_persists(hass, hass_ws_client):
-    await _setup(hass)
+async def test_defaults_update_persists(hass, hass_ws_client, setup_scheduler):
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json(
         {
@@ -334,13 +322,13 @@ async def test_defaults_update_persists(hass, hass_ws_client):
 
 
 async def test_defaults_update_rejects_a_string_data_payload(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
     """`data` must be a mapping - the same guard rule fields already use.
 
     v1 spelled this key `settings`; the guard and the hole are identical.
     """
-    await _setup(hass)
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json(
         {
@@ -358,14 +346,14 @@ async def test_defaults_update_rejects_a_string_data_payload(
 
 
 async def test_defaults_update_rejects_a_bare_string_target_payload(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
     """`target` must be a mapping (a target selector), not a bare string.
 
     v1's equivalent was `devices`, which had to be a list rather than a
     bare string. Same door, same guard, v2 vocabulary.
     """
-    await _setup(hass)
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json(
         {
@@ -383,7 +371,7 @@ async def test_defaults_update_rejects_a_bare_string_target_payload(
 
 
 async def test_defaults_update_of_an_invalid_target_is_rejected(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
     """The same door `ws_create` was closed against, for the same reason.
 
@@ -398,7 +386,7 @@ async def test_defaults_update_of_an_invalid_target_is_rejected(
     `test_create_of_an_invalid_target_is_rejected` uses, deliberately: the
     point is that the two doors now give the same answer to one payload.
     """
-    await _setup(hass)
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json(
         {
@@ -418,7 +406,7 @@ async def test_defaults_update_of_an_invalid_target_is_rejected(
 
 
 async def test_defaults_update_accepts_every_target_selector_a_rule_may_use(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
     """Validated the same way, not merely validated MORE.
 
@@ -427,7 +415,7 @@ async def test_defaults_update_accepts_every_target_selector_a_rule_may_use(
     default, and refusing them would break authoring rather than tighten
     it. Driven per selector so one over-broad schema cannot pass this.
     """
-    await _setup(hass)
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     for index, target in enumerate(
         (
@@ -452,7 +440,7 @@ async def test_defaults_update_accepts_every_target_selector_a_rule_may_use(
 
 
 async def test_defaults_update_accepts_a_payload_with_no_target_at_all(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
     """`target` is optional, and a data-only default is the normal case.
 
@@ -461,7 +449,7 @@ async def test_defaults_update_accepts_a_payload_with_no_target_at_all(
     client sent, so a `target` appearing here would mean the guard had
     invented one on the way through.
     """
-    await _setup(hass)
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json(
         {
@@ -486,7 +474,7 @@ ORIGINAL = Rule(
 
 
 async def test_update_to_an_invalid_condition_is_rejected_and_persists_nothing(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
     """The v2 successor to `test_update_to_custom_action_without_script`.
 
@@ -498,7 +486,7 @@ async def test_update_to_an_invalid_condition_is_rejected_and_persists_nothing(
     YAML door already applied it; this door did not, so a shape the YAML
     import rejects could still be written over the websocket.
     """
-    await _setup(hass, [ORIGINAL])
+    await setup_scheduler([ORIGINAL])
     client = await hass_ws_client(hass)
     await client.send_json(
         {
@@ -520,9 +508,9 @@ async def test_update_to_an_invalid_condition_is_rejected_and_persists_nothing(
 
 
 async def test_create_of_an_invalid_condition_is_rejected_and_persists_nothing(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
-    await _setup(hass)
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json(
         {
@@ -540,9 +528,11 @@ async def test_create_of_an_invalid_condition_is_rejected_and_persists_nothing(
     assert reloaded.rules == []
 
 
-async def test_create_of_an_invalid_target_is_rejected(hass, hass_ws_client):
+async def test_create_of_an_invalid_target_is_rejected(
+    hass, hass_ws_client, setup_scheduler
+):
     """`target` goes through HA's own TARGET_SERVICE_FIELDS schema."""
-    await _setup(hass)
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json(
         {
@@ -561,7 +551,7 @@ async def test_create_of_an_invalid_target_is_rejected(hass, hass_ws_client):
 
 
 async def test_a_rule_read_from_the_api_can_be_written_straight_back(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
     """A read-modify-write must not be refused for fields the server added.
 
@@ -573,7 +563,7 @@ async def test_a_rule_read_from_the_api_can_be_written_straight_back(
     field it never chose to send. They are now dropped on the way in, so a
     client still cannot SET them.
     """
-    await _setup(hass, [ORIGINAL])
+    await setup_scheduler([ORIGINAL])
     client = await hass_ws_client(hass)
 
     await client.send_json({"id": 1, "type": "shabbat_scheduler/rules/list"})
@@ -614,7 +604,7 @@ async def test_a_rule_read_from_the_api_can_be_written_straight_back(
 
 
 async def test_a_client_cannot_forge_the_migration_fields_on_create(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
     """The other half of the I4 seam. `yaml_io` now PRESERVES
     `migration_error`/`migration_source`, because a YAML file is a
@@ -623,7 +613,7 @@ async def test_a_client_cannot_forge_the_migration_fields_on_create(
     healthy rule in the unmigrated-rules repair issue and make the card
     render a migration failure that never happened.
     """
-    await _setup(hass)
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json(
         {
@@ -647,8 +637,10 @@ async def test_a_client_cannot_forge_the_migration_fields_on_create(
     assert reloaded.rules[0].migration_source is None
 
 
-async def test_update_succeeds_but_warns_on_a_conflict(hass, hass_ws_client):
-    await _setup(hass, [
+async def test_update_succeeds_but_warns_on_a_conflict(
+    hass, hass_ws_client, setup_scheduler
+):
+    await setup_scheduler([
         Rule(id="a", profile=1, day="1", time=time(11, 0),
              action="climate.turn_on", target={"entity_id": ["climate.a"]}),
         Rule(id="b", profile=1, day="1", time=time(12, 0),
@@ -682,13 +674,13 @@ async def test_update_succeeds_but_warns_on_a_conflict(hass, hass_ws_client):
 
 
 async def test_create_over_the_websocket_arms_a_timer(
-    hass, hass_ws_client, freezer
+    hass, hass_ws_client, setup_scheduler, freezer
 ):
     # Client first: the access token is minted against the real clock and
     # would look not-yet-issued once the freezer moves into the past.
     client = await hass_ws_client(hass)
     freezer.move_to("2026-08-15T05:00:00+00:00")
-    entry = await _setup(hass, enabled=True)
+    entry = await setup_scheduler(enabled=True)
     engine = hass.data[DOMAIN][entry.entry_id]["engine"]
     assert engine.upcoming() == []
 
@@ -704,12 +696,11 @@ async def test_create_over_the_websocket_arms_a_timer(
 
 
 async def test_delete_over_the_websocket_disarms_its_timer(
-    hass, hass_ws_client, freezer
+    hass, hass_ws_client, setup_scheduler, freezer
 ):
     client = await hass_ws_client(hass)
     freezer.move_to("2026-08-15T05:00:00+00:00")
-    entry = await _setup(
-        hass,
+    entry = await setup_scheduler(
         [Rule(id="r1", profile=1, day="1", time=time(11, 0),
               action="climate.turn_on", target={"entity_id": ["climate.a"]})],
         enabled=True,
@@ -727,12 +718,11 @@ async def test_delete_over_the_websocket_disarms_its_timer(
 
 
 async def test_update_over_the_websocket_moves_the_armed_time(
-    hass, hass_ws_client, freezer
+    hass, hass_ws_client, setup_scheduler, freezer
 ):
     client = await hass_ws_client(hass)
     freezer.move_to("2026-08-15T05:00:00+00:00")
-    entry = await _setup(
-        hass,
+    entry = await setup_scheduler(
         [Rule(id="r1", profile=1, day="1", time=time(11, 0),
               action="climate.turn_on", target={"entity_id": ["climate.a"]})],
         enabled=True,
@@ -755,8 +745,8 @@ async def test_update_over_the_websocket_moves_the_armed_time(
     assert [item.rule.time for item in engine.upcoming()] == [time(20, 0)]
 
 
-async def test_subscribe_pushes_on_change(hass, hass_ws_client):
-    await _setup(hass)
+async def test_subscribe_pushes_on_change(hass, hass_ws_client, setup_scheduler):
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json({"id": 1, "type": "shabbat_scheduler/subscribe"})
 
@@ -782,10 +772,12 @@ async def test_subscribe_pushes_on_change(hass, hass_ws_client):
     assert [r["id"] for r in event["event"]["rules"]] == ["pushed"]
 
 
-async def test_subscribe_pushes_the_current_state_immediately(hass, hass_ws_client):
+async def test_subscribe_pushes_the_current_state_immediately(
+    hass, hass_ws_client, setup_scheduler
+):
     """Otherwise a client needs list AND subscribe, and a change landing
     between the two is lost silently and never re-reported."""
-    await _setup(hass, [
+    await setup_scheduler([
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
              action="climate.turn_on"),
     ])
@@ -800,8 +792,10 @@ async def test_subscribe_pushes_the_current_state_immediately(hass, hass_ws_clie
     assert pushed["event"]["block"]["length"] == 1
 
 
-async def test_subscribe_stops_pushing_after_unsubscribe(hass, hass_ws_client):
-    await _setup(hass)
+async def test_subscribe_stops_pushing_after_unsubscribe(
+    hass, hass_ws_client, setup_scheduler
+):
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json({"id": 1, "type": "shabbat_scheduler/subscribe"})
     assert (await client.receive_json())["success"]
@@ -847,9 +841,9 @@ MUTATIONS = [
 
 @pytest.mark.parametrize("mutation", MUTATIONS, ids=lambda m: m["type"])
 async def test_a_read_only_user_cannot_mutate(
-    hass, hass_ws_client, hass_read_only_access_token, mutation
+    hass, hass_ws_client, setup_scheduler, hass_read_only_access_token, mutation
 ):
-    await _setup(hass, [
+    await setup_scheduler([
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
              action="climate.turn_on", target={"entity_id": ["climate.a"]}),
     ])
@@ -870,10 +864,10 @@ async def test_a_read_only_user_cannot_mutate(
 
 
 async def test_a_read_only_user_can_still_read(
-    hass, hass_ws_client, hass_read_only_access_token
+    hass, hass_ws_client, setup_scheduler, hass_read_only_access_token
 ):
     """Reading is what the card does for everyone; only writing is admin."""
-    await _setup(hass, [
+    await setup_scheduler([
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
              action="climate.turn_on", target={"entity_id": ["climate.a"]}),
     ])
@@ -905,9 +899,9 @@ DEFAULT_DEVICES = {"target": {"entity_id": ["climate.a"]}}
 
 
 async def test_rules_list_finds_conflicts_when_devices_come_from_defaults(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
-    await _setup(hass, CONFLICTING_PAIR, defaults=DEFAULT_DEVICES)
+    await setup_scheduler(CONFLICTING_PAIR, defaults=DEFAULT_DEVICES)
     client = await hass_ws_client(hass)
     await client.send_json({"id": 1, "type": "shabbat_scheduler/rules/list"})
     msg = await client.receive_json()
@@ -917,9 +911,9 @@ async def test_rules_list_finds_conflicts_when_devices_come_from_defaults(
 
 
 async def test_create_finds_a_conflict_when_devices_come_from_defaults(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
-    await _setup(hass, CONFLICTING_PAIR[:1], defaults=DEFAULT_DEVICES)
+    await setup_scheduler(CONFLICTING_PAIR[:1], defaults=DEFAULT_DEVICES)
     client = await hass_ws_client(hass)
     await client.send_json(
         {
@@ -938,10 +932,9 @@ async def test_create_finds_a_conflict_when_devices_come_from_defaults(
 
 
 async def test_update_finds_a_conflict_when_devices_come_from_defaults(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
-    await _setup(
-        hass,
+    await setup_scheduler(
         [
             Rule(id="a", profile=1, day="1", time=time(18, 0),
                  action="climate.turn_on"),
@@ -965,9 +958,11 @@ async def test_update_finds_a_conflict_when_devices_come_from_defaults(
     assert [w["targets"] for w in msg["result"]["warnings"]] == [["climate.a"]]
 
 
-async def test_defaults_update_finds_the_conflict_it_creates(hass, hass_ws_client):
+async def test_defaults_update_finds_the_conflict_it_creates(
+    hass, hass_ws_client, setup_scheduler
+):
     """Pointing the defaults at a device is itself what creates the clash."""
-    await _setup(hass, CONFLICTING_PAIR)
+    await setup_scheduler(CONFLICTING_PAIR)
     client = await hass_ws_client(hass)
     await client.send_json(
         {
@@ -985,9 +980,9 @@ async def test_defaults_update_finds_the_conflict_it_creates(hass, hass_ws_clien
 # --- Final review M8: deleting an unknown id is an error -----------------
 
 
-async def test_delete_of_unknown_rule_errors(hass, hass_ws_client):
+async def test_delete_of_unknown_rule_errors(hass, hass_ws_client, setup_scheduler):
     """Asymmetric with rules/update until now; {"ok": True} hid a desync."""
-    await _setup(hass)
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json(
         {"id": 1, "type": "shabbat_scheduler/rules/delete", "rule_id": "nope"}
@@ -1002,7 +997,7 @@ async def test_delete_of_unknown_rule_errors(hass, hass_ws_client):
 
 
 async def test_subscription_serves_the_new_store_after_a_reload(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
     """SIGNAL_RULES_CHANGED is global and the subscription outlives a reload.
 
@@ -1010,7 +1005,7 @@ async def test_subscription_serves_the_new_store_after_a_reload(
     store's contents while CRUD wrote to the new one - the card reading one
     store and writing another.
     """
-    entry = await _setup(hass)
+    entry = await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json({"id": 1, "type": "shabbat_scheduler/subscribe"})
     assert (await client.receive_json())["success"]
@@ -1039,14 +1034,14 @@ async def test_subscription_serves_the_new_store_after_a_reload(
 
 @pytest.mark.parametrize("length", [None, 3])
 async def test_preview_and_simulate_return_the_same_payload(
-    hass, hass_ws_client, length
+    hass, hass_ws_client, setup_scheduler, length
 ):
     """A comment claimed they "cannot drift apart" while they already had.
 
     They now share block.preview_payload, so this pins the claim instead of
     trusting it.
     """
-    await _setup(hass, [
+    await setup_scheduler([
         Rule(id="a", profile=1, day="1", time=time(18, 0),
              action="climate.turn_on"),
         Rule(id="b", profile=1, day="1", time=time(18, 0),
@@ -1074,8 +1069,10 @@ async def test_preview_and_simulate_return_the_same_payload(
         assert [c["targets"] for c in from_service["conflicts"]] == [["climate.a"]]
 
 
-async def test_list_carries_the_block_so_the_card_can_draw_dates(hass, hass_ws_client):
-    entry = await _setup(hass)
+async def test_list_carries_the_block_so_the_card_can_draw_dates(
+    hass, hass_ws_client, setup_scheduler
+):
+    entry = await setup_scheduler()
     client = await hass_ws_client(hass)
 
     await client.send_json_auto_id({"type": "shabbat_scheduler/rules/list"})
@@ -1106,8 +1103,8 @@ async def test_block_is_null_when_the_zmanim_are_missing(hass, hass_ws_client):
     assert result["block"] is None
 
 
-async def test_list_carries_the_master_entity_id(hass, hass_ws_client):
-    entry = await _setup(hass)
+async def test_list_carries_the_master_entity_id(hass, hass_ws_client, setup_scheduler):
+    entry = await setup_scheduler()
     client = await hass_ws_client(hass)
 
     await client.send_json_auto_id({"type": "shabbat_scheduler/rules/list"})
@@ -1153,11 +1150,11 @@ async def _next_event(client, timeout=5):
 
 
 async def test_the_block_rolling_forward_reaches_an_open_subscriber(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
     """The havdalah roll-forward is not a store mutation, so nothing used
     to tell a subscribed card about it."""
-    await _setup(hass)
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json({"id": 1, "type": "shabbat_scheduler/subscribe"})
     assert (await client.receive_json())["success"]
@@ -1181,11 +1178,11 @@ async def test_the_block_rolling_forward_reaches_an_open_subscriber(
 
 
 async def test_a_refresh_that_changes_nothing_pushes_nothing(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
     """Dispatching on every refresh rather than on a real block change
     would push on every zmanim re-publish and twice on every rule edit."""
-    await _setup(hass)
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     await client.send_json({"id": 1, "type": "shabbat_scheduler/subscribe"})
     assert (await client.receive_json())["success"]
@@ -1206,7 +1203,7 @@ async def test_a_refresh_that_changes_nothing_pushes_nothing(
 
 
 async def test_the_payload_carries_each_rules_own_last_outcome(
-    hass, hass_ws_client
+    hass, hass_ws_client, setup_scheduler
 ):
     """One verdict per rule, not one for the whole integration.
 
@@ -1214,7 +1211,7 @@ async def test_the_payload_carries_each_rules_own_last_outcome(
     usefully: the next rule to act overwrites it, so by the time anyone
     looks it describes some other rule.
     """
-    entry = await _setup(hass, [
+    entry = await setup_scheduler([
         Rule(id="blocked", profile=1, day="1", time=time(11, 0),
              action="climate.turn_on", target={"entity_id": ["climate.a"]}),
         Rule(id="ran", profile=1, day="1", time=time(12, 0),
@@ -1248,7 +1245,9 @@ async def test_the_payload_carries_each_rules_own_last_outcome(
     assert by_id["never"]["last_outcome"] is None
 
 
-async def test_a_client_cannot_forge_a_last_outcome(hass, hass_ws_client):
+async def test_a_client_cannot_forge_a_last_outcome(
+    hass, hass_ws_client, setup_scheduler
+):
     """A forged verdict is the one lie this feature must make impossible.
 
     The card now reads `last_outcome` off every rule in the payload, so a
@@ -1256,7 +1255,7 @@ async def test_a_client_cannot_forge_a_last_outcome(hass, hass_ws_client):
     - but a client that could SET it could make the card report "fired"
     for a rule that never ran, on the one day nobody can check.
     """
-    await _setup(hass)
+    await setup_scheduler()
     client = await hass_ws_client(hass)
     forged = {"outcome": "called", "at": "2020-01-01T00:00:00+00:00",
               "detail": "never happened"}

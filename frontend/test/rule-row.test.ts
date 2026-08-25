@@ -198,6 +198,28 @@ describe('shabbat-rule-row', () => {
     expect(await classFor('skipped_no_replay')).not.toContain('bad');
   });
 
+  it('marks a diagnostic on an otherwise-successful call as bad', async () => {
+    // The other half of `outcomeIsBad`, and it was unguarded: deleting the
+    // `no_live_targets` clause left all 237 tests green. This is the case
+    // the whole two-axis design exists for - a call that HAPPENED and
+    // reported success while changing less than it claimed - so drawing it
+    // as quietly as a plain success is the quiet failure this integration
+    // exists to surface.
+    const classesFor = async (extra: Record<string, unknown>) => {
+      const el = await render({ rule: rule({ last_outcome: {
+        outcome: 'called', at: '2026-08-25T18:00:00+00:00', detail: null,
+        ...extra,
+      } }) });
+      return [...el.shadowRoot!.querySelector('.last-outcome')!.classList];
+    };
+    expect(await classesFor({ no_live_targets: true })).toContain('bad');
+    expect(await classesFor({ unknown_targets: ['switch.typo'] }))
+      .toContain('bad');
+    // ...and a plain `called` with neither is still quiet, so the two
+    // assertions above are about the diagnostics and not about `called`.
+    expect(await classesFor({})).not.toContain('bad');
+  });
+
   /**
    * The fourth non-firing reason, and the one a reader is most likely to
    * be hunting for: replay is off by default, so this is what a whole
@@ -243,7 +265,17 @@ describe('shabbat-rule-row', () => {
       expect(text.toLowerCase(), language).not.toContain('stale');
     }
     // `he` is a real translation, not a copy of `en` that satisfies `tsc`.
-    expect(lines[0]).not.toBe(lines[1]);
+    //
+    // Comparing the whole LINES could not fail: the row also renders a
+    // localised timestamp ("25 Aug" vs "25 באוג׳"), so the two differ
+    // whatever the labels say. That version of this assertion was itself
+    // an unfailable guard, inside the test written to close another one -
+    // caught by ablating the `he` label to the `en` string and watching
+    // all 237 tests stay green. Compare the LABELS, which is the thing
+    // actually claimed.
+    expect(t('he', 'outcome_skipped_no_replay')).not.toBe(
+      t('en', 'outcome_skipped_no_replay'),
+    );
   });
 
   /**

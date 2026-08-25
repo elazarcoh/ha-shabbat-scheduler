@@ -1,0 +1,191 @@
+{
+  "block": {
+    "candle_lighting": "2026-08-14T18:44:00+03:00",
+    "dates": {
+      "1": "2026-08-15",
+      "erev": "2026-08-14"
+    },
+    "havdalah": "2026-08-15T20:01:00+03:00",
+    "length": 1
+  },
+  "defaults": {
+    "data": {
+      "temperature": 24
+    },
+    "target": {
+      "entity_id": [
+        "climate.salon"
+      ]
+    }
+  },
+  "dry_run": true,
+  "enabled": true,
+  "master_entity_id": "switch.shabbat_scheduler",
+  "rules": [
+    {
+      "action": "climate.set_temperature",
+      "color": "#4caf50",
+      "condition": [],
+      "data": {
+        "temperature": 26
+      },
+      "day": "erev",
+      "enabled": true,
+      "icon": "mdi:snowflake",
+      "id": "erev-salon",
+      "migration_error": null,
+      "migration_source": null,
+      "name": "Salon AC",
+      "profile": 1,
+      "replay": {
+        "enabled": true
+      },
+      "target": {
+        "entity_id": [
+          "climate.salon"
+        ]
+      },
+      "time": "18:50:00"
+    },
+    {
+      "action": "climate.turn_on",
+      "color": null,
+      "condition": [],
+      "data": {},
+      "day": "1",
+      "enabled": true,
+      "icon": null,
+      "id": "day1-mamad-on",
+      "migration_error": null,
+      "migration_source": null,
+      "name": null,
+      "profile": 1,
+      "replay": {
+        "enabled": false
+      },
+      "target": {
+        "entity_id": [
+          "climate.mamad"
+        ]
+      },
+      "time": "11:00:00"
+    },
+    {
+      "action": "climate.turn_off",
+      "color": null,
+      "condition": [],
+      "data": {},
+      "day": "1",
+      "enabled": true,
+      "icon": null,
+      "id": "day1-mamad-off",
+      "migration_error": null,
+      "migration_source": null,
+      "name": null,
+      "profile": 1,
+      "replay": {
+        "enabled": false
+      },
+      "target": {
+        "entity_id": [
+          "climate.mamad",
+          "climate.boiler"
+        ]
+      },
+      "time": "11:00:00"
+    },
+    {
+      "action": "switch.turn_off",
+      "color": null,
+      "condition": [],
+      "data": {},
+      "day": "1",
+      "enabled": false,
+      "icon": null,
+      "id": "day1-disabled",
+      "migration_error": null,
+      "migration_source": null,
+      "name": null,
+      "profile": 1,
+      "replay": {
+        "enabled": false
+      },
+      "target": {},
+      "time": "13:00:00"
+    },
+    {
+      "action": "climate.turn_on",
+      "color": null,
+      "condition": [],
+      "data": {},
+      "day": "2",
+      "enabled": true,
+      "icon": null,
+      "id": "p3-day2-on",
+      "migration_error": null,
+      "migration_source": null,
+      "name": null,
+      "profile": 3,
+      "replay": {
+        "enabled": false
+      },
+      "target": {
+        "entity_id": [
+          "climate.mamad"
+        ]
+      },
+      "time": "09:00:00"
+    },
+    {
+      "action": "switch.turn_off",
+      "color": null,
+      "condition": [],
+      "data": {},
+      "day": "2",
+      "enabled": true,
+      "icon": null,
+      "id": "p3-day2-off",
+      "migration_error": null,
+      "migration_source": null,
+      "name": null,
+      "profile": 3,
+      "replay": {
+        "enabled": false
+      },
+      "target": {
+        "entity_id": [
+          "climate.mamad"
+        ]
+      },
+      "time": "09:00:00"
+    }
+  ],
+  "warnings": [
+    {
+      "day": "1",
+      "kind": "conflict",
+      "profile": 1,
+      "rule_ids": [
+        "day1-mamad-on",
+        "day1-mamad-off"
+      ],
+      "targets": [
+        "climate.mamad"
+      ],
+      "time": "11:00:00"
+    },
+    {
+      "day": "2",
+      "kind": "conflict",
+      "profile": 3,
+      "rule_ids": [
+        "p3-day2-on",
+        "p3-day2-off"
+      ],
+      "targets": [
+        "climate.mamad"
+      ],
+      "time": "09:00:00"
+    }
+  ]
+}

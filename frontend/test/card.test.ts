@@ -2,15 +2,25 @@ import { describe, expect, it, vi } from 'vitest';
 import '../src/card';
 import { ruleToForm } from '../src/format';
 import type { CardState, RuleData } from '../src/types';
+// The mount/subscribe mechanism lives in one place so that
+// `payload-contract.test.ts` renders the same card this file does, rather
+// than a second one that merely looks the same. See helpers.ts.
+import {
+  attach,
+  fakeHass,
+  flush,
+  mount,
+  ruleRows,
+  type Card,
+  type SubscribeFn,
+  type Unsubscribe,
+} from './helpers';
 
 const EMPTY = {
   day: 'erev', time: '', action: 'climate.turn_on', target: {}, data: {},
   condition: [], replay: { enabled: false },
   name: null, icon: null, color: null, enabled: true,
 };
-
-/** Lets pending promise chains (subscribe, unsubscribe, callService) settle. */
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const rule = (over: Partial<RuleData> = {}): RuleData => ({
   id: 'a', profile: 1, day: '1', time: '11:00:00',
@@ -32,51 +42,6 @@ const state = (over: Partial<CardState> = {}): CardState => ({
   },
   ...over,
 });
-
-type Unsubscribe = () => Promise<void>;
-type SubscribeFn = (
-  cb: (s: CardState) => void,
-  msg?: unknown,
-) => Promise<Unsubscribe>;
-
-/** A fake hass whose subscription we drive by hand. */
-function fakeHass(over: Record<string, unknown> = {}) {
-  let push: ((s: CardState) => void) | null = null;
-  const unsubscribe = vi.fn(async () => {});
-  const callService = vi.fn(async () => {});
-  const callWS = vi.fn(async (_message: any) => ({}) as any);
-  const hass = {
-    locale: { language: 'en' },
-    user: { is_admin: true },
-    callService,
-    callWS,
-    connection: {
-      subscribeMessage: vi.fn<SubscribeFn>(async (cb) => {
-        push = cb;
-        return unsubscribe;
-      }),
-    },
-    ...over,
-  };
-  return { hass, send: (s: CardState) => push!(s), unsubscribe, callService, callWS };
-}
-
-type Card = HTMLElement & Record<string, any>;
-
-/** Attaches a card without waiting for anything - for mid-flight probes. */
-function attach(hass: unknown): Card {
-  const el = document.createElement('shabbat-scheduler-card') as Card;
-  el.setConfig({});
-  document.body.appendChild(el);
-  el.hass = hass;
-  return el;
-}
-
-async function mount(hass: unknown) {
-  const el = attach(hass);
-  await el.updateComplete;
-  return el;
-}
 
 describe('shabbat-scheduler-card', () => {
   it('subscribes once even when hass is reassigned repeatedly', async () => {
@@ -180,15 +145,7 @@ describe('shabbat-scheduler-card', () => {
     await el.updateComplete;
 
     expect(el.shadowRoot!.querySelector('shabbat-warnings')!.shadowRoot!.querySelector('.banner')).toBeNull();
-    const dayGroups = [...el.shadowRoot!.querySelectorAll('shabbat-day-group')] as (HTMLElement &
-      Record<string, unknown>)[];
-    await Promise.all(
-      dayGroups.map((g) => (g as unknown as { updateComplete: Promise<unknown> }).updateComplete),
-    );
-    const hasRuleRow = dayGroups.some(
-      (g) => g.shadowRoot!.querySelector('shabbat-rule-row') !== null,
-    );
-    expect(hasRuleRow).toBe(true);
+    expect((await ruleRows(el)).length).toBe(1);
   });
 
   it('shows a conflict on a non-displayed rule in the banner', async () => {

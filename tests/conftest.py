@@ -7,8 +7,10 @@ integrations are only loaded when `enable_custom_integrations` is requested.
 import pytest
 from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.shabbat_scheduler.const import DOMAIN
+from custom_components.shabbat_scheduler.store import RuleStore
 
 
 @pytest.fixture
@@ -52,6 +54,53 @@ async def jerusalem(hass):
     """
     await hass.config.async_set_time_zone("Asia/Jerusalem")
     return hass
+
+
+ZMANIM = {
+    "sensor.jewish_calendar_upcoming_candle_lighting": "2026-08-14T15:44:00+00:00",
+    "sensor.jewish_calendar_upcoming_havdalah": "2026-08-15T17:01:00+00:00",
+}
+
+
+@pytest.fixture
+def setup_scheduler(hass):
+    """Set the integration up over the same path `tests/test_websocket.py` uses.
+
+    Identical in behaviour to that module's local `_setup`: pin the
+    timezone, publish the two Jewish Calendar sensors the engine derives a
+    block from, seed the store, then load a config entry. Exposed here as a
+    fixture rather than an importable helper for the same reason
+    `rule_switch_entity_id` is - `tests/` is not a package, so a fixture is
+    the only shape a second test module can reach without an import.
+
+    A fixture and not a copy because `tests/test_frontend_fixture.py`
+    generates a JSON fixture the frontend suite renders the card from: if
+    that generator set the integration up in its own slightly different way,
+    the committed payload would answer to that private setup rather than to
+    the one every websocket test already pins, which is exactly the
+    "tests agree with each other and with nothing else" failure it exists
+    to prevent.
+    """
+
+    async def _setup(rules=(), defaults=None, enabled=False, dry_run=False):
+        await hass.config.async_set_time_zone("Asia/Jerusalem")
+        for entity_id, state in ZMANIM.items():
+            hass.states.async_set(entity_id, state)
+        store = RuleStore(hass)
+        await store.async_load()
+        await store.async_replace_all(defaults or {}, list(rules))
+        if enabled:
+            # Timers are only armed while the master switch is on.
+            await store.async_set_enabled(True)
+        if dry_run:
+            await store.async_set_dry_run(True)
+        entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        return entry
+
+    return _setup
 
 
 @pytest.fixture

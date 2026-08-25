@@ -778,6 +778,32 @@ story for a value the server has no use for. **What to do:** re-pick the
 service the data belongs to; the stored `data` reappears under it, editable,
 exactly as saved.
 
+## The card's payload fixture is generated, and regenerating it is one command
+
+`frontend/test/fixtures/state-payload.json` is **not hand-written**. It is a
+real `shabbat_scheduler/rules/list` result, captured over an actual websocket
+round trip by `tests/test_frontend_fixture.py` and committed.
+`frontend/test/payload-contract.test.ts` renders the card from it, and that
+Python test fails whenever the committed copy differs from what the server now
+sends. Regenerate with:
+
+```
+REGEN_FRONTEND_FIXTURE=1 uv run pytest tests/test_frontend_fixture.py
+```
+
+Why it exists: the frontend suite was **168/168 green for the whole period in
+which the card rendered every conflict warning as an empty string**. Every
+fixture was hand-written and read `warning.device`, a key the backend had
+renamed to `targets` — so the tests agreed with each other and with nothing at
+all. One generated fixture is what makes any part of that suite answerable to
+the server.
+
+A `_state_payload` change (a new field, a renamed one) is therefore **expected**
+to fail that Python test. That is the guard working: read the diff, regenerate,
+and check whether the card actually reads the field that moved. Do not silence
+it by editing the JSON — `payload-contract.test.ts` would then be rendering a
+shape the server does not send, which is the original failure exactly.
+
 ## Deployment note
 
 Nothing here has been installed on the live instance. The integration ships

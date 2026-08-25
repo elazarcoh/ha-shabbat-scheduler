@@ -9,42 +9,70 @@ rediscover the hard way.
 
 A rule is a single `action` with a `target` and a `data` payload — no
 domain-specific knowledge is supposed to live in this integration at all.
-`climate.set_temperature` is the one exception, and it exists because Home
-Assistant itself will not accept the obvious single call.
+`climate.set_temperature` is the one exception, and it splits into up to
+three ordered calls (`set_hvac_mode`, `set_temperature`, `set_fan_mode`)
+for **three separate reasons**, not one. It matters that they stay
+separate: someone later deciding whether this shim can be deleted needs
+to know which parts are forced by Home Assistant and which are a
+hardware quirk that might outlive any schema change.
 
-`climate/__init__.py`'s `SET_TEMPERATURE_SCHEMA` is `PREVENT_EXTRA` and
-requires at least one of `temperature`, `target_temp_high` or
-`target_temp_low`. So the natural way to author "put the AC on cool at 26,
-quiet fan" —
+Verified directly against the installed
+`homeassistant/components/climate/__init__.py`:
 
-```yaml
-action: climate.set_temperature
-data: { temperature: 26, hvac_mode: cool, fan_mode: quiet }
+```python
+SET_TEMPERATURE_SCHEMA = vol.All(
+    cv.has_at_least_one_key(ATTR_TEMPERATURE, ATTR_TARGET_TEMP_HIGH, ATTR_TARGET_TEMP_LOW),
+    cv.make_entity_service_schema({
+        vol.Exclusive(ATTR_TEMPERATURE, "temperature"): vol.Coerce(float),
+        vol.Inclusive(ATTR_TARGET_TEMP_HIGH, "temperature"): vol.Coerce(float),
+        vol.Inclusive(ATTR_TARGET_TEMP_LOW, "temperature"): vol.Coerce(float),
+        vol.Optional(ATTR_HVAC_MODE): vol.Coerce(HVACMode),
+    }),
+)
 ```
 
-— is rejected outright by Home Assistant's own validator, not merely
-unsupported by some hardware: `hvac_mode` and `fan_mode` are extra keys
-`PREVENT_EXTRA` does not allow alongside `temperature`, and a bare `{
-hvac_mode: cool }` with no temperature key fails the "at least one of"
-requirement the other way. Neither failure is specific to this project —
-any automation writing that YAML gets the same rejection.
+1. **`fan_mode` is peeled off because the schema genuinely rejects it.**
+   `fan_mode` names no key at all in `SET_TEMPERATURE_SCHEMA`, and
+   `make_entity_service_schema` defaults to `PREVENT_EXTRA`, so a
+   `climate.set_temperature` call carrying `fan_mode` is refused outright
+   with "extra keys not allowed" — HA's own validator, not a hardware
+   opinion.
+2. **`hvac_mode` is peeled off for a hardware reason, not a schema
+   one.** `vol.Optional(ATTR_HVAC_MODE)` is right there in the schema —
+   `hvac_mode` is an explicitly *permitted* key alongside a temperature,
+   and HA would accept the combined call. It is split anyway because
+   several climate integrations — the `aux_cloud` units this was built
+   for among them — intermittently fail to power on when mode and
+   temperature arrive in the same call, schema or no schema. The
+   ecosystem's most-used third-party scheduler hardcodes the identical
+   split, which is the evidence this is a real, shared hardware quirk
+   and not this project's special case.
+3. **`set_temperature` is only emitted when something temperature-ish
+   remains.** `cv.has_at_least_one_key(temperature, target_temp_high,
+   target_temp_low)` means a call with only `hvac_mode` (or only
+   `fan_mode`) would leave `set_temperature` an empty `{}`, which HA
+   rejects the other way — "must contain at least one of…". So the shim
+   drops that call entirely when no temperature-ish key survives the
+   split, rather than emitting a call guaranteed to fail.
 
-`expand_action` (`device_ops.py`) is the one place this integration still
-knows something about a domain: a `climate.set_temperature` call carrying
-`hvac_mode` and/or `fan_mode` is split into up to three ordered calls —
-`set_hvac_mode`, `set_temperature` (only when a temperature-ish key
-remains), `set_fan_mode` — in that order, because reversing it can leave a
-unit briefly at the wrong setpoint. Every other action passes through
-untouched.
+Because reason 1 is genuinely a schema constraint and reason 2 is not, a
+future relaxation of `SET_TEMPERATURE_SCHEMA` (say, if HA ever allowed
+`fan_mode` too) would remove the *schema* half of the justification but
+leave the *hardware* half standing — the split would still be worth
+keeping for `hvac_mode`, even though it would no longer be strictly
+required by HA. `expand_action` (`device_ops.py`) is the one place this
+integration still knows something about a domain; every other action
+passes through untouched, in order `set_hvac_mode` → `set_temperature` →
+`set_fan_mode` (v1's order — reversing it can leave a unit briefly at
+the wrong setpoint).
 
-This counts as a compatibility shim rather than domain knowledge creeping
-back in for two reasons: it is forced by Home Assistant's own schema, not
-by a preference of this project's, and the ecosystem's most-used
-third-party scheduler hardcodes the identical three-call split for the
-identical reason. If Home Assistant ever relaxes `SET_TEMPERATURE_SCHEMA`,
-this shim becomes unnecessary rather than wrong — the single natural call
-would simply start working, and `expand_action` could be deleted, not
-rewritten.
+This counts as a compatibility shim rather than domain knowledge
+creeping back in because two of its three reasons are forced by Home
+Assistant's own schema rather than a preference of this project's, and
+the one genuinely domain-specific reason (`hvac_mode`+temperature
+together) is corroborated by the wider ecosystem's most-used scheduler
+making the identical choice for the identical hardware, not invented
+here.
 
 ## Conflicts are coarser than they were
 
@@ -103,6 +131,17 @@ action at 11:05 would have been exactly correct. A replay older than
 window was, rather than either firing blindly or vanishing without a
 trace. Omitting `within` means no bound at all, matching how every rule
 behaved before this option existed.
+
+`replay.enabled` and `replay.within` are not the only gate. `async_catch_up`
+replays through the same `async_apply_rule` path a normal fire uses
+(`engine.py`), which means the rule's own `condition` is evaluated again
+and must pass — a replay is not a bypass of the rule's guard, it is the
+rule firing late, subject to everything that would have blocked it on
+time. So a rule can have `replay.enabled: true`, land well inside
+`within`, and still not replay: it is blocked, reported the same way a
+blocked on-time fire would be, and this is not visible as `skipped_stale`
+at all — that outcome is reserved for staleness specifically. Worth
+knowing before assuming a silent non-replay must be a `within` problem.
 
 ## Two rules on one device at one instant can interleave
 

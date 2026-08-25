@@ -172,7 +172,11 @@ profiles:
   still happen — an 11:00 rule replayed at 23:00 does more harm than
   skipping it, so a replay older than `within` is reported as
   `skipped_stale` rather than fired. Omitting `within` means no bound,
-  matching how every rule behaved before this option existed.
+  matching how every rule behaved before this option existed. A replay
+  still passes through the rule's own `condition` before firing, exactly
+  like a normal fire — so a rule can pass `enabled` and `within` and still
+  not replay, blocked the same way it would be blocked at its original
+  moment.
 
 One authored action can still become more than one actual service call:
 see [`docs/known-behaviours.md`](docs/known-behaviours.md) for the one

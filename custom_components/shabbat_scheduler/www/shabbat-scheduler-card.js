@@ -5172,11 +5172,19 @@ let ShabbatServiceEditor = class ShabbatServiceEditor extends i$1 {
     render() {
         return b `
       <div class="wrap">
+        <!-- No \`showAdvanced\`. It was passed here for a while, first
+             hard-coded true and then following the user's own preference -
+             but \`ha-service-control\` has no such property in this Home
+             Assistant version. Its full property list is \`hass, value,
+             disabled, narrow, showServiceId, hidePicker, hideDescription\`,
+             so the binding was inert and the tests asserting it only
+             passed because happy-dom accepts any property on an element it
+             has never heard of. Which advanced fields render is HA's
+             decision, made inside its own element. -->
         <ha-service-control
           .hass=${this.hass}
           .value=${{ action: this.action, data: this.data }}
           .disabled=${this.disabled}
-          .showAdvanced=${this.hass?.userData?.showAdvanced === true}
           @value-changed=${this._onChange}
         ></ha-service-control>
       </div>
@@ -5894,7 +5902,7 @@ ShabbatDefaultsDialog = __decorate([
 ], ShabbatDefaultsDialog);
 
 /** Stamped into the Lovelace resource URL so a rebuild busts the cache. */
-const CARD_VERSION = '0.4.0';
+const CARD_VERSION = '0.5.0';
 
 /**
  * The only failure the server states as a fact: `ws_subscribe`

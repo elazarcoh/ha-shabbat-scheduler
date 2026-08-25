@@ -82,23 +82,22 @@ describe('shabbat-service-editor', () => {
     expect(control(el).disabled).toBe(true);
   });
 
-  it('shows advanced fields when the user has that HA preference set', async () => {
+  // Three tests asserting `showAdvanced` was forwarded lived here, and
+  // they were deleted rather than repaired. `ha-service-control` has no
+  // such property in this Home Assistant version - its full property list
+  // is `hass, value, disabled, narrow, showServiceId, hidePicker,
+  // hideDescription` - so nothing ever read what they proved was passed.
+  // They passed only because happy-dom accepts any property on an element
+  // it has never heard of, which makes them the exact shape this suite
+  // spent a whole plan learning to distrust: a test that agrees with the
+  // code and would agree just as readily with code that does nothing.
+  //
+  // Which advanced fields render is HA's decision, inside its own element.
+  it('does not forward a property Home Assistant has no use for', async () => {
     const el = await render({
       hass: { states: {}, userData: { showAdvanced: true } },
     });
-    expect(control(el).showAdvanced).toBe(true);
-  });
-
-  it('does not show advanced fields when there is no userData at all', async () => {
-    const el = await render({ hass: { states: {} } });
-    expect(control(el).showAdvanced).toBe(false);
-  });
-
-  it('does not show advanced fields when the user has explicitly turned them off', async () => {
-    const el = await render({
-      hass: { states: {}, userData: { showAdvanced: false } },
-    });
-    expect(control(el).showAdvanced).toBe(false);
+    expect('showAdvanced' in control(el)).toBe(false);
   });
 });
 

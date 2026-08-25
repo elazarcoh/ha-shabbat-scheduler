@@ -217,20 +217,26 @@ export function formatWarning(warning: WarningData, language?: string): string {
 }
 
 /**
- * The English phrases the server itself uses for the two target
- * diagnostics, byte-identical to `UNKNOWN_ENTITY_PREFIX` and
- * `NO_LIVE_TARGETS_NOTE` in const.py.
+ * The English phrase the server itself uses for a misspelt entity id,
+ * byte-identical to `UNKNOWN_ENTITY_PREFIX` in const.py.
  *
- * Kept as constants separately from the translated strings because they do
- * two different jobs. The translated string is what the reader SEES; these
- * are what `formatOutcome` de-duplicates AGAINST - a total miss already
- * reads "no such entity: light.x" in `detail`, because that is what the
- * engine puts in the failed result's `error`, and the card must not say it
- * a second time. The server always sends `detail` in English, so the check
- * has to be against English whatever language the card is in.
+ * Kept separately from the translated string because the two do different
+ * jobs. The translated string is what the reader SEES; this is what
+ * `formatOutcome` de-duplicates AGAINST - a total miss already reads "no
+ * such entity: light.x" in `detail`, because that is what `_call` puts in
+ * the failed result's `error`, and the card must not say it twice. The
+ * server always sends `detail` in English, so the check has to be against
+ * English whatever language the card is in.
+ *
+ * There is deliberately NO twin for `NO_LIVE_TARGETS_NOTE`, and the
+ * symmetry with logbook.py is tempting and false. `logbook.py` de-duplicates
+ * on both phrases because it BUILDS its own message and appends the note
+ * itself. Here `detail` comes from the server, and `NO_LIVE_TARGETS_NOTE`
+ * is never written into any result key at all - `engine.py` passes it only
+ * as an argument to a `_LOGGER.warning`. A guard for it could never run,
+ * and no test could ever notice its absence, so there is none.
  */
 const SERVER_NO_SUCH_ENTITY = 'no such entity: ';
-const SERVER_REACHED_NOTHING = 'reached no entity that exists';
 
 const OUTCOME_LABELS: Record<string, StringKey> = {
   called: 'outcome_called',
@@ -252,11 +258,12 @@ const OUTCOME_LABELS: Record<string, StringKey> = {
  * about the same rule.
  *
  * Both diagnostics are appended AFTER the outcome rather than replacing
- * it, most actionable first, exactly as `_note_diagnostics` does in
+ * it, most actionable first, in the same order `_note_diagnostics` uses in
  * logbook.py. A misspelling is the one the reader can fix; "reached
  * nothing" is the one that says a call that really happened changed
  * nothing anyway. Neither is an outcome, and a rule can be `called` and
- * carry either.
+ * carry either. Only the misspelling is de-duplicated - see
+ * `SERVER_NO_SUCH_ENTITY` for why the other guard would be dead code.
  *
  * An unrecognised `outcome` still renders: this arrives over a socket from
  * a server that may be a version ahead, and a blank line reads as "nothing
@@ -271,7 +278,7 @@ export function formatOutcome(outcome: LastOutcome, language?: string): string {
   if (unknown.length > 0 && !text.includes(SERVER_NO_SUCH_ENTITY)) {
     text = `${text} — ${t(language, 'outcome_no_such_entity')}${unknown.join(', ')}`;
   }
-  if (outcome.no_live_targets === true && !text.includes(SERVER_REACHED_NOTHING)) {
+  if (outcome.no_live_targets === true) {
     text = `${text} — ${t(language, 'outcome_reached_nothing')}`;
   }
   return text;

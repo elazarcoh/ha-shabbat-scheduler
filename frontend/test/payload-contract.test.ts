@@ -60,6 +60,17 @@ const displayedRules = (): RuleData[] =>
       rule.profile === state.block!.length && blockDays().includes(rule.day),
   );
 
+/**
+ * The displayed rule the SERVER recorded an outcome for.
+ *
+ * The generator runs dry with a frozen clock, so `erev-salon` really is
+ * replayed and really is refused as too stale - see the `_FROZEN_NOW` note
+ * in `tests/test_frontend_fixture.py`. Nothing here may hand-write that
+ * outcome; it is read back out of the committed payload.
+ */
+const withOutcome = (): RuleData =>
+  displayedRules().find((rule) => rule.last_outcome !== null)!;
+
 const text = (el: Card): string => el.shadowRoot!.textContent!.trim();
 
 /** How many times `needle` appears in `haystack`. */
@@ -207,6 +218,66 @@ describe('the card, against a real server payload', () => {
     expect(header.masterEntityId).toBe(state.master_entity_id);
     expect(header.enabled).toBe(state.enabled);
     expect(header.dryRun).toBe(state.dry_run);
+  });
+
+  it('carries one recorded outcome and one rule that never ran', () => {
+    // A guard on the fixture, like the conflict guard above: both halves
+    // have to be real, or the two rendering assertions below go vacuous in
+    // opposite directions. If the generator ever stops recording, or
+    // records for everything, this fails loudly instead.
+    const rule = withOutcome();
+    expect(rule).toBeDefined();
+    expect(rule.last_outcome!.outcome.length).toBeGreaterThan(0);
+    expect(rule.last_outcome!.detail).toBeTruthy();
+    expect(displayedRules().some((other) => other.last_outcome === null)).toBe(true);
+  });
+
+  /**
+   * The half of Gap A that Task 11 left open.
+   *
+   * The generated payload now carries a real `last_outcome`, but until this
+   * test nothing on the frontend side read it: a card that stopped
+   * rendering the field entirely would have been caught only by
+   * `rule-row.test.ts`, whose fixture is HAND-WRITTEN - which is exactly
+   * the pattern that let the card render every conflict as an empty string
+   * through 168 green tests.
+   *
+   * "A rule that does not fire must say why - in the logbook AND on the
+   * card." The server's own words have to be visible text on the row, not
+   * merely a property that arrived.
+   */
+  it("renders the server's recorded outcome as visible text on its own row", async () => {
+    const el = await renderCardWithState(state);
+    const rule = withOutcome();
+    const row = (await ruleRows(el)).find(
+      (candidate) => (candidate.rule as RuleData).id === rule.id,
+    )!;
+    expect(row).toBeDefined();
+
+    const line = row.shadowRoot!.querySelector('.last-outcome');
+    expect(line).not.toBeNull();
+    const shown = line!.textContent!.trim();
+    expect(shown.length).toBeGreaterThan(0);
+    // The server's own wording, verbatim - the same string the logbook row
+    // carries. An empty or "undefined" line is the bug this file exists for.
+    expect(shown).toContain(rule.last_outcome!.detail!);
+    expect(shown).not.toContain('undefined');
+    // And a verdict as well as the reason: a row showing only the raw
+    // detail never says whether the rule ran. Same idiom as the `.brief`
+    // assertion above.
+    expect(shown.length).toBeGreaterThan(rule.last_outcome!.detail!.length);
+    // This rule did NOT run, so it must not be drawn as quietly as one
+    // that did.
+    expect([...line!.classList]).toContain('bad');
+  });
+
+  it('renders no outcome line at all for a rule the server says never ran', async () => {
+    const el = await renderCardWithState(state);
+    const never = displayedRules().find((rule) => rule.last_outcome === null)!;
+    const row = (await ruleRows(el)).find(
+      (candidate) => (candidate.rule as RuleData).id === never.id,
+    )!;
+    expect(row.shadowRoot!.querySelector('.last-outcome')).toBeNull();
   });
 
   it('draws the block dates the server sent, on the right days', async () => {

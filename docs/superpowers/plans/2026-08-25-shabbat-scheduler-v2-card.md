@@ -2259,7 +2259,7 @@ rename it, keeping a note that it was the characterisation test for the gap:
 
 ```python
 async def test_a_target_entity_that_does_not_exist_is_reported_as_failed(
-    hass, engine, make_rule,
+    hass, engine
 ):
     """Was the characterisation test for Plan-2 Gap B.
 

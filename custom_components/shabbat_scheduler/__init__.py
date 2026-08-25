@@ -57,6 +57,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # still has to issue one delete, in case a previous install left a
     # persistent issue behind and the rules were repaired while unloaded.
     reported_unmigrated: dict[str, tuple[str, ...] | None] = {"ids": None}
+    reported_split: dict[str, tuple[str, ...] | None] = {"rules": None}
+
+    @callback
+    def _sync_split_issue() -> None:
+        """Report the rules a mixed-domain v1 rule was split into.
+
+        Derived from the store, and for the same reason the unmigrated issue
+        is (see below): the migration runs once ever, so anything keyed on
+        the migration EVENT is gone by the second restart.
+
+        The marker is a stashed `migration_source` with no
+        `migration_error`. `migration.migrate_v1` writes that pair on each
+        part of a rule it had to split, and on nothing else - a rule it
+        could not convert carries both fields, and a rule it converted
+        whole carries neither. The one other way to arrive here is a YAML
+        import that deliberately carries a `migration_source`, which is the
+        user's own doing and is also how they acknowledge this issue.
+
+        Grouped by the ORIGINAL rule id, because "e-climate, e-switch" on
+        its own does not tell anyone which of their rules those came from.
+        """
+        groups: dict[str, list[str]] = {}
+        for rule in store.rules:
+            if rule.migration_error or not rule.migration_source:
+                continue
+            source_id = str(rule.migration_source.get("id") or "?")
+            groups.setdefault(source_id, []).append(rule.id)
+
+        described = tuple(
+            f"{source} → {', '.join(parts)}"
+            for source, parts in sorted(groups.items())
+        )
+        if described == reported_split["rules"]:
+            return
+        reported_split["rules"] = described
+        if described:
+            repairs.async_create_split_rules_issue(hass, list(described))
+        else:
+            repairs.async_delete_split_rules_issue(hass)
 
     @callback
     def _sync_unmigrated_issue() -> None:
@@ -85,6 +124,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             repairs.async_delete_unmigrated_rules_issue(hass)
 
     _sync_unmigrated_issue()
+    _sync_split_issue()
 
     candle_sensor = _configured_sensor(entry, CONF_CANDLE_SENSOR, DEFAULT_CANDLE_SENSOR)
     havdalah_sensor = _configured_sensor(
@@ -125,11 +165,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         not a wrong one.
         """
         async_dispatcher_send(hass, SIGNAL_RULES_CHANGED)
-        # Cheap, synchronous, and the only way the unmigrated-rules report
-        # can clear without a restart: this is the choke point every
-        # mutation path goes through, including the YAML import that is the
-        # documented way to repair those rules.
+        # Cheap, synchronous, and the only way either migration report can
+        # clear without a restart: this is the choke point every mutation
+        # path goes through, including the YAML import that is the
+        # documented way to repair - or to acknowledge - those rules.
         _sync_unmigrated_issue()
+        _sync_split_issue()
         hass.async_create_task(engine.async_refresh())
 
     store.async_set_change_listener(_rules_changed)

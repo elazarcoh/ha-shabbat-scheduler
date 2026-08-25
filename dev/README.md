@@ -30,6 +30,19 @@ that was not a full `down -v`; running it against a container that still has
 its onboarding user will fail on the user-creation step, so tear down with
 `down -v` first if the container was only stopped rather than removed.
 
+**Restart-based testing needs the template pair, not the fabricated one.**
+Because the fabricated sensors vanish on restart, a restart leaves the engine
+with no block at all - it logs `no block is known, so nothing is scheduled`
+and catch-up correctly does nothing. That is indistinguishable from a replay
+bug, and it cost a debugging cycle before it was written down. For anything
+that involves restarting the container - replay, catch-up, the
+`_caught_up_for` guard - use `sensor.livetest_candle_lighting` /
+`sensor.livetest_havdalah` from `configuration.yaml` instead. They are
+template sensors, so they survive restarts, and they always bracket `now`:
+yesterday 18:44 to today 23:59. The span crosses midnight on purpose - the
+engine rejects a same-day pair as an implausible zman pair, since a real
+Shabbat runs Friday evening into Saturday night.
+
 **Re-seeding the zmanim does not move the block.** The engine persists the
 block in force and holds it, so writing earlier dates into the two sensors on
 a running instance changes nothing - `rules/list` keeps reporting the old

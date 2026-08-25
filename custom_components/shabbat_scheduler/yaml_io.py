@@ -17,6 +17,19 @@ from .rule_schema import rule_from_api, validate_defaults
 
 _OPTIONAL_FIELDS = ("name", "icon", "color")
 
+# Written by the v1 -> v2 migration, never by a user, and emitted here
+# because the documented way to inspect or re-author an unmigrated rule is
+# to export it and read `migration_source`. An export that omitted them
+# could not show it, and the import - which replaces the WHOLE rule set -
+# then deleted the only copy, along with the `migration_error` the
+# unmigrated-rules repair issue is derived from: the rule came back a
+# disabled stub pointing at a service that does not exist, with nothing
+# anywhere saying why. Editing them by hand in the file is pointless rather
+# than dangerous; `rule_schema` types them like every other field, and the
+# only thing forging one achieves is putting your own rule in the repair
+# issue. A websocket client still cannot set them at all.
+_MIGRATION_FIELDS = ("migration_error", "migration_source")
+
 
 def _day_key(day: str) -> str:
     return EREV if day == EREV else f"day_{day}"
@@ -102,6 +115,13 @@ def _rule_from_entry(entry, profile: int, day: str) -> Rule:
     Only the genuinely YAML-shaped parts are handled here: the `at` key
     (the API calls it `time`), and an id that - unlike the API's - is
     preserved so a round trip keeps each rule's entity and history.
+
+    `keep_server_fields` is what makes a YAML file a serialised store
+    rather than a client edit: `migration_error`/`migration_source` survive
+    the round trip instead of being silently dropped. The v1-field
+    rejection above is unaffected - it inspects only this level, and a
+    stashed `migration_source` is a nested mapping whose `devices`/
+    `settings`/`script` keys are the whole point of keeping it.
     """
     if not isinstance(entry, Mapping):
         raise ValueError(f"each rule must be a mapping, got {entry!r}")
@@ -116,7 +136,9 @@ def _rule_from_entry(entry, profile: int, day: str) -> Rule:
     payload["profile"] = profile
     payload["day"] = day
 
-    return rule_from_api(payload, entry.get("id") or uuid.uuid4().hex)
+    return rule_from_api(
+        payload, entry.get("id") or uuid.uuid4().hex, keep_server_fields=True
+    )
 
 
 def export_yaml(defaults: dict, rules: list[Rule]) -> str:
@@ -145,7 +167,7 @@ def export_yaml(defaults: dict, rules: list[Rule]) -> str:
             entry["replay"] = replay_entry
         if not rule.enabled:
             entry["enabled"] = False
-        for name in _OPTIONAL_FIELDS:
+        for name in (*_OPTIONAL_FIELDS, *_MIGRATION_FIELDS):
             value = getattr(rule, name)
             if value:
                 entry[name] = value

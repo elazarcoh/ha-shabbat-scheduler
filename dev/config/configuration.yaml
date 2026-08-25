@@ -76,3 +76,21 @@ logger:
   default: info
   logs:
     custom_components.shabbat_scheduler: debug
+
+# A zmanim pair that ALWAYS brackets "now" and — unlike states poked in via
+# POST /api/states — SURVIVES A RESTART. Without this, replay/catch-up cannot
+# be tested at all: the fabricated sensors vanish on restart, the engine finds
+# no block, and catch-up correctly does nothing, which looks exactly like a
+# replay bug. Cost a real debugging cycle before it was written down.
+#
+# The pair spans midnight deliberately. The engine rejects a same-day pair as
+# an "implausible zmanim pair" (a real Shabbat runs Friday evening -> Saturday
+# night), which is a guard worth keeping and easy to trip with a naive fixture.
+template:
+  - sensor:
+      - name: Livetest candle lighting
+        unique_id: livetest_candle_lighting
+        state: "{{ (now() - timedelta(days=1)).strftime('%Y-%m-%d') }}T18:44:00+03:00"
+      - name: Livetest havdalah
+        unique_id: livetest_havdalah
+        state: "{{ now().strftime('%Y-%m-%d') }}T23:59:00+03:00"

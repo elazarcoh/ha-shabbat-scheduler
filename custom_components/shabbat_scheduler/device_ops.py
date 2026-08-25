@@ -8,6 +8,11 @@ so that exception is testable without an instance.
 
 from __future__ import annotations
 
+import logging
+
+# stdlib only - this module imports zero Home Assistant, by constraint.
+_LOGGER = logging.getLogger(__name__)
+
 _CLIMATE_SET_TEMPERATURE = "climate.set_temperature"
 _CLIMATE_SET_HVAC_MODE = "climate.set_hvac_mode"
 _CLIMATE_SET_FAN_MODE = "climate.set_fan_mode"
@@ -57,13 +62,58 @@ def expand_action(action: str, data: dict) -> list[tuple[str, dict]]:
     were absent and no split happened at all, so HA rejects it loudly
     instead of it vanishing with no trace.
 
+    A NULL `hvac_mode`/`fan_mode` is the one exception to that paragraph,
+    and it follows from reason 3 rather than contradicting it. A null is not
+    a mode: `set_hvac_mode` requires one, so peeling off
+    `{hvac_mode: None}` emits a call that cannot succeed - the retry storm
+    reason 3 exists to prevent - and leaving it on the `set_temperature`
+    call is no better, because `SET_TEMPERATURE_SCHEMA` coerces it through
+    `vol.Coerce(HVACMode)`, which a null fails, taking the temperature down
+    with it. So a null mode neither splits nor rides along: it is dropped,
+    and logged, because v1's `Skip` channel for "asked for, cannot be done"
+    has no v2 equivalent. This is not only a v2 author's typo - v1 gated all
+    three of its settings keys on `is not None`
+    (`5192d4c:device_ops.py:126`, `:140`, `:153`), so a valid v1 store could
+    hold one and the migration used to carry it through.
+
     An author writes the one natural action; this makes it work. Every
     other action passes through untouched, and no other domain knowledge
     belongs in this file.
     """
-    if action != _CLIMATE_SET_TEMPERATURE or (
-        _HVAC_MODE not in data and _FAN_MODE not in data
-    ):
+    if action != _CLIMATE_SET_TEMPERATURE:
+        # Every other action passes through untouched, including a
+        # directly-authored `set_hvac_mode` carrying a null: this shim owns
+        # the split, not the payload of calls it did not invent.
+        return [(action, data)]
+
+    # Null modes are dropped BEFORE anything else looks at the payload, so
+    # neither the split below nor the surviving `set_temperature` call can
+    # carry one. Everything after this point can safely test key presence.
+    for key in (_HVAC_MODE, _FAN_MODE):
+        if key in data and data[key] is None:
+            _LOGGER.warning(
+                "%s carries a null %s, which is not a mode, so it has been "
+                "dropped: set_%s requires a value, and leaving it on the "
+                "set_temperature call would make Home Assistant refuse that "
+                "call too.", action, key, key,
+            )
+    data = {
+        key: value
+        for key, value in data.items()
+        if value is not None or key not in (_HVAC_MODE, _FAN_MODE)
+    }
+
+    if _HVAC_MODE not in data and _FAN_MODE not in data:
+        # No split is needed. Note `data` can be EMPTY here, if the only keys
+        # present were null modes - in which case this emits
+        # `set_temperature {}` and Home Assistant refuses it. That is a known,
+        # documented inconsistency with the mode-only case, not an oversight:
+        # see "A mode-only null payload still emits a call Home Assistant
+        # refuses" in docs/known-behaviours.md before changing it. Returning
+        # `[]` is the obvious fix and is the wrong one today, because the
+        # engine builds `last_run` from what this yields, so an empty
+        # expansion would record the rule as fired having silently done
+        # nothing - the defect class this project cares most about.
         return [(action, data)]
 
     calls: list[tuple[str, dict]] = []

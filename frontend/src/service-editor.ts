@@ -37,7 +37,7 @@ export class ShabbatServiceEditor extends LitElement {
           .hass=${this.hass}
           .value=${{ action: this.action, data: this.data }}
           .disabled=${this.disabled}
-          .showAdvanced=${true}
+          .showAdvanced=${this.hass?.userData?.showAdvanced === true}
           @value-changed=${this._onChange}
         ></ha-service-control>
       </div>
@@ -49,7 +49,9 @@ export class ShabbatServiceEditor extends LitElement {
     this.dispatchEvent(new CustomEvent('service-changed', {
       detail: {
         action: typeof value.action === 'string' ? value.action : '',
-        data: (value.data ?? {}) as Record<string, unknown>,
+        data: (typeof value.data === 'object' && value.data !== null
+          ? value.data
+          : {}) as Record<string, unknown>,
       },
     }));
   };

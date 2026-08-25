@@ -143,5 +143,12 @@ export interface Hass {
   callService: (
     domain: string, service: string, data?: Record<string, unknown>,
   ) => Promise<unknown>;
+  /**
+   * The user's own advanced-mode preference. Passed to
+   * `<ha-service-control>` so this card shows advanced service fields
+   * exactly when Home Assistant itself would - hard-coding it on would
+   * override a preference the user set deliberately.
+   */
+  userData?: { showAdvanced?: boolean };
   [key: string]: unknown;
 }

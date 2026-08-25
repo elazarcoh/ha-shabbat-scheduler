@@ -81,4 +81,23 @@ describe('shabbat-service-editor', () => {
     const el = await render({ disabled: true });
     expect(control(el).disabled).toBe(true);
   });
+
+  it('shows advanced fields when the user has that HA preference set', async () => {
+    const el = await render({
+      hass: { states: {}, userData: { showAdvanced: true } },
+    });
+    expect(control(el).showAdvanced).toBe(true);
+  });
+
+  it('does not show advanced fields when there is no userData at all', async () => {
+    const el = await render({ hass: { states: {} } });
+    expect(control(el).showAdvanced).toBe(false);
+  });
+
+  it('does not show advanced fields when the user has explicitly turned them off', async () => {
+    const el = await render({
+      hass: { states: {}, userData: { showAdvanced: false } },
+    });
+    expect(control(el).showAdvanced).toBe(false);
+  });
 });

@@ -7,6 +7,20 @@ dependencies = ["pyyaml"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# pytest-aiohttp and pytest-homeassistant-custom-component both register a
+# fixture named `aiohttp_client`; HA's own version additionally disables
+# the aiohttp router's freeze-on-start so components can still register
+# HTTP views after a test's client already exists (auth/onboarding/lovelace,
+# which shabbat_scheduler depends on via its manifest, when hass_ws_client()
+# is called before those get set up). Which definition wins when two
+# plugins define the same fixture name depends on plugin registration
+# order, which is NOT guaranteed across environments - it happened to
+# favour HA's version in one venv and pytest-aiohttp's plain version (no
+# workaround) in another, freshly-installed one, deterministically failing
+# tests/test_websocket.py's three timer tests there with "Cannot register a
+# resource into frozen router." Disabling pytest-aiohttp outright removes
+# the ambiguity instead of hoping registration order keeps cooperating.
+addopts = "-p no:aiohttp"
 # e2e is collected on purpose, even though a plain run has neither the
 # container nor the token it needs. It skips cleanly without them, and
 # e2e/conftest.py prints a loud banner naming what went unverified. Leaving

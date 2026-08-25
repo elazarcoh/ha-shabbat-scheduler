@@ -4,12 +4,16 @@ pytest-homeassistant-custom-component ships the `hass` fixture; custom
 integrations are only loaded when `enable_custom_integrations` is requested.
 """
 
+from datetime import time
+
 import pytest
 from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.shabbat_scheduler.const import DOMAIN
+from custom_components.shabbat_scheduler.engine import ShabbatEngine
+from custom_components.shabbat_scheduler.models import Rule
 from custom_components.shabbat_scheduler.store import RuleStore
 
 
@@ -118,3 +122,50 @@ async def test_booleans(hass):
     )
     await hass.async_block_till_done()
     return hass
+
+
+@pytest.fixture
+async def engine(hass, jerusalem, test_booleans):
+    """A real engine over a fresh, empty store.
+
+    Moved here from `tests/test_engine.py` in Task 10, alongside `_rule`,
+    so `tests/test_execution_domains.py` could use the identical engine
+    rather than constructing a second one that might drift from it.
+    """
+    store = RuleStore(hass)
+    await store.async_load()
+    return ShabbatEngine(hass, store)
+
+
+@pytest.fixture
+def _rule():
+    """A minimally-filled-in `Rule`, for tests that only care about one field.
+
+    Moved here in Task 10 (from a module-level function in
+    `tests/test_engine.py`) so `tests/test_execution_domains.py` could use
+    it too, without copying it.
+
+    Deliberately a FIXTURE and not a plain function importable from this
+    module. `rule_switch_entity_id` above already makes that call for the
+    same reason and says it explicitly: `tests/` carries no `__init__.py`,
+    so a bare `from tests.conftest import _rule` (or a `sys.path` trick
+    reaching for the same effect) is not merely a second, redundant way to
+    get this helper - it is the ONLY other way, and closing it is the
+    point, not a side effect of avoiding duplication. A test file that
+    wants `_rule` asks pytest for it, the same way every other fixture
+    here is asked for; there is nowhere else to reach.
+    """
+
+    def _make(
+        action="input_boolean.turn_on",
+        entities=("input_boolean.t",),
+        **kwargs,
+    ):
+        return Rule(
+            id="r", profile=1, day="1", time=time(11, 0),
+            action=action,
+            target={"entity_id": list(entities)} if entities else {},
+            **kwargs,
+        )
+
+    return _make

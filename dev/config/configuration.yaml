@@ -41,6 +41,13 @@ input_boolean:
 #
 # `initial_hvac_mode: "off"` keeps them inert - they exist to be read, not
 # to control anything.
+# ONE `template:` key for the whole file. There were briefly two, and the
+# second silently won: YAML resolves a duplicate mapping key by keeping the
+# last, so `sensor.dev_room_temperature` vanished, both generic_thermostats
+# lost the `target_sensor` they name below, and `current_temperature` went
+# None on each. Nothing errored - the climates still registered and still
+# accepted set_temperature, so the fixture looked fine and simply could not
+# actuate. Add new template entities to THIS block; never open a second one.
 template:
   - sensor:
       - name: Dev room temperature
@@ -48,6 +55,59 @@ template:
         unit_of_measurement: "°C"
         device_class: temperature
         state: "22"
+
+      # A zmanim pair that ALWAYS brackets "now" and — unlike states poked
+      # in via POST /api/states — SURVIVES A RESTART. Without this,
+      # replay/catch-up cannot be tested at all: the fabricated sensors
+      # vanish on restart, the engine finds no block, and catch-up correctly
+      # does nothing, which looks exactly like a replay bug. Cost a real
+      # debugging cycle before it was written down.
+      #
+      # The pair spans midnight deliberately. The engine rejects a same-day
+      # pair as an "implausible zmanim pair" (a real Shabbat runs Friday
+      # evening -> Saturday night), a guard worth keeping and easy to trip
+      # with a naive fixture.
+      - name: Livetest candle lighting
+        unique_id: livetest_candle_lighting
+        state: "{{ (now() - timedelta(days=1)).strftime('%Y-%m-%d') }}T18:44:00+03:00"
+      - name: Livetest havdalah
+        unique_id: livetest_havdalah
+        state: "{{ now().strftime('%Y-%m-%d') }}T23:59:00+03:00"
+
+  # A template switch, so the multi-domain execution work has a real
+  # `switch.*` on the instance and not only in the suite. It proxies one of
+  # the input_booleans rather than owning state, which keeps the fixture
+  # inspectable: driving switch.dev_pump is visible on input_boolean.salon.
+  - switch:
+      - name: Dev pump
+        unique_id: dev_pump
+        state: "{{ is_state('input_boolean.salon', 'on') }}"
+        turn_on:
+          action: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.salon
+        turn_off:
+          action: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.salon
+
+# Entities for the multi-domain execution work. The point of v2 is that the
+# executor is not climate-shaped, and that cannot be demonstrated on an
+# instance holding only booleans and two thermostats.
+scene:
+  - name: Dev evening
+    entities:
+      input_boolean.salon: "on"
+      input_boolean.kids: "off"
+
+script:
+  dev_beep:
+    alias: Dev beep
+    sequence:
+      - action: persistent_notification.create
+        data:
+          title: Dev beep
+          message: The dev script ran.
 
 climate:
   - platform: generic_thermostat
@@ -77,20 +137,5 @@ logger:
   logs:
     custom_components.shabbat_scheduler: debug
 
-# A zmanim pair that ALWAYS brackets "now" and — unlike states poked in via
-# POST /api/states — SURVIVES A RESTART. Without this, replay/catch-up cannot
-# be tested at all: the fabricated sensors vanish on restart, the engine finds
-# no block, and catch-up correctly does nothing, which looks exactly like a
-# replay bug. Cost a real debugging cycle before it was written down.
-#
-# The pair spans midnight deliberately. The engine rejects a same-day pair as
-# an "implausible zmanim pair" (a real Shabbat runs Friday evening -> Saturday
-# night), which is a guard worth keeping and easy to trip with a naive fixture.
-template:
-  - sensor:
-      - name: Livetest candle lighting
-        unique_id: livetest_candle_lighting
-        state: "{{ (now() - timedelta(days=1)).strftime('%Y-%m-%d') }}T18:44:00+03:00"
-      - name: Livetest havdalah
-        unique_id: livetest_havdalah
-        state: "{{ now().strftime('%Y-%m-%d') }}T23:59:00+03:00"
+# The livetest zmanim pair and the template switch live in the single
+# `template:` block above, with the sensors. Do not reopen a second one here.

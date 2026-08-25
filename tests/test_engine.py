@@ -29,23 +29,13 @@ _ON = "input_boolean.turn_on"
 _OFF = "input_boolean.turn_off"
 
 
-@pytest.fixture
-async def engine(hass, jerusalem, test_booleans):
-    store = RuleStore(hass)
-    await store.async_load()
-    return ShabbatEngine(hass, store)
+# `engine` and `_rule` are both `tests/conftest.py` fixtures now (moved
+# there in Task 10 so `tests/test_execution_domains.py` could use them too,
+# without copying either) - see that module for why they are fixtures and
+# not importable functions.
 
 
-def _rule(action=_ON, entities=("input_boolean.t",), **kwargs):
-    return Rule(
-        id="r", profile=1, day="1", time=time(11, 0),
-        action=action,
-        target={"entity_id": list(entities)} if entities else {},
-        **kwargs,
-    )
-
-
-async def test_apply_calls_the_rules_action(hass, engine):
+async def test_apply_calls_the_rules_action(hass, engine, _rule):
     hass.states.async_set("input_boolean.t", "off")
     results = await engine.async_apply_rule(_rule())
     await hass.async_block_till_done()
@@ -55,7 +45,7 @@ async def test_apply_calls_the_rules_action(hass, engine):
 
 
 async def test_a_target_entity_that_does_not_exist_is_reported_as_failed(
-    hass, engine
+    hass, engine, _rule
 ):
     """Was the CHARACTERISATION TEST for Plan-2 Gap B. Now the fix.
 
@@ -80,7 +70,7 @@ async def test_a_target_entity_that_does_not_exist_is_reported_as_failed(
 
 
 async def test_a_target_naming_only_unknown_entities_is_reported_as_failed(
-    hass, engine
+    hass, engine, _rule
 ):
     """A typo must not look like a rule that fired.
 
@@ -102,7 +92,7 @@ async def test_a_target_naming_only_unknown_entities_is_reported_as_failed(
 
 
 async def test_a_partly_wrong_target_still_calls_and_still_reports_the_typo(
-    hass, engine
+    hass, engine, _rule
 ):
     """One typo among three must not suppress the other two."""
     hass.states.async_set("input_boolean.t", "off")
@@ -127,7 +117,7 @@ async def test_a_partly_wrong_target_still_calls_and_still_reports_the_typo(
 
 
 async def test_an_area_target_is_not_checked_entity_by_entity(
-    hass, engine, area_registry, entity_registry
+    hass, engine, area_registry, entity_registry, _rule
 ):
     """Only ids the USER typed are checked.
 
@@ -159,7 +149,7 @@ async def test_an_area_target_is_not_checked_entity_by_entity(
     assert result["outcome"] == "called"
 
 
-async def test_a_rule_with_no_target_is_unaffected(hass, engine):
+async def test_a_rule_with_no_target_is_unaffected(hass, engine, _rule ):
     """notify.* and friends carry no entity at all."""
     calls = async_mock_service(hass, "notify", "persistent_notification")
     rule = _rule(action="notify.persistent_notification", entities=())
@@ -170,7 +160,8 @@ async def test_a_rule_with_no_target_is_unaffected(hass, engine):
     assert len(calls) == 1
 
 
-async def test_a_group_member_without_a_state_is_not_a_misspelling(hass, engine):
+async def test_a_group_member_without_a_state_is_not_a_misspelling(hass, engine, _rule
+):
     """A group the USER typed expands to members the user did not type.
 
     `async_extract_referenced_entity_ids` runs with `expand_group` on, so
@@ -216,7 +207,7 @@ async def test_a_group_member_without_a_state_is_not_a_misspelling(hass, engine)
 
 
 async def test_a_typo_beside_a_working_area_still_reports_called(
-    hass, engine, area_registry, entity_registry
+    hass, engine, area_registry, entity_registry, _rule
 ):
     """Every TYPED id is unknown, yet the rule did something.
 
@@ -248,7 +239,7 @@ async def test_a_typo_beside_a_working_area_still_reports_called(
 
 
 async def test_an_existing_group_with_no_live_member_is_not_called_a_typo(
-    hass, engine
+    hass, engine, _rule
 ):
     """Nothing resolved, but nothing was MISSPELT either.
 
@@ -279,7 +270,7 @@ async def test_an_existing_group_with_no_live_member_is_not_called_a_typo(
 
 
 async def test_a_call_that_reached_nothing_says_so_rather_than_nothing(
-    hass, engine, caplog
+    hass, engine, caplog, _rule
 ):
     """THE THIRD DIAGNOSTIC. Round-2 review finding.
 
@@ -310,7 +301,8 @@ async def test_a_call_that_reached_nothing_says_so_rather_than_nothing(
     assert "failed" not in caplog.text.lower()
 
 
-async def test_a_dead_device_id_target_also_says_it_reached_nothing(hass, engine):
+async def test_a_dead_device_id_target_also_says_it_reached_nothing(hass, engine, _rule
+):
     """The same silence, arriving through `device_id` instead.
 
     A device-only target names no entity id, so the unknown-entity check
@@ -330,7 +322,7 @@ async def test_a_dead_device_id_target_also_says_it_reached_nothing(hass, engine
     assert "unknown_targets" not in result
 
 
-async def test_a_misspelt_group_id_is_reported_as_a_typo(hass, engine):
+async def test_a_misspelt_group_id_is_reported_as_a_typo(hass, engine, _rule ):
     """Where "typed but absent from `referenced`" meets "has no state".
 
     This is the one input that separates the engine's implementation from
@@ -355,7 +347,7 @@ async def test_a_misspelt_group_id_is_reported_as_a_typo(hass, engine):
     assert "no_live_targets" not in result
 
 
-async def test_a_healthy_call_says_nothing_about_live_targets(hass, engine):
+async def test_a_healthy_call_says_nothing_about_live_targets(hass, engine, _rule ):
     """The diagnostic must be silent when there is nothing to say."""
     hass.states.async_set("input_boolean.t", "off")
     [result] = await engine.async_apply_rule(_rule())
@@ -366,7 +358,7 @@ async def test_a_healthy_call_says_nothing_about_live_targets(hass, engine):
 
 
 async def test_the_all_wildcard_does_not_claim_to_have_reached_nothing(
-    hass, engine
+    hass, engine, _rule
 ):
     """`entity_id: all` resolves to an EMPTY set and acts on everything.
 
@@ -387,7 +379,7 @@ async def test_the_all_wildcard_does_not_claim_to_have_reached_nothing(
 
 
 async def test_a_target_home_assistant_cannot_even_parse_does_not_raise(
-    hass, engine, caplog
+    hass, engine, caplog, _rule
 ):
     """The `except` in `_inspect_target` is reachable, and this reaches it.
 
@@ -414,7 +406,7 @@ async def test_a_target_home_assistant_cannot_even_parse_does_not_raise(
 
 
 async def test_a_bare_string_entity_id_is_one_id_not_eighteen_characters(
-    hass, engine
+    hass, engine, _rule
 ):
     """Home Assistant accepts `entity_id` as a string or a list.
 
@@ -433,7 +425,8 @@ async def test_a_bare_string_entity_id_is_one_id_not_eighteen_characters(
     assert result["unknown_targets"] == ["input_boolean.nope"]
 
 
-async def test_the_all_wildcard_is_not_reported_as_a_misspelt_entity(hass, engine):
+async def test_the_all_wildcard_is_not_reported_as_a_misspelt_entity(hass, engine, _rule
+):
     """`entity_id: all` is a wildcard, not an entity id.
 
     `states.get("all")` is None, so a naive check warns that the rule
@@ -452,7 +445,7 @@ async def test_the_all_wildcard_is_not_reported_as_a_misspelt_entity(hass, engin
 
 
 async def test_a_dry_run_still_reports_an_unknown_target(
-    hass, jerusalem, test_booleans
+    hass, jerusalem, test_booleans, _rule
 ):
     """A dry run is where you WANT to find the typo."""
     store = RuleStore(hass)
@@ -467,7 +460,7 @@ async def test_a_dry_run_still_reports_an_unknown_target(
     assert result["unknown_targets"] == ["input_boolean.nope"]
 
 
-async def test_dry_run_makes_no_service_calls(hass, jerusalem, test_booleans):
+async def test_dry_run_makes_no_service_calls(hass, jerusalem, test_booleans, _rule ):
     store = RuleStore(hass)
     await store.async_load()
     await store.async_set_dry_run(True)
@@ -481,7 +474,7 @@ async def test_dry_run_makes_no_service_calls(hass, jerusalem, test_booleans):
     assert results[0]["outcome"] == "would_call"  # reports what WOULD happen
 
 
-async def test_a_rule_can_still_call_a_script(hass, engine):
+async def test_a_rule_can_still_call_a_script(hass, engine, _rule ):
     """v1's `Action.CUSTOM` + `script` field is now just an ordinary action."""
     calls = []
 
@@ -497,7 +490,7 @@ async def test_a_rule_can_still_call_a_script(hass, engine):
     assert calls[0].data["entity_id"] == ["script.demo"]
 
 
-async def test_last_run_is_recorded(hass, engine):
+async def test_last_run_is_recorded(hass, engine, _rule ):
     hass.states.async_set("input_boolean.t", "off")
     await engine.async_apply_rule(_rule())
     assert engine.last_run
@@ -507,7 +500,7 @@ async def test_last_run_is_recorded(hass, engine):
     assert engine.last_run[0]["target"] == {"entity_id": ["input_boolean.t"]}
 
 
-async def test_engine_recognises_its_own_context(hass, engine):
+async def test_engine_recognises_its_own_context(hass, engine, _rule ):
     """A context the engine issued for a call must later be recognised as ours.
 
     This is what a future enforcement feature needs to tell "we changed this"
@@ -713,7 +706,7 @@ async def test_one_rule_still_cannot_interleave_with_itself(hass, engine):
 # --- Task 10: retry on failure ----------------------------------------------
 
 
-async def test_failed_call_is_retried_then_notified(hass, engine):
+async def test_failed_call_is_retried_then_notified(hass, engine, _rule ):
     # A bare `switch` entity: the switch component is not loaded, so the stub
     # service below is the only handler and can be made to fail on demand.
     hass.states.async_set("switch.t", "off")
@@ -741,7 +734,7 @@ async def test_failed_call_is_retried_then_notified(hass, engine):
     assert hass.data.get("persistent_notification")
 
 
-async def test_retry_succeeds_on_second_attempt(hass, engine):
+async def test_retry_succeeds_on_second_attempt(hass, engine, _rule ):
     hass.states.async_set("switch.t", "off")
     attempts = []
 
@@ -1128,9 +1121,7 @@ async def test_rolled_forward_zmanim_keep_the_current_blocks_tail(
 
 
 @pytest.mark.parametrize("expected_lingering_timers", [True])
-async def test_next_block_is_adopted_once_the_tail_has_passed(
-    hass, engine, freezer
-):
+async def test_next_block_is_adopted_once_the_tail_has_passed(hass, engine, freezer ):
     """The hold is only until the current block's last rule is spent."""
     freezer.move_to("2026-08-15T05:00:00+00:00")
     _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
@@ -1155,9 +1146,7 @@ async def test_next_block_is_adopted_once_the_tail_has_passed(
 
 
 @pytest.mark.parametrize("expected_lingering_timers", [True])
-async def test_the_hold_releases_itself_and_arms_the_next_block(
-    hass, engine, freezer
-):
+async def test_the_hold_releases_itself_and_arms_the_next_block(hass, engine, freezer ):
     """Holding the block is only half the fix; letting go is the other half.
 
     Nothing else can release it. After havdalah the jewish_calendar sensors
@@ -1315,9 +1304,7 @@ async def test_a_restart_after_the_tail_adopts_the_next_block(
     )
 
 
-async def test_concurrent_refreshes_do_not_double_up_timers(
-    hass, engine, freezer
-):
+async def test_concurrent_refreshes_do_not_double_up_timers(hass, engine, freezer ):
     """Persisting the block introduces an await mid-refresh.
 
     Both zmanim sensors change at the same instant, so two `_zmanim_changed`
@@ -1426,7 +1413,7 @@ async def test_zmanim_notification_is_dismissed_once_readable(hass, engine):
 # --- Final review I2/I3: nothing may be dropped in silence ----------------
 
 
-async def test_an_unsupported_domain_is_no_longer_a_thing(hass, engine):
+async def test_an_unsupported_domain_is_no_longer_a_thing(hass, engine, _rule ):
     """v1's `cover.` test, inverted: the limitation it guarded is GONE.
 
     v1 could only drive four domains and reported `skipped` for anything
@@ -1448,7 +1435,7 @@ async def test_an_unsupported_domain_is_no_longer_a_thing(hass, engine):
 
 
 async def test_a_value_home_assistant_rejects_is_reported_failed_not_called(
-    hass, engine, caplog
+    hass, engine, caplog, _rule
 ):
     """The successor to v1's unsupported-fan-mode test.
 
@@ -1483,7 +1470,7 @@ async def test_a_value_home_assistant_rejects_is_reported_failed_not_called(
 # --- Final review I4: a failure must record WHY --------------------------
 
 
-async def test_failure_records_the_exception_and_a_reason(hass, engine, caplog):
+async def test_failure_records_the_exception_and_a_reason(hass, engine, caplog, _rule ):
     """The log line and the notification are the only forensic surface.
 
     On a Shabbat night nobody can investigate live; "failed after 3 attempts"
@@ -1537,7 +1524,8 @@ async def test_all_disabled_rules_notify_like_a_missing_profile(hass, engine):
 # --- Task 8: self-describing event, fired before the calls, shared context -
 
 
-async def test_event_is_self_describing_and_fires_before_the_calls(hass, engine):
+async def test_event_is_self_describing_and_fires_before_the_calls(hass, engine, _rule
+):
     """The logbook renders historical events, so the payload must stand alone."""
     hass.states.async_set("input_boolean.t", "off")
     order: list[str] = []
@@ -1611,7 +1599,7 @@ async def test_all_calls_of_one_rule_share_the_events_context(hass, engine):
     assert contexts[0] == event_context[0]
 
 
-async def test_concurrent_rules_get_distinct_contexts(hass, engine):
+async def test_concurrent_rules_get_distinct_contexts(hass, engine, _rule ):
     """Two rules applied at once must not share or overwrite each other's."""
     hass.states.async_set("input_boolean.t", "off")
     hass.states.async_set("input_boolean.salon", "off")

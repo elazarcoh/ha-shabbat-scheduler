@@ -49,26 +49,174 @@ async def test_apply_calls_the_rules_action(hass, engine):
     assert results[0]["outcome"] == "called"
 
 
-async def test_a_target_entity_that_does_not_exist_is_still_reported_as_called(
+async def test_a_target_entity_that_does_not_exist_is_reported_as_failed(
     hass, engine
 ):
-    """A characterisation test, pinning a KNOWN GAP rather than hiding it.
+    """Was the CHARACTERISATION TEST for Plan-2 Gap B. Now the fix.
 
-    v1 read each device's state itself, so a typo'd entity id came back
-    `failed`. v2 hands the whole target to `async_call_from_config`, and
-    Home Assistant's own service layer accepts a target naming an entity
-    that does not exist without raising - so the engine has nothing to
-    report but success. A misspelt entity id in a rule therefore looks
-    like a rule that fired.
+    It used to assert outcome "called", pinning the wrong behaviour on
+    purpose so that whoever closed the gap would be told by this test
+    failing rather than by nothing at all. That happened in Task 9; this
+    is the corrected assertion, kept under the same identity so the
+    history of the gap stays attached to the test that pinned it.
 
-    This is the quiet-failure shape the project exists to prevent, and it
-    is NOT fixed here (Task 12 carries the API and the card; it does not
-    redesign execution). The test exists so the gap is visible and so
-    that whoever closes it is told by a failing test that they did.
+    The gap: v1 read each device's state itself, so a typo'd entity id
+    came back `failed`. v2 hands the whole target to
+    `async_call_from_config`, and Home Assistant's own service layer
+    accepts a target naming an entity that does not exist without
+    raising - so the engine had nothing to report but success, and a
+    misspelt entity id looked exactly like a rule that fired. The engine
+    now checks the explicitly named ids first.
     """
     results = await engine.async_apply_rule(_rule(entities=("input_boolean.nope",)))
 
-    assert results[0]["outcome"] == "called"
+    assert results[0]["outcome"] == "failed"
+    assert results[0]["unknown_targets"] == ["input_boolean.nope"]
+
+
+async def test_a_target_naming_only_unknown_entities_is_reported_as_failed(
+    hass, engine
+):
+    """A typo must not look like a rule that fired.
+
+    Home Assistant's service layer accepts a target naming an entity that
+    does not exist without raising, so the engine has nothing to report
+    but success unless it looks first.
+    """
+    rule = _rule(
+        action=_ON,
+        entities=("input_boolean.doe_not_exist",),
+    )
+    [result] = await engine.async_apply_rule(rule)
+
+    assert result["outcome"] == "failed"
+    assert result["unknown_targets"] == ["input_boolean.doe_not_exist"]
+    # The last_run sensor and the logbook both read `error`; "failed" with
+    # nothing to read is a rule that does not say why it did not fire.
+    assert "input_boolean.doe_not_exist" in result["error"]
+
+
+async def test_a_partly_wrong_target_still_calls_and_still_reports_the_typo(
+    hass, engine
+):
+    """One typo among three must not suppress the other two."""
+    hass.states.async_set("input_boolean.t", "off")
+    hass.states.async_set("input_boolean.salon", "off")
+    rule = _rule(
+        action=_ON,
+        entities=(
+            "input_boolean.t",
+            "input_boolean.nope",
+            "input_boolean.salon",
+        ),
+    )
+    [result] = await engine.async_apply_rule(rule)
+    await hass.async_block_till_done()
+
+    assert result["outcome"] == "called"
+    assert result["unknown_targets"] == ["input_boolean.nope"]
+    # The two real entities were genuinely acted on - reporting the typo
+    # must not have cost the rest of the target its call.
+    assert hass.states.get("input_boolean.t").state == "on"
+    assert hass.states.get("input_boolean.salon").state == "on"
+
+
+async def test_an_area_target_is_not_checked_entity_by_entity(
+    hass, engine, area_registry, entity_registry
+):
+    """Only ids the USER typed are checked.
+
+    The area here holds a registry entity with NO state - an unloaded or
+    unavailable entity, which is an ordinary condition, not a typo. It
+    comes out of the registry, so it exists by construction.
+
+    This is the test that fails if the check ever widens from
+    `selected.referenced` to `referenced | indirectly_referenced`: the
+    wider set contains this stateless entity and would report it as a
+    misspelling that the user never made.
+    """
+    async_mock_service(hass, "input_boolean", "turn_on")
+    area = area_registry.async_create("Salon")
+    entry = entity_registry.async_get_or_create(
+        "input_boolean", "demo", "no-state-yet",
+        suggested_object_id="registered_but_stateless",
+    )
+    entity_registry.async_update_entity(entry.entity_id, area_id=area.id)
+    # The premise of the test: indirectly referenced, and stateless.
+    assert hass.states.get(entry.entity_id) is None
+
+    rule = dataclasses.replace(
+        _rule(action=_ON, entities=()), target={"area_id": [area.id]}
+    )
+    [result] = await engine.async_apply_rule(rule)
+
+    assert "unknown_targets" not in result
+    assert result["outcome"] == "called"
+
+
+async def test_a_rule_with_no_target_is_unaffected(hass, engine):
+    """notify.* and friends carry no entity at all."""
+    calls = async_mock_service(hass, "notify", "persistent_notification")
+    rule = _rule(action="notify.persistent_notification", entities=())
+    [result] = await engine.async_apply_rule(rule)
+
+    assert "unknown_targets" not in result
+    assert result["outcome"] == "called"
+    assert len(calls) == 1
+
+
+async def test_a_bare_string_entity_id_is_one_id_not_eighteen_characters(
+    hass, engine
+):
+    """Home Assistant accepts `entity_id` as a string or a list.
+
+    A migrated v1 rule or an imported YAML rule can carry either, and the
+    named-id count is what decides "was EVERY named entity unknown?". A
+    bare string iterated without normalising yields its characters, so the
+    count would be 18, never 1, and this total miss would report "called".
+    """
+    rule = dataclasses.replace(
+        _rule(action=_ON, entities=()),
+        target={"entity_id": "input_boolean.nope"},
+    )
+    [result] = await engine.async_apply_rule(rule)
+
+    assert result["outcome"] == "failed"
+    assert result["unknown_targets"] == ["input_boolean.nope"]
+
+
+async def test_the_all_wildcard_is_not_reported_as_a_misspelt_entity(hass, engine):
+    """`entity_id: all` is a wildcard, not an entity id.
+
+    `states.get("all")` is None, so a naive check warns that the rule
+    names a nonexistent entity called "all" - a loud complaint about a
+    rule that is perfectly fine, and the fastest way to teach the user to
+    ignore these warnings.
+    """
+    async_mock_service(hass, "input_boolean", "turn_on")
+    rule = dataclasses.replace(
+        _rule(action=_ON, entities=()), target={"entity_id": "all"}
+    )
+    [result] = await engine.async_apply_rule(rule)
+
+    assert "unknown_targets" not in result
+    assert result["outcome"] == "called"
+
+
+async def test_a_dry_run_still_reports_an_unknown_target(
+    hass, jerusalem, test_booleans
+):
+    """A dry run is where you WANT to find the typo."""
+    store = RuleStore(hass)
+    await store.async_load()
+    await store.async_set_dry_run(True)
+    engine = ShabbatEngine(hass, store)
+
+    rule = _rule(action=_ON, entities=("input_boolean.nope",))
+    [result] = await engine.async_apply_rule(rule)
+
+    assert result["outcome"] == "would_call"
+    assert result["unknown_targets"] == ["input_boolean.nope"]
 
 
 async def test_dry_run_makes_no_service_calls(hass, jerusalem, test_booleans):
@@ -158,6 +306,10 @@ async def test_a_later_expanded_call_still_runs_after_an_earlier_one_fails(
 
     hass.services.async_register("climate", "set_hvac_mode", always_fail)
     temperature = async_mock_service(hass, "climate", "set_temperature")
+    # A real target entity, so this test stays about the shim's ordering
+    # and not about the unknown-target check (Plan-2 Gap B), which would
+    # otherwise report every call here as failed for the wrong reason.
+    hass.states.async_set("climate.ac", "off")
 
     rule = Rule(
         id="r", profile=1, day="1", time=time(11, 0),
@@ -1035,6 +1187,9 @@ async def test_an_unsupported_domain_is_no_longer_a_thing(hass, engine):
     must actually make the call - there is no allow-list left to fall off.
     """
     calls = async_mock_service(hass, "cover", "close_cover")
+    # A real target entity: this test is about the allow-list being gone,
+    # not about the unknown-target check (Plan-2 Gap B).
+    hass.states.async_set("cover.a", "open")
     results = await engine.async_apply_rule(
         _rule(action="cover.close_cover", entities=("cover.a",))
     )

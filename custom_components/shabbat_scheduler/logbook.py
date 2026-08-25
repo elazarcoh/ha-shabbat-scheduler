@@ -36,7 +36,12 @@ from collections.abc import Callable
 
 from homeassistant.core import Event, HomeAssistant, callback
 
-from .const import DOMAIN, EVENT_RULE_APPLIED, EVENT_RULE_COMPLETED
+from .const import (
+    DOMAIN,
+    EVENT_RULE_APPLIED,
+    EVENT_RULE_COMPLETED,
+    UNKNOWN_ENTITY_PREFIX,
+)
 
 _NAME = "Shabbat Scheduler"
 
@@ -115,6 +120,53 @@ def _detail(results: list[dict], outcome: str, key: str) -> str:
             if value:
                 return str(value)
     return ""
+
+
+def _unknown_targets(results: list[dict]) -> list[str]:
+    """Entity ids the engine reported as naming nothing that exists.
+
+    Flattened across every call the rule made, in first-seen order: the
+    climate shim turns one authored action into up to three calls, and a
+    typo in the target belongs to all of them, so without flattening the
+    row could read the one call that happens not to carry it.
+
+    Read defensively, like every other read in this module: an event
+    written by an older version of this integration has no such key, and
+    a describer that raises takes down the whole logbook page.
+    """
+    seen: list[str] = []
+    for item in results:
+        raw = item.get("unknown_targets")
+        if not isinstance(raw, list):
+            continue
+        for entity_id in raw:
+            if isinstance(entity_id, str) and entity_id and entity_id not in seen:
+                seen.append(entity_id)
+    return seen
+
+
+def _note_unknown(message: str, results: list[dict]) -> str:
+    """Name the entity ids that do not exist, on whatever row is drawn.
+
+    A partial typo still fires the rest of the target, so its row reads
+    "fired" - and a row saying "fired" while one named entity silently
+    did nothing is precisely the quiet failure this integration exists to
+    prevent. A dry run's row must say it too, because a dry run is where
+    the user is deliberately looking for the typo.
+
+    Note the phrase, not the ids, is what suppresses a second copy. The
+    row already lists every targeted entity id, the typo among them, so
+    "is this id in the message?" would always be true and would silence
+    the warning on exactly the partial-typo row that needs it. In the
+    total-miss case the failed row's `error` already reads "no such
+    entity: ...", which is what this checks for.
+    """
+    if UNKNOWN_ENTITY_PREFIX in message:
+        return message
+    unknown = _unknown_targets(results)
+    if not unknown:
+        return message
+    return f"{message} — {UNKNOWN_ENTITY_PREFIX}{', '.join(unknown)}"
 
 
 def _catch_up_message(results: list[dict]) -> str:
@@ -204,8 +256,9 @@ def async_describe_events(
             action = _detail(results, "failed", "action") or what
             return {
                 "name": _NAME,
-                "message": (
-                    f"rule '{rule}' did not run — {action} failed: {error}"
+                "message": _note_unknown(
+                    f"rule '{rule}' did not run — {action} failed: {error}",
+                    results,
                 ),
                 "icon": _ICON_FAILED,
             }
@@ -221,13 +274,21 @@ def async_describe_events(
             message = f"rule '{rule}' would have fired [dry run]"
             if what:
                 message = f"{message} — {what}"
-            return {"name": _NAME, "message": message, "icon": _ICON_DRY_RUN}
+            return {
+                "name": _NAME,
+                "message": _note_unknown(message, results),
+                "icon": _ICON_DRY_RUN,
+            }
 
         if outcome == "called":
             message = f"rule '{rule}' fired"
             if what:
                 message = f"{message} — {what}"
-            return {"name": _NAME, "message": message, "icon": _ICON_FIRED}
+            return {
+                "name": _NAME,
+                "message": _note_unknown(message, results),
+                "icon": _ICON_FIRED,
+            }
 
         # No recognisable outcome at all: an event from a future or older
         # version of this integration. Say that, rather than guessing.

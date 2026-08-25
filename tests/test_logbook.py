@@ -301,6 +301,154 @@ def test_a_partly_failed_rule_reports_the_failure_not_the_success(hass):
     assert "TimeoutError" in result["message"]
 
 
+def test_a_fired_row_names_an_entity_that_does_not_exist(hass):
+    """A partial typo still fires, so its row says "fired".
+
+    A row reading "fired" while one named entity silently did nothing is
+    the quiet failure this integration exists to prevent, so the row has
+    to say WHICH id named nothing. Plan-2 Gap B.
+    """
+    described = _describers(hass)
+    result = described[EVENT_RULE_COMPLETED](
+        _completed(
+            target={"entity_id": ["climate.salon", "climate.slaon"]},
+            results=[
+                {
+                    "action": "climate.set_temperature",
+                    "target": {"entity_id": ["climate.salon", "climate.slaon"]},
+                    "data": {"temperature": 24},
+                    "unknown_targets": ["climate.slaon"],
+                    "outcome": "called",
+                }
+            ],
+        )
+    )
+    message = result["message"]
+    assert "fired" in message
+    # Not merely present as one of the listed targets - the row has to say
+    # that this particular id is the one that does not exist.
+    assert "no such entity: climate.slaon" in message
+
+
+def test_a_dry_run_row_names_an_entity_that_does_not_exist(hass):
+    """A dry run is exactly where the user is hunting for the typo."""
+    described = _describers(hass)
+    result = described[EVENT_RULE_COMPLETED](
+        _completed(
+            dry_run=True,
+            target={"entity_id": ["climate.slaon"]},
+            results=[
+                {
+                    "action": "climate.set_temperature",
+                    "target": {"entity_id": ["climate.slaon"]},
+                    "data": {"temperature": 24},
+                    "unknown_targets": ["climate.slaon"],
+                    "outcome": "would_call",
+                }
+            ],
+        )
+    )
+    message = result["message"]
+    assert "dry run" in message.lower()
+    assert "no such entity: climate.slaon" in message
+
+
+def test_a_total_miss_says_no_such_entity_exactly_once(hass):
+    """The engine already puts the ids in `error`; do not say it twice."""
+    described = _describers(hass)
+    result = described[EVENT_RULE_COMPLETED](
+        _completed(
+            target={"entity_id": ["climate.slaon"]},
+            results=[
+                {
+                    "action": "climate.set_temperature",
+                    "target": {"entity_id": ["climate.slaon"]},
+                    "data": {"temperature": 24},
+                    "unknown_targets": ["climate.slaon"],
+                    "outcome": "failed",
+                    "error": "no such entity: climate.slaon",
+                }
+            ],
+        )
+    )
+    message = result["message"]
+    assert "did not run" in message.lower()
+    assert message.count("no such entity") == 1
+
+
+def test_an_unknown_target_survives_a_failure_with_another_reason(hass):
+    """The climate shim makes several calls from one authored action.
+
+    If one call carries the typo and a later one times out, the row reads
+    as the failure - and the typo must not be lost with it, because it is
+    the actionable half of the two.
+    """
+    described = _describers(hass)
+    result = described[EVENT_RULE_COMPLETED](
+        _completed(
+            results=[
+                {
+                    "action": "climate.set_hvac_mode",
+                    "target": {"entity_id": ["climate.salon", "climate.slaon"]},
+                    "data": {"hvac_mode": "cool"},
+                    "unknown_targets": ["climate.slaon"],
+                    "outcome": "called",
+                },
+                {
+                    "action": "climate.set_temperature",
+                    "target": {"entity_id": ["climate.salon", "climate.slaon"]},
+                    "data": {"temperature": 24},
+                    "unknown_targets": ["climate.slaon"],
+                    "outcome": "failed",
+                    "error": "TimeoutError",
+                },
+            ],
+        )
+    )
+    message = result["message"]
+    assert "TimeoutError" in message
+    assert "no such entity: climate.slaon" in message
+
+
+def test_a_row_with_no_unknown_targets_says_nothing_about_them(hass):
+    described = _describers(hass)
+    result = described[EVENT_RULE_COMPLETED](
+        _completed(
+            results=[
+                {
+                    "action": "climate.set_temperature",
+                    "target": {"entity_id": ["climate.salon"]},
+                    "data": {"temperature": 24},
+                    "outcome": "called",
+                }
+            ]
+        )
+    )
+    assert "no such entity" not in result["message"]
+
+
+def test_a_malformed_unknown_targets_value_does_not_break_the_row(hass):
+    """Logbook renders HISTORICAL events, including ones written by an
+    older version of this integration, and a describer that raises takes
+    down the whole page - so every read of the payload is defensive."""
+    described = _describers(hass)
+    result = described[EVENT_RULE_COMPLETED](
+        _completed(
+            results=[
+                {
+                    "action": "climate.set_temperature",
+                    "target": {"entity_id": ["climate.salon"]},
+                    "data": {},
+                    "unknown_targets": "climate.slaon",
+                    "outcome": "called",
+                }
+            ]
+        )
+    )
+    assert "fired" in result["message"]
+    assert "no such entity" not in result["message"]
+
+
 def test_a_dry_run_completion_says_it_would_have_fired(hass):
     described = _describers(hass)
     result = described[EVENT_RULE_COMPLETED](

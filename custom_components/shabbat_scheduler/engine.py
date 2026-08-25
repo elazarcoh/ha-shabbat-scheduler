@@ -8,9 +8,11 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta
 
 from homeassistant.components import persistent_notification
+from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import Context, CoreState, HomeAssistant
 from homeassistant.helpers import condition
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import target as target_helper
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_time
 from homeassistant.helpers.service import async_call_from_config
@@ -30,6 +32,7 @@ from .const import (
     RETRY_ATTEMPTS,
     RETRY_DELAY_SECONDS,
     SIGNAL_RULES_CHANGED,
+    UNKNOWN_ENTITY_PREFIX,
 )
 from . import repairs
 from .device_ops import expand_action
@@ -75,6 +78,26 @@ def _condition_label(index: int, total: int, item) -> str:
         entity = ", ".join(str(one) for one in entity)
     where = f" on {entity}" if entity else ""
     return f"condition {index} of {total} ({kind}{where})"
+
+
+def _named_entity_ids(target: dict) -> set[str]:
+    """The entity ids this target spells out, deduplicated.
+
+    `entity_id` may be a bare string or a list - Home Assistant accepts
+    both, and a migrated v1 rule or an imported YAML rule can carry
+    either - so both are normalised here. Iterating a bare string without
+    normalising it would yield its CHARACTERS, and the count is the
+    denominator for "was EVERY named entity unknown?".
+
+    Deliberately NOT the resolved target: comparing a resolved count
+    against a resolved count would make that question circular.
+    """
+    raw = target.get(ATTR_ENTITY_ID)
+    if raw is None:
+        return set()
+    if isinstance(raw, str):
+        raw = [raw]
+    return {entity_id for entity_id in raw if isinstance(entity_id, str)}
 
 
 class ShabbatEngine:
@@ -604,6 +627,41 @@ class ShabbatEngine:
         """
         return context.id in self._our_contexts
 
+    def _unknown_targets(self, target: dict) -> list[str]:
+        """Entity ids this target NAMES that do not exist.
+
+        Only explicitly named ids. `async_extract_referenced_entity_ids`
+        also returns `indirectly_referenced` - entities reached through an
+        area, device, floor or label - but those come out of the
+        registries, so they exist by construction, and an entity that is
+        merely unloaded or unavailable has no state either. Checking them
+        would invent typos the user never made.
+
+        Home Assistant's service layer accepts a target naming a
+        nonexistent entity without raising, so without this a typo'd rule
+        reports "called" and looks exactly like a rule that fired.
+
+        `entity_id: all` and `entity_id: none` need no guarding here: they
+        are wildcards, not entity ids, and HA's own `expand_entity_ids`
+        (which `expand_group`, on by default, runs first) drops both
+        before they reach `referenced`. Re-checking them here would be
+        unreachable code; the behaviour is pinned by a test instead, so
+        this stays honest if that ever changes upstream.
+        """
+        if not target:
+            return []
+        try:
+            selected = target_helper.async_extract_referenced_entity_ids(
+                self.hass, target_helper.TargetSelection(target),
+            )
+        except Exception:  # noqa: BLE001 - a bad target must not stop the call
+            _LOGGER.debug("could not resolve target %s", target, exc_info=True)
+            return []
+        return sorted(
+            entity_id for entity_id in selected.referenced
+            if self.hass.states.get(entity_id) is None
+        )
+
     async def _call(
         self, rule: Rule, action: str, target: dict, data: dict, context: Context
     ) -> dict:
@@ -615,6 +673,18 @@ class ShabbatEngine:
         that now is the moment.
         """
         result = {"action": action, "target": dict(target), "data": dict(data)}
+
+        # Before the dry-run return, deliberately: a dry run is exactly
+        # where you want to be told about a misspelt entity id, and a dry
+        # run that reported "would_call" for a target that cannot resolve
+        # would be the same quiet failure one step earlier.
+        unknown = self._unknown_targets(target)
+        if unknown:
+            result["unknown_targets"] = unknown
+            _LOGGER.warning(
+                "rule '%s' targets %s, which do not exist",
+                rule.name or rule.id, ", ".join(unknown),
+            )
 
         if self.store.dry_run:
             result["outcome"] = "would_call"
@@ -673,6 +743,16 @@ class ShabbatEngine:
                 )
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
             else:
-                result["outcome"] = "called"
+                # Every named entity was unknown, so nothing can have
+                # happened. Reporting "called" here is the quiet failure
+                # this integration exists to prevent. A PARTIAL miss is
+                # still "called": the call genuinely helped the entities
+                # that do exist, and `unknown_targets` reports the typo.
+                named = _named_entity_ids(target)
+                if unknown and named and len(unknown) >= len(named):
+                    result["outcome"] = "failed"
+                    result["error"] = UNKNOWN_ENTITY_PREFIX + ", ".join(unknown)
+                else:
+                    result["outcome"] = "called"
                 return result
         return result

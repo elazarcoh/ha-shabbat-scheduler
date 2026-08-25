@@ -58,6 +58,10 @@ async def test_the_climate_shim_sends_two_calls(hass):
     engine = await _engine(hass)
     mode = async_mock_service(hass, "climate", "set_hvac_mode")
     temp = async_mock_service(hass, "climate", "set_temperature")
+    # A real target entity: this test is about the shim splitting one
+    # action into two calls, not about the unknown-target check (Plan-2
+    # Gap B), which would otherwise report both calls failed.
+    hass.states.async_set("climate.salon", "off")
     rule = Rule(
         id="r", profile=1, day="1", time=time(11, 0),
         action="climate.set_temperature",

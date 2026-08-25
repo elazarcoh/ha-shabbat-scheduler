@@ -12,6 +12,13 @@ SIGNAL_RULES_CHANGED = "shabbat_scheduler_rules_changed"
 RETRY_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 30
 
+# The one wording for "this rule names an entity that does not exist",
+# shared by the engine (which puts it in a failed result's `error`) and the
+# logbook (which appends it to a row, and uses its presence to avoid saying
+# it twice). Two independently-spelled copies would drift apart, and the
+# logbook's de-duplication is a string match on exactly this.
+UNKNOWN_ENTITY_PREFIX = "no such entity: "
+
 CONF_CANDLE_SENSOR = "candle_sensor"
 CONF_HAVDALAH_SENSOR = "havdalah_sensor"
 

@@ -55,6 +55,12 @@ const STRINGS = {
     replay_after_restart: 'Replay after a restart',
     replay_within_label: 'Only if less than',
     replay_help: 'Off by default: after a restart, nothing that already passed is re-run.',
+    conditions: 'Conditions',
+    conditions_help: 'All conditions must pass, or the rule does not run and says why.',
+    add_condition: 'Add condition',
+    remove_condition: 'Remove',
+    condition_unparseable: 'Not valid YAML — this condition is not being saved.',
+    condition_not_a_mapping: 'A condition must be a mapping, like `condition: state`.',
   },
   he: {
     erev: 'ערב',
@@ -104,6 +110,12 @@ const STRINGS = {
     replay_after_restart: 'הפעלה חוזרת לאחר אתחול',
     replay_within_label: 'רק אם עברו פחות מ־',
     replay_help: 'כברירת מחדל כבוי: לאחר אתחול, מה שכבר עבר לא יופעל שוב.',
+    conditions: 'תנאים',
+    conditions_help: 'כל התנאים חייבים להתקיים, אחרת הכלל לא ירוץ ויציין זאת.',
+    add_condition: 'הוספת תנאי',
+    remove_condition: 'הסרה',
+    condition_unparseable: 'YAML לא תקין — התנאי הזה לא נשמר.',
+    condition_not_a_mapping: 'תנאי חייב להיות מפה, כמו `condition: state`.',
   },
 } as const;
 

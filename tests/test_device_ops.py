@@ -99,3 +99,49 @@ def test_an_unrecognized_climate_key_rides_along_on_the_temperature_call():
         ("climate.set_hvac_mode", {"hvac_mode": "cool"}),
         ("climate.set_temperature", {"temperature": 26, "swing_mode": "vertical"}),
     ]
+
+
+# --- Row 40 at the shim: a None is not a mode ----------------------------
+
+
+def test_a_null_hvac_mode_does_not_trigger_the_split():
+    """`if _HVAC_MODE in data` tested key membership, so a null split off a
+    `climate.set_hvac_mode {hvac_mode: None}` - a call guaranteed to fail,
+    which is exactly what shim reason 3 refuses to emit."""
+    assert expand_action(
+        "climate.set_temperature", {"hvac_mode": None, "temperature": 24}
+    ) == [("climate.set_temperature", {"temperature": 24})]
+
+
+def test_a_null_fan_mode_does_not_trigger_the_split():
+    assert expand_action(
+        "climate.set_temperature", {"fan_mode": None, "temperature": 24}
+    ) == [("climate.set_temperature", {"temperature": 24})]
+
+
+def test_a_null_mode_is_not_left_riding_along_on_the_temperature_call():
+    """Dropped rather than carried: `SET_TEMPERATURE_SCHEMA` coerces
+    `hvac_mode` through `vol.Coerce(HVACMode)`, which a None fails, so
+    carrying it would take the temperature down with it."""
+    for key in ("hvac_mode", "fan_mode"):
+        calls = expand_action("climate.set_temperature", {key: None, "temperature": 24})
+        assert all(key not in data for _action, data in calls), key
+
+
+def test_all_null_modes_leave_the_temperature_call_alone():
+    assert expand_action(
+        "climate.set_temperature",
+        {"hvac_mode": None, "fan_mode": None, "temperature": 24},
+    ) == [("climate.set_temperature", {"temperature": 24})]
+
+
+def test_a_real_mode_still_splits_exactly_as_before():
+    """The guard must not be so wide it stops the shim doing its job."""
+    assert expand_action(
+        "climate.set_temperature",
+        {"hvac_mode": "cool", "temperature": 24, "fan_mode": "quiet"},
+    ) == [
+        ("climate.set_hvac_mode", {"hvac_mode": "cool"}),
+        ("climate.set_temperature", {"temperature": 24}),
+        ("climate.set_fan_mode", {"fan_mode": "quiet"}),
+    ]

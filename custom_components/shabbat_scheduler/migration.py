@@ -471,19 +471,35 @@ def migrate_v1_rule(
     # matches `block.merge_defaults`, so the effective payload is unchanged.
     # Only climate ever sees them - see `migrate_v1_defaults`.
     merged = {**(default_settings or {}), **settings}
+    # `value is not None` is not decoration. v1 gated each of its three keys
+    # on the VALUE, not on the key's presence - `hvac_mode =
+    # settings.get("hvac_mode")` then `if hvac_mode is not None`
+    # (5192d4c:device_ops.py:126, and the same shape at :140 and :153). A
+    # null therefore produced NO call in v1, while filtering on key
+    # membership carried it into `climate.set_hvac_mode {hvac_mode: None}`,
+    # which Home Assistant refuses. Reachable from a VALID v1 config, not
+    # only a hand-edit: v1 applied no per-key validation to `settings`, so
+    # its own API and YAML doors both accepted a null.
+    #
+    # Note this also reproduces v1's SUPPRESSION: the merge happens first,
+    # so a rule writing `hvac_mode: null` overrides an inherited `cool` and
+    # then drops out here, exactly as v1's merge-then-check did.
     recognised = {
-        key: value for key, value in merged.items() if key in _V1_CLIMATE_SETTINGS
+        key: value
+        for key, value in merged.items()
+        if key in _V1_CLIMATE_SETTINGS and value is not None
     }
-    ignored = sorted(set(settings) - set(_V1_CLIMATE_SETTINGS))
+    ignored = sorted(key for key in settings if key not in recognised)
     if ignored:
         # Only the keys THIS RULE carried. The global defaults are reported
         # once by `v1_defaults` instead, or this logs the same shared key
         # once per rule in the store.
         _LOGGER.warning(
-            "Rule %r: v1 read only %s out of `settings`, so %s has not been "
-            "carried over. Carrying it would break the rule outright - "
-            "`climate.set_temperature` rejects the whole call on an "
-            "unrecognised key, so the temperature would stop being set too.",
+            "Rule %r: v1 acted on %s only when each was non-null, so %s has "
+            "not been carried over. Carrying one would break the rule "
+            "outright - `climate.set_temperature` rejects the whole call on "
+            "an unrecognised key or a null mode, so the temperature would "
+            "stop being set too.",
             raw.get("id"), list(_V1_CLIMATE_SETTINGS), ignored,
         )
 
@@ -497,11 +513,16 @@ def migrate_v1_rule(
         # last left at - inventing behaviour on the user's behalf is the one
         # thing this converter must never do. Kept, disabled, and reported,
         # so the user decides.
+        #
+        # This is also where an all-null `settings` lands, now that the
+        # filter above is by value: `{temperature: null}` is a non-empty
+        # mapping that v1 acted on in no way at all, so it belongs here
+        # rather than becoming one permanently-failing call.
         return None, (
-            "a v1 climate 'on' rule with no hvac_mode, temperature or "
-            "fan_mode made no service call in v1, so there is no behaviour "
-            "to migrate. Enable it with a temperature or mode if you want it "
-            "to act."
+            "a v1 climate 'on' rule with no non-null hvac_mode, temperature "
+            "or fan_mode made no service call in v1, so there is no "
+            "behaviour to migrate. Give it a temperature or a mode if you "
+            "want it to act."
         )
 
     out["action"] = "climate.set_temperature"

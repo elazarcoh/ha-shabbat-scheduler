@@ -1351,3 +1351,94 @@ async def test_both_halves_of_a_split_rule_get_their_own_switch_entity(
     # Both enabled, so both are schedulable - the point of splitting.
     assert hass.states.get(climate_switch).state == "on"
     assert hass.states.get(switch_switch).state == "on"
+
+
+# --- Row 40: v1 gated its three settings keys on the VALUE, not the key ---
+#     `hvac_mode = settings.get("hvac_mode")` then `if hvac_mode is not None`
+#     (5192d4c:device_ops.py:126, :140, :153 - one per key). Filtering on key
+#     membership instead carries a null through into a call HA refuses. And
+#     it is reachable from a VALID v1 config: v1 applied no per-key
+#     validation to `settings`, so its own rule_from_api and import_yaml
+#     both accepted a null.
+
+
+def _climate_rule(settings):
+    return {
+        "id": "r", "profile": 1, "day": "1", "time": "12:00:00", "action": "on",
+        "devices": ["climate.salon"], "settings": settings,
+    }
+
+
+def test_a_null_settings_value_is_dropped_the_way_v1_dropped_it():
+    """v1 made the temperature call and no hvac call at all. v2 emitted
+    `climate.set_hvac_mode {hvac_mode: None}`, which HA refuses."""
+    for key in ("hvac_mode", "fan_mode"):
+        raw = _climate_rule({key: None, "temperature": 24})
+        out, failed = migrate_v1({"rules": [raw], "defaults": {}})
+
+        assert failed == [], key
+        assert out["rules"][0]["data"] == {"temperature": 24}, key
+        assert out["rules"][0]["enabled"] is True
+
+
+def test_all_null_settings_route_exactly_where_row_16_decided():
+    """`{temperature: None}` made NO call in v1, so it is the row-16 case:
+    kept, disabled, reported - not a single permanently-failing call. The
+    `if not recognised` guard missed it because the dict is not empty."""
+    for settings in (
+        {"temperature": None},
+        {"hvac_mode": None},
+        {"fan_mode": None},
+        {"hvac_mode": None, "temperature": None, "fan_mode": None},
+    ):
+        out, failed = migrate_v1({"rules": [_climate_rule(settings)], "defaults": {}})
+
+        assert failed == ["r"], settings
+        kept = out["rules"][0]
+        assert kept["enabled"] is False
+        assert kept["action"] == "shabbat_scheduler.unmigrated"
+        assert "no service call" in kept["migration_error"], settings
+        assert kept["migration_source"] == _climate_rule(settings)
+
+
+def test_a_null_reaches_every_inheriting_rule_through_the_shared_settings():
+    """The same shape, one level up: a null in `defaults.settings` hits every
+    rule that inherits it, so it must be dropped there too."""
+    out, failed = migrate_v1(
+        {
+            "rules": [_climate_rule({"temperature": 24})],
+            "defaults": {"settings": {"hvac_mode": None, "fan_mode": "quiet"}},
+        }
+    )
+    assert failed == []
+    assert out["rules"][0]["data"] == {"temperature": 24, "fan_mode": "quiet"}
+
+
+def test_a_rules_explicit_null_still_suppresses_an_inherited_value():
+    """v1 merged `{**defaults.settings, **rule.settings}` and THEN checked
+    for None, so a rule writing `hvac_mode: null` genuinely turned the
+    global one off for itself. The suppression half was already right; what
+    was wrong is that the null itself was then carried into the call."""
+    out, failed = migrate_v1(
+        {
+            "rules": [_climate_rule({"hvac_mode": None, "temperature": 26})],
+            "defaults": {"settings": {"hvac_mode": "cool", "temperature": 24}},
+        }
+    )
+    assert failed == []
+    assert out["rules"][0]["data"] == {"temperature": 26}
+
+
+def test_a_null_never_reaches_a_call_home_assistant_would_refuse():
+    from homeassistant.components.climate import SET_TEMPERATURE_SCHEMA
+
+    from custom_components.shabbat_scheduler.device_ops import expand_action
+
+    raw = _climate_rule({"hvac_mode": None, "temperature": 24})
+    out, _ = migrate_v1({"rules": [raw], "defaults": {}})
+    rule = rule_from_dict(out["rules"][0])
+    calls = expand_action(rule.action, dict(rule.data))
+    # One call, not two: there is no mode to set.
+    assert [action for action, _ in calls] == ["climate.set_temperature"]
+    for _action, data in calls:
+        SET_TEMPERATURE_SCHEMA({**data, **rule.target})

@@ -40,6 +40,7 @@ from .const import (
     DOMAIN,
     EVENT_RULE_APPLIED,
     EVENT_RULE_COMPLETED,
+    NO_LIVE_TARGETS_NOTE,
     UNKNOWN_ENTITY_PREFIX,
 )
 
@@ -169,6 +170,35 @@ def _note_unknown(message: str, results: list[dict]) -> str:
     return f"{message} — {UNKNOWN_ENTITY_PREFIX}{', '.join(unknown)}"
 
 
+def _note_no_live_targets(message: str, results: list[dict]) -> str:
+    """Say the call reached nothing, when it reached nothing.
+
+    The third diagnostic, between "fired" and "did not run". Nothing was
+    misspelt and the call was genuinely made, so the row is not a failure
+    row - but the target resolved to no entity that exists, so a bare
+    "fired" would be a rule reporting success for having affected
+    nothing, which is the shape this integration exists to prevent.
+
+    Read defensively and de-duplicated on the phrase, for the same
+    reasons as `_note_unknown`.
+    """
+    if NO_LIVE_TARGETS_NOTE in message:
+        return message
+    if not any(item.get("no_live_targets") is True for item in results):
+        return message
+    return f"{message} — {NO_LIVE_TARGETS_NOTE}"
+
+
+def _note_diagnostics(message: str, results: list[dict]) -> str:
+    """Both target diagnostics, in order of how actionable they are.
+
+    A misspelling first: it is the one the user can fix. They are not
+    mutually exclusive across a multi-call rule, where one call can carry
+    each.
+    """
+    return _note_no_live_targets(_note_unknown(message, results), results)
+
+
 def _catch_up_message(results: list[dict]) -> str:
     replayed = sum(1 for item in results if item.get("outcome") == "called")
     skipped = sum(1 for item in results if item.get("outcome") == "skipped_stale")
@@ -256,7 +286,7 @@ def async_describe_events(
             action = _detail(results, "failed", "action") or what
             return {
                 "name": _NAME,
-                "message": _note_unknown(
+                "message": _note_diagnostics(
                     f"rule '{rule}' did not run — {action} failed: {error}",
                     results,
                 ),
@@ -276,7 +306,7 @@ def async_describe_events(
                 message = f"{message} — {what}"
             return {
                 "name": _NAME,
-                "message": _note_unknown(message, results),
+                "message": _note_diagnostics(message, results),
                 "icon": _ICON_DRY_RUN,
             }
 
@@ -286,7 +316,7 @@ def async_describe_events(
                 message = f"{message} — {what}"
             return {
                 "name": _NAME,
-                "message": _note_unknown(message, results),
+                "message": _note_diagnostics(message, results),
                 "icon": _ICON_FIRED,
             }
 

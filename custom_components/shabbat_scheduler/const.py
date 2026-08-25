@@ -19,6 +19,14 @@ RETRY_DELAY_SECONDS = 30
 # logbook's de-duplication is a string match on exactly this.
 UNKNOWN_ENTITY_PREFIX = "no such entity: "
 
+# The one wording for "the call was made, and reached nothing". Deliberately
+# NOT phrased as a failure: the call genuinely happened and nothing is
+# misspelt - the target's entities are merely all unavailable or unloaded.
+# But a rule that affected nothing must not report success in silence
+# either, so this is the third diagnostic, between "called" and "failed".
+# Shared by the engine and the logbook for the same reason as above.
+NO_LIVE_TARGETS_NOTE = "reached no entity that exists"
+
 CONF_CANDLE_SENSOR = "candle_sensor"
 CONF_HAVDALAH_SENSOR = "havdalah_sensor"
 

@@ -410,6 +410,156 @@ def test_an_unknown_target_survives_a_failure_with_another_reason(hass):
     assert "no such entity: climate.slaon" in message
 
 
+def test_a_fired_row_says_when_the_call_reached_nothing(hass):
+    """The third diagnostic has to be visible, not merely present.
+
+    A row reading a bare "fired" for a call that reached no entity that
+    exists is a rule reporting success for having affected nothing - the
+    shape this integration exists to prevent. Round-2 review finding.
+    """
+    described = _describers(hass)
+    result = described[EVENT_RULE_COMPLETED](
+        _completed(
+            target={"entity_id": ["group.leftover"]},
+            results=[
+                {
+                    "action": "climate.set_temperature",
+                    "target": {"entity_id": ["group.leftover"]},
+                    "data": {"temperature": 24},
+                    "no_live_targets": True,
+                    "outcome": "called",
+                }
+            ],
+        )
+    )
+    message = result["message"]
+    assert "fired" in message
+    assert "reached no entity that exists" in message
+    # Says it reached nothing; does NOT claim the rule failed.
+    assert "did not run" not in message.lower()
+
+
+def test_a_dry_run_row_says_when_the_call_would_reach_nothing(hass):
+    described = _describers(hass)
+    result = described[EVENT_RULE_COMPLETED](
+        _completed(
+            dry_run=True,
+            target={"device_id": ["deadbeef"]},
+            results=[
+                {
+                    "action": "climate.set_temperature",
+                    "target": {"device_id": ["deadbeef"]},
+                    "data": {"temperature": 24},
+                    "no_live_targets": True,
+                    "outcome": "would_call",
+                }
+            ],
+        )
+    )
+    message = result["message"]
+    assert "dry run" in message.lower()
+    assert "reached no entity that exists" in message
+
+
+def test_both_target_diagnostics_can_appear_on_one_row(hass):
+    """A multi-call rule can carry one of each.
+
+    The climate shim makes several calls from one authored action; the two
+    diagnostics are mutually exclusive per CALL, not per rule, so a row
+    has to be able to say both things.
+    """
+    described = _describers(hass)
+    result = described[EVENT_RULE_COMPLETED](
+        _completed(
+            results=[
+                {
+                    "action": "climate.set_hvac_mode",
+                    "target": {"entity_id": ["climate.slaon"]},
+                    "data": {"hvac_mode": "cool"},
+                    "unknown_targets": ["climate.slaon"],
+                    "outcome": "called",
+                },
+                {
+                    "action": "climate.set_temperature",
+                    "target": {"entity_id": ["group.leftover"]},
+                    "data": {"temperature": 24},
+                    "no_live_targets": True,
+                    "outcome": "called",
+                },
+            ]
+        )
+    )
+    message = result["message"]
+    assert "no such entity: climate.slaon" in message
+    assert "reached no entity that exists" in message
+    # The fixable one first.
+    assert message.index("no such entity") < message.index("reached no entity")
+
+
+def test_a_row_says_it_reached_nothing_only_once(hass):
+    described = _describers(hass)
+    result = described[EVENT_RULE_COMPLETED](
+        _completed(
+            results=[
+                {
+                    "action": "climate.set_hvac_mode",
+                    "target": {"entity_id": ["group.leftover"]},
+                    "data": {},
+                    "no_live_targets": True,
+                    "outcome": "called",
+                },
+                {
+                    "action": "climate.set_temperature",
+                    "target": {"entity_id": ["group.leftover"]},
+                    "data": {"temperature": 24},
+                    "no_live_targets": True,
+                    "outcome": "called",
+                },
+            ]
+        )
+    )
+    assert result["message"].count("reached no entity that exists") == 1
+
+
+def test_a_row_with_live_targets_says_nothing_about_them(hass):
+    described = _describers(hass)
+    result = described[EVENT_RULE_COMPLETED](
+        _completed(
+            results=[
+                {
+                    "action": "climate.set_temperature",
+                    "target": {"entity_id": ["climate.salon"]},
+                    "data": {"temperature": 24},
+                    "outcome": "called",
+                }
+            ]
+        )
+    )
+    assert "reached no entity" not in result["message"]
+
+
+def test_a_malformed_no_live_targets_value_does_not_break_the_row(hass):
+    """`is True`, not truthiness: an event written by another version of
+    this integration could carry anything here, and a describer that
+    raises takes down the whole logbook page."""
+    described = _describers(hass)
+    result = described[EVENT_RULE_COMPLETED](
+        _completed(
+            results=[
+                {
+                    "action": "climate.set_temperature",
+                    "target": {"entity_id": ["climate.salon"]},
+                    "data": {},
+                    "no_live_targets": "yes",
+                    "outcome": "called",
+                }
+            ]
+        )
+    )
+    assert "fired" in result["message"]
+    assert "reached no entity" not in result["message"]
+
+
 def test_a_row_with_no_unknown_targets_says_nothing_about_them(hass):
     described = _describers(hass)
     result = described[EVENT_RULE_COMPLETED](

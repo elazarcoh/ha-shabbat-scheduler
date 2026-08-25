@@ -33,6 +33,7 @@ from .const import (
     DEFAULT_HAVDALAH_SENSOR,
     EVENT_RULE_APPLIED,
     EVENT_RULE_COMPLETED,
+    NO_LIVE_TARGETS_NOTE,
     RETRY_ATTEMPTS,
     RETRY_DELAY_SECONDS,
     SIGNAL_RULES_CHANGED,
@@ -92,6 +93,26 @@ def _condition_label(index: int, total: int, item) -> str:
 _WILDCARD_ENTITY_IDS = frozenset({ENTITY_MATCH_ALL, ENTITY_MATCH_NONE})
 
 
+def _entity_id_values(target: dict) -> list:
+    """This target's `entity_id`, normalised to a list of whatever it held.
+
+    `entity_id` may be a bare string or a list; Home Assistant accepts
+    both, and a migrated v1 rule or an imported YAML rule can carry
+    either. Iterating a bare string without normalising it would yield its
+    CHARACTERS. Values that are neither are passed through as a single
+    item rather than dropped, so a malformed rule reaches Home Assistant's
+    own validator with its shape intact instead of being quietly emptied.
+    """
+    raw = target.get(ATTR_ENTITY_ID)
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, (list, tuple, set)):
+        return list(raw)
+    return [raw]
+
+
 def _named_entity_ids(target: dict) -> set[str]:
     """The entity ids the USER TYPED into this target, deduplicated.
 
@@ -100,22 +121,24 @@ def _named_entity_ids(target: dict) -> set[str]:
     entities - was produced by Home Assistant from its own registries, so
     "it does not exist" is not a thing that can be said about it, and
     saying it anyway reports a misspelling the user never made.
-
-    `entity_id` may be a bare string or a list; Home Assistant accepts
-    both, and a migrated v1 rule or an imported YAML rule can carry
-    either. Iterating a bare string without normalising it would yield its
-    CHARACTERS.
     """
-    raw = target.get(ATTR_ENTITY_ID)
-    if raw is None:
-        return set()
-    if isinstance(raw, str):
-        raw = [raw]
     return {
-        entity_id for entity_id in raw
+        entity_id for entity_id in _entity_id_values(target)
         if isinstance(entity_id, str)
         and entity_id not in _WILDCARD_ENTITY_IDS
     }
+
+
+def _targets_every_entity(target: dict) -> bool:
+    """Does this target say `entity_id: all`?
+
+    A wildcard is not a target that resolves: HA's `expand_entity_ids`
+    strips `all` before anything is resolved, so the resolved set comes
+    back EMPTY while the service layer goes on to act on every entity in
+    the domain. Reporting "reached no entity that exists" for that would
+    be the exact inverse of the truth.
+    """
+    return ENTITY_MATCH_ALL in _entity_id_values(target)
 
 
 class ShabbatEngine:
@@ -673,10 +696,23 @@ class ShabbatEngine:
            unknown while the area's entities fire perfectly well, so
            counting only typed ids would call that a total failure.
 
-        The caller also requires a typo before downgrading, so an
-        existing group whose every member happens to be unavailable stays
-        "called" - that is an unavailability, not a misspelling, and there
-        would be no ids to put in the error message anyway.
+        The caller requires a typo as well before downgrading to
+        "failed", so `nothing_real` can be true with `unknown` empty. That
+        is not one special case but a CLASS: any typed `group.`-namespace
+        id that HAS a state yet expands to nothing live. An existing group
+        whose members are all unavailable is one shape; a leftover
+        `group.x` state with no group behind it, which
+        `group.expand_entity_ids` resolves to nothing, is another. None of
+        them is a misspelling, and none has any id to name in an error, so
+        `failed` would be wrong - but the call did reach nothing, so the
+        caller says so with its own third diagnostic rather than
+        reporting bare success. `{"device_id": ["deadbeef"]}` lands here
+        too, for the same reason and with the same treatment.
+
+        `entity_id: all` is excluded from `nothing_real` outright. HA
+        strips the wildcard before resolving, so the resolved set comes
+        back empty while the service layer goes on to act on every entity
+        in the domain - the exact inverse of "reached nothing".
         """
         if not target:
             return [], False
@@ -693,7 +729,7 @@ class ShabbatEngine:
                 if self.hass.states.get(entity_id) is None
             )
             resolved = selected.referenced | selected.indirectly_referenced
-            nothing_real = not any(
+            nothing_real = not _targets_every_entity(target) and not any(
                 self.hass.states.get(entity_id) is not None
                 for entity_id in resolved
             )
@@ -731,6 +767,21 @@ class ShabbatEngine:
             _LOGGER.warning(
                 "rule '%s' targets %s, which do not exist",
                 rule.name or rule.id, ", ".join(unknown),
+            )
+        elif nothing_real:
+            # THE THIRD DIAGNOSTIC. Nothing is misspelt and the call is
+            # genuinely made, so this is not `failed` - but the target
+            # resolved to no entity that exists, so the call cannot have
+            # changed anything either, and bare "called" would be a
+            # silent report of success by a rule that affected nothing.
+            # That is the shape this integration exists to prevent, so it
+            # gets a key and a log line of its own instead of a gate
+            # change: `failed` here would blame a typo that is not there.
+            result["no_live_targets"] = True
+            _LOGGER.warning(
+                "rule '%s' was called but its target %s %s - "
+                "nothing can have changed",
+                rule.name or rule.id, target or "none", NO_LIVE_TARGETS_NOTE,
             )
 
         if self.store.dry_run:

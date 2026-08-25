@@ -255,6 +255,9 @@ async def test_an_existing_group_with_no_live_member_is_not_called_a_typo(
     The downgrade needs a typo as well as an empty resolution. Without
     that, this rule would report "failed" with an empty list of ids to
     blame - "no such entity: " - which says nothing at all.
+
+    It does not get away with bare success either: it reached nothing, so
+    it carries the third diagnostic instead.
     """
     await async_setup_component(
         hass,
@@ -272,6 +275,115 @@ async def test_an_existing_group_with_no_live_member_is_not_called_a_typo(
     assert result["outcome"] == "called"
     assert "unknown_targets" not in result
     assert "error" not in result
+    assert result["no_live_targets"] is True
+
+
+async def test_a_call_that_reached_nothing_says_so_rather_than_nothing(
+    hass, engine, caplog
+):
+    """THE THIRD DIAGNOSTIC. Round-2 review finding.
+
+    A rule that affected nothing must not report success in silence -
+    that is the exact shape this integration exists to prevent - but
+    `failed` would be wrong too, because nothing is misspelt and the call
+    genuinely was made. So there is a third thing to say.
+
+    A leftover `group.x` STATE with no group behind it: it has a state, so
+    it is not a typo, and `expand_entity_ids` resolves it to nothing.
+    """
+    hass.states.async_set("group.leftover", "on")
+    calls = async_mock_service(hass, "input_boolean", "turn_on")
+
+    rule = dataclasses.replace(
+        _rule(action=_ON, entities=()), target={"entity_id": ["group.leftover"]}
+    )
+    [result] = await engine.async_apply_rule(rule)
+
+    assert result["outcome"] == "called"
+    assert result["no_live_targets"] is True
+    assert "unknown_targets" not in result
+    assert "error" not in result
+    assert len(calls) == 1
+    # Reads as "reached nothing", never as a failure: a false failure
+    # notification on Shabbat could push someone into intervening by hand.
+    assert "nothing can have changed" in caplog.text
+    assert "failed" not in caplog.text.lower()
+
+
+async def test_a_dead_device_id_target_also_says_it_reached_nothing(hass, engine):
+    """The same silence, arriving through `device_id` instead.
+
+    A device-only target names no entity id, so the unknown-entity check
+    has nothing to look at and has always been silent here. The third
+    diagnostic covers it for free, without needing to know about devices
+    at all, because it asks about the RESOLVED set rather than the typed
+    one.
+    """
+    async_mock_service(hass, "input_boolean", "turn_on")
+    rule = dataclasses.replace(
+        _rule(action=_ON, entities=()), target={"device_id": ["deadbeef"]}
+    )
+    [result] = await engine.async_apply_rule(rule)
+
+    assert result["outcome"] == "called"
+    assert result["no_live_targets"] is True
+    assert "unknown_targets" not in result
+
+
+async def test_a_misspelt_group_id_is_reported_as_a_typo(hass, engine):
+    """Where "typed but absent from `referenced`" meets "has no state".
+
+    This is the one input that separates the engine's implementation from
+    the `referenced & typed` shape suggested in review, which otherwise
+    survives the whole suite. `group.expand_entity_ids` resolves a
+    `group.`-prefixed id by reading its STATE; a misspelt one has none, so
+    it resolves to nothing and never appears in `selected.referenced`.
+    Intersecting with `referenced` therefore finds nothing to report and
+    calls this rule a success. Drawing from the typed ids names the typo.
+    """
+    async_mock_service(hass, "input_boolean", "turn_on")
+    rule = dataclasses.replace(
+        _rule(action=_ON, entities=()), target={"entity_id": ["group.typo"]}
+    )
+    [result] = await engine.async_apply_rule(rule)
+
+    assert result["outcome"] == "failed"
+    assert result["unknown_targets"] == ["group.typo"]
+    assert "group.typo" in result["error"]
+    # A misspelling is the more actionable diagnosis, so it is the one
+    # reported; the two do not stack on one call.
+    assert "no_live_targets" not in result
+
+
+async def test_a_healthy_call_says_nothing_about_live_targets(hass, engine):
+    """The diagnostic must be silent when there is nothing to say."""
+    hass.states.async_set("input_boolean.t", "off")
+    [result] = await engine.async_apply_rule(_rule())
+    await hass.async_block_till_done()
+
+    assert result["outcome"] == "called"
+    assert "no_live_targets" not in result
+
+
+async def test_the_all_wildcard_does_not_claim_to_have_reached_nothing(
+    hass, engine
+):
+    """`entity_id: all` resolves to an EMPTY set and acts on everything.
+
+    HA strips the wildcard before resolving, so the naive reading of the
+    resolved set is "reached nothing" while the service layer goes on to
+    act on every entity in the domain - the exact inverse of the truth,
+    and the fastest way to train the user to ignore these warnings.
+    """
+    async_mock_service(hass, "input_boolean", "turn_on")
+    rule = dataclasses.replace(
+        _rule(action=_ON, entities=()), target={"entity_id": "all"}
+    )
+    [result] = await engine.async_apply_rule(rule)
+
+    assert result["outcome"] == "called"
+    assert "no_live_targets" not in result
+    assert "unknown_targets" not in result
 
 
 async def test_a_target_home_assistant_cannot_even_parse_does_not_raise(

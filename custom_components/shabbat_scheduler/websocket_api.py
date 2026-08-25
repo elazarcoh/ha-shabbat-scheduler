@@ -16,7 +16,7 @@ from homeassistant.util import dt as dt_util
 
 from . import ha_validation
 from .block import block_payload, conflict_warnings, preview_payload
-from .const import DOMAIN, SIGNAL_RULES_CHANGED
+from .const import DOMAIN, MAX_PROFILE, MIN_PROFILE, SIGNAL_RULES_CHANGED
 from .rule_schema import (
     RuleValidationError,
     changes_from_api,
@@ -126,7 +126,7 @@ def ws_list(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "shabbat_scheduler/preview",
-        vol.Optional("block_length"): vol.All(int, vol.Range(1, 3)),
+        vol.Optional("block_length"): vol.All(int, vol.Range(MIN_PROFILE, MAX_PROFILE)),
     }
 )
 def ws_preview(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:

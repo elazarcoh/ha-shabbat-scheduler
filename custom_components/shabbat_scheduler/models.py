@@ -28,7 +28,7 @@ class Rule:
     """One scheduled Home Assistant service call within a block profile."""
 
     id: str
-    profile: int              # block length this rule belongs to (1, 2 or 3)
+    profile: int              # block length this rule belongs to - see MIN_PROFILE/MAX_PROFILE in const.py
     day: str                  # EREV, or "1".."3" for a full day
     time: time                # absolute clock time
     action: str               # "domain.service", any Home Assistant action

@@ -39,6 +39,7 @@ from __future__ import annotations
 import logging
 from datetime import time as _time
 
+from .const import MAX_PROFILE, MIN_PROFILE
 from .models import EREV
 
 # stdlib only - this module imports zero Home Assistant, by constraint.
@@ -79,15 +80,8 @@ def _parses_as_time(value) -> bool:
     return True
 
 
-# A block spans at most three calendar days (a two-day Chag adjacent to
-# Shabbat), which is why `rule_schema._profile` hard-caps `profile` to
-# 1..3 and `rule_schema._day` accepts only `erev` or '1'..'3'. Both bounds
-# apply here for a reason beyond tidiness - see `_parses_as_day`.
-_MAX_PROFILE = 3
-
-
 def _parses_as_profile(value) -> bool:
-    """An integer in 1..`_MAX_PROFILE`.
+    """An integer in MIN_PROFILE..MAX_PROFILE (see const.py).
 
     The range matters as much as the type. A migrated rule never passes
     through `rule_schema._profile`, so nothing else would catch a
@@ -99,14 +93,14 @@ def _parses_as_profile(value) -> bool:
         number = int(value)
     except (TypeError, ValueError):
         return False
-    return 1 <= number <= _MAX_PROFILE
+    return MIN_PROFILE <= number <= MAX_PROFILE
 
 
 def _parses_as_day(value) -> bool:
-    """`erev`, or a day index in 1..`_MAX_PROFILE`.
+    """`erev`, or a day index in MIN_PROFILE..MAX_PROFILE (see const.py).
 
     Two distinct failures are being prevented here, and the second is why
-    the bound is 1..3 rather than "any positive integer".
+    the bound is MIN_PROFILE..MAX_PROFILE rather than "any positive integer".
 
     A non-numeric `day` does not break `rule_from_dict` - it does
     `str(data["day"])`, which never raises - but it crashes far worse
@@ -116,7 +110,7 @@ def _parses_as_day(value) -> bool:
 
     An out-of-range but numeric `day` is quieter and just as bad. A rule
     only ever fires when `block.length == rule.profile`, and `profile` is
-    capped at `_MAX_PROFILE`; `resolve_rules` then `continue`s whenever
+    capped at MAX_PROFILE; `resolve_rules` then `continue`s whenever
     `index > block.length`. So `day: "7"` migrates clean, reports no
     error, looks healthy in the UI, and hits that `continue` for every
     block that can ever exist - it never fires and nobody is told. This
@@ -129,7 +123,7 @@ def _parses_as_day(value) -> bool:
         number = int(text)
     except (TypeError, ValueError):
         return False
-    return 1 <= number <= _MAX_PROFILE
+    return MIN_PROFILE <= number <= MAX_PROFILE
 
 
 def safe_day(raw: dict) -> str:
@@ -344,13 +338,13 @@ def migrate_v1_rule(
         return None, "a rule with no profile cannot be migrated"
     if not _parses_as_profile(raw["profile"]):
         return None, (
-            f"profile must be an integer 1..{_MAX_PROFILE}: {raw['profile']!r}"
+            f"profile must be an integer {MIN_PROFILE}..{MAX_PROFILE}: {raw['profile']!r}"
         )
     if "day" not in raw:
         return None, "a rule with no day cannot be migrated"
     if not _parses_as_day(raw["day"]):
         return None, (
-            f"day must be {EREV!r} or '1'..'{_MAX_PROFILE}': {raw['day']!r}"
+            f"day must be {EREV!r} or '{MIN_PROFILE}'..'{MAX_PROFILE}': {raw['day']!r}"
         )
     time_value = raw.get("time")
     if not time_value:

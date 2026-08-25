@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import time, timedelta
 
+from .const import MAX_PROFILE, MIN_PROFILE
 from .models import EREV, Replay, Rule
 
 _FIELDS = {
@@ -99,22 +100,29 @@ def _check_unknown_fields(data: dict, allowed: set[str] = _FIELDS) -> None:
         raise RuleValidationError(f"unknown field(s): {sorted(unknown)}")
 
 
+_VALID_DAYS = tuple(str(n) for n in range(MIN_PROFILE, MAX_PROFILE + 1))
+
+
 def _day(value) -> str:
     text = str(value)
     if text == EREV:
         return text
-    if text in ("1", "2", "3"):
+    if text in _VALID_DAYS:
         return text
     raise RuleValidationError(
-        f"day must be {EREV!r} or '1'..'3', got {value!r}"
+        f"day must be {EREV!r} or '{MIN_PROFILE}'..'{MAX_PROFILE}', got {value!r}"
     )
 
 
 def _profile(value) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
-        raise RuleValidationError(f"profile must be an integer 1..3, got {value!r}")
-    if not 1 <= value <= 3:
-        raise RuleValidationError(f"profile must be an integer 1..3, got {value!r}")
+        raise RuleValidationError(
+            f"profile must be an integer {MIN_PROFILE}..{MAX_PROFILE}, got {value!r}"
+        )
+    if not MIN_PROFILE <= value <= MAX_PROFILE:
+        raise RuleValidationError(
+            f"profile must be an integer {MIN_PROFILE}..{MAX_PROFILE}, got {value!r}"
+        )
     return value
 
 

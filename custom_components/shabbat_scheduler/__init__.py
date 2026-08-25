@@ -27,6 +27,8 @@ from .const import (
     DEFAULT_CANDLE_SENSOR,
     DEFAULT_HAVDALAH_SENSOR,
     DOMAIN,
+    MAX_PROFILE,
+    MIN_PROFILE,
     SIGNAL_RULES_CHANGED,
 )
 from .engine import ShabbatEngine
@@ -272,7 +274,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.services.async_register(
         DOMAIN, "simulate", _simulate,
-        schema=vol.Schema({vol.Optional("block_length"): vol.All(int, vol.Range(1, 3))}),
+        schema=vol.Schema({vol.Optional("block_length"): vol.All(int, vol.Range(MIN_PROFILE, MAX_PROFILE))}),
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(

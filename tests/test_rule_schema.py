@@ -181,3 +181,14 @@ def test_yaml_import_cannot_smuggle_a_last_outcome_either():
     )
     assert rule.migration_error == "kept"   # still preserved, deliberately
     assert not hasattr(rule, "last_outcome")
+
+
+def test_the_profile_bound_matches_the_shared_constant():
+    from custom_components.shabbat_scheduler.const import MAX_PROFILE, MIN_PROFILE
+    from custom_components.shabbat_scheduler.rule_schema import _profile
+
+    assert _profile(MAX_PROFILE) == MAX_PROFILE
+    with pytest.raises(RuleValidationError):
+        _profile(MAX_PROFILE + 1)
+    with pytest.raises(RuleValidationError):
+        _profile(MIN_PROFILE - 1)

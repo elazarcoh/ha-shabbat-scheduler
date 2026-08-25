@@ -12,6 +12,15 @@ SIGNAL_RULES_CHANGED = "shabbat_scheduler_rules_changed"
 RETRY_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 30
 
+# A block spans at most three calendar days - a two-day Chag adjacent to
+# Shabbat. This is the one place that bound is spelled out; everywhere
+# else (migration.py, rule_schema.py, websocket_api.py, __init__.py)
+# imports it. It used to be six independently-typed literal "1..3"s -
+# carried forward from Plan 2's final review as the kind of duplication
+# that is fine right up until someone changes one copy and not the rest.
+MIN_PROFILE = 1
+MAX_PROFILE = 3
+
 # The one wording for "this rule names an entity that does not exist",
 # shared by the engine (which puts it in a failed result's `error`) and the
 # logbook (which appends it to a row, and uses its presence to avoid saying

@@ -1442,3 +1442,19 @@ def test_a_null_never_reaches_a_call_home_assistant_would_refuse():
     assert [action for action, _ in calls] == ["climate.set_temperature"]
     for _action, data in calls:
         SET_TEMPERATURE_SCHEMA({**data, **rule.target})
+
+
+# --- Profile bound constant guard -------------------------------------------
+
+
+def test_the_profile_bound_is_read_from_the_shared_constant():
+    """Not a behaviour test - a guard against the bound drifting back
+    into six independent literals. If MAX_PROFILE ever changes, this
+    module must move with it without being separately edited."""
+    from custom_components.shabbat_scheduler.const import MAX_PROFILE, MIN_PROFILE
+    from custom_components.shabbat_scheduler.migration import _parses_as_profile
+
+    assert _parses_as_profile(MAX_PROFILE) is True
+    assert _parses_as_profile(MAX_PROFILE + 1) is False
+    assert _parses_as_profile(MIN_PROFILE) is True
+    assert _parses_as_profile(MIN_PROFILE - 1) is False

@@ -35,18 +35,11 @@ const STRINGS = {
     will_conflict: 'This overlaps another rule. You can still save it — nothing is resolved for you.',
     defaults_title: 'Shared defaults',
     defaults_help: 'Rules inherit these unless they set their own.',
-    inherits_target: 'No target set — inherits from the shared defaults:',
-    // The read-only half of the rule dialog. Saying "not editable here"
-    // out loud is the point: a field the card silently omitted would read
-    // as a field the rule does not have.
+    // Still used by the shared-defaults dialog's own read-only summary
+    // (defaults-dialog.ts) - that block is unchanged by this task.
     read_only_fields: 'Not editable here yet — shown so you can see what this rule actually carries. Use the YAML import/export service to change them.',
     target: 'Target',
     data: 'Data',
-    condition: 'Conditions',
-    replay: 'Re-apply after a restart',
-    replay_no: 'no',
-    replay_yes: 'yes',
-    replay_within: 'within',
     none_set: 'none',
     migration_error: 'This rule could not be converted from the old format and will not fire:',
     preview_banner: 'Preview — not the coming Shabbat. Dates are not shown because this block is not scheduled.',
@@ -93,15 +86,9 @@ const STRINGS = {
     will_conflict: 'הכלל חופף לכלל אחר. אפשר לשמור בכל זאת — שום דבר לא ייפתר עבורך.',
     defaults_title: 'ברירות מחדל משותפות',
     defaults_help: 'כללים יורשים אותן אלא אם הגדירו משלהם.',
-    inherits_target: 'לא נבחר יעד — יורש מברירות המחדל המשותפות:',
     read_only_fields: 'לא ניתן לערוך כאן עדיין — מוצג כדי שתראו מה הכלל באמת מכיל. לשינוי השתמשו בשירות ייבוא/ייצוא YAML.',
     target: 'יעד',
     data: 'נתונים',
-    condition: 'תנאים',
-    replay: 'החלה מחדש לאחר הפעלה מחדש',
-    replay_no: 'לא',
-    replay_yes: 'כן',
-    replay_within: 'בתוך',
     none_set: 'ללא',
     migration_error: 'לא ניתן להמיר את הכלל הזה מהפורמט הישן והוא לא יופעל:',
     preview_banner: 'תצוגה מקדימה — לא השבת הקרובה. התאריכים אינם מוצגים כי הבלוק הזה אינו מתוכנן.',

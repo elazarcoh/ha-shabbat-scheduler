@@ -18,7 +18,8 @@ async function render(props: Record<string, unknown> = {}) {
     Record<string, any>;
   Object.assign(el, {
     rule: existing, day: '1', profile: 1, defaults: {},
-    canWrite: true, language: 'en', error: null, busy: false, ...props,
+    canWrite: true, language: 'en', error: null, busy: false,
+    hass: { states: {} }, ...props,
   });
   document.body.appendChild(el);
   await el.updateComplete;
@@ -84,26 +85,6 @@ describe('shabbat-rule-dialog', () => {
     (el.shadowRoot!.querySelector('.advanced-toggle') as HTMLElement).click();
     await el.updateComplete;
     expect(el.shadowRoot!.querySelector('.icon')).not.toBeNull();
-  });
-
-  // v1 had a separate `script` text field, shown only when the action was
-  // the magic value 'custom'. In v2 a script rule is just an action, so
-  // the special case is gone and the action itself is the text field.
-  it('edits the action as free text, since any service is now valid', async () => {
-    const el = await render({
-      rule: { ...existing, action: 'script.turn_on' },
-    });
-    const action = el.shadowRoot!.querySelector('.action') as HTMLInputElement;
-    expect(action.value).toBe('script.turn_on');
-
-    const listener = vi.fn();
-    el.addEventListener('dialog-save', listener);
-    action.value = 'notify.mobile_app';
-    action.dispatchEvent(new Event('change'));
-    (el.shadowRoot!.querySelector('.save') as HTMLElement).click();
-
-    expect((listener.mock.calls[0][0] as CustomEvent).detail.form.action)
-      .toBe('notify.mobile_app');
   });
 
   it('starts a seeded create from the seed, which is what makes duplicate duplicate', async () => {
@@ -234,56 +215,16 @@ describe('shabbat-rule-dialog', () => {
       .toBe('22:00:00');
   });
 
-  // ---- the fields the dialog cannot yet edit ----
+  // ---- fields the dialog seeds but does not itself touch on save ----
   //
-  // v1's device multi-select and climate settings form are gone: a rule is
-  // now an arbitrary service call with a Home Assistant target selector
-  // and an opaque data payload, and neither can be rendered honestly as a
-  // device list and a temperature slider. The rule for this task is that
-  // where the card cannot edit something it must SHOW THE TRUTH, never a
-  // stale climate-shaped guess and never silence.
+  // `target`, `data`, `condition` and `replay` are now real editors (see
+  // the tests further below), but a save where the user never touched
+  // one of them must still carry it through unchanged: an edit must not
+  // turn "the user did not touch this" into "this is now empty".
 
-  it('shows the target, data, conditions and replay it cannot edit', async () => {
-    const el = await render({
-      rule: {
-        ...existing,
-        condition: [{ condition: 'state', entity_id: 'binary_sensor.gate', state: 'on' }],
-        replay: { enabled: true, within: '02:00:00' },
-      },
-    });
-    const text = el.shadowRoot!.textContent!;
-    expect(text).toContain('climate.salon');     // target
-    expect(text).toContain('temperature');       // data
-    expect(text).toContain('binary_sensor.gate');// condition
-    expect(text).toContain('02:00:00');          // replay window
-    // ...and says out loud that they are not editable here, rather than
-    // showing them as if they were inputs.
-    expect(text).toContain('Not editable here');
-    expect(el.shadowRoot!.querySelector('shabbat-device-settings')).toBeNull();
-  });
-
-  it('says a rule has no target rather than showing an empty gap', async () => {
-    const el = await render({ rule: { ...existing, target: {}, data: {} } });
-    expect((el.shadowRoot!.querySelector('.ro-target') as HTMLElement).textContent)
-      .toContain('none');
-    expect((el.shadowRoot!.querySelector('.ro-data') as HTMLElement).textContent)
-      .toContain('none');
-  });
-
-  it('says a rule with no target of its own inherits the defaults', async () => {
-    const el = await render({
-      rule: { ...existing, target: {} },
-      defaults: { target: { entity_id: ['climate.mamad'] } },
-    });
-    const text = (el.shadowRoot!.querySelector('.ro-target') as HTMLElement).textContent!;
-    expect(text).toContain('inherits');
-    expect(text).toContain('climate.mamad');
-  });
-
-  it('carries the fields it cannot edit through a save untouched', async () => {
-    // The dialog must not turn "I cannot edit this" into "this is now
-    // empty". An edit that dropped a rule's conditions would make it
-    // fire on a day it was meant to be blocked.
+  it('carries the fields the user did not touch through a save untouched', async () => {
+    // An edit that dropped a rule's conditions would make it fire on a
+    // day it was meant to be blocked.
     const rule = {
       ...existing,
       condition: [{ condition: 'state', entity_id: 'binary_sensor.gate', state: 'on' }],
@@ -315,5 +256,140 @@ describe('shabbat-rule-dialog', () => {
     });
     expect(el.shadowRoot!.textContent).toContain('could not be converted');
     expect(el.shadowRoot!.textContent).toContain('no v2 target could be derived');
+  });
+
+  // ---- the real editors, replacing the read-only block ----
+
+  const editors = (el: any) => ({
+    target: el.shadowRoot!.querySelector('shabbat-target-editor'),
+    service: el.shadowRoot!.querySelector('shabbat-service-editor'),
+    condition: el.shadowRoot!.querySelector('shabbat-condition-editor'),
+    replay: el.shadowRoot!.querySelector('shabbat-replay-editor'),
+  });
+
+  it('offers all four editors instead of a read-only block', async () => {
+    const el = await render();
+    const found = editors(el);
+    expect(found.target).not.toBeNull();
+    expect(found.service).not.toBeNull();
+    expect(found.condition).not.toBeNull();
+    expect(found.replay).not.toBeNull();
+    expect(el.shadowRoot!.querySelector('.readonly')).toBeNull();
+    expect(el.shadowRoot!.querySelector('input.action')).toBeNull();
+  });
+
+  it('seeds every editor from the rule being edited', async () => {
+    const el = await render();
+    const found = editors(el);
+    expect(found.service.action).toBe('climate.set_temperature');
+    expect(found.service.data).toEqual({ temperature: 26 });
+    expect(found.target.value).toEqual({ entity_id: ['climate.salon'] });
+    expect(found.replay.value).toEqual({ enabled: false });
+  });
+
+  it('passes hass to the editors that need it', async () => {
+    const el = await render();
+    const found = editors(el);
+    expect(found.service.hass).toBe(el.hass);
+    expect(found.target.hass).toBe(el.hass);
+  });
+
+  it('gives the target editor the shared defaults to report inheritance', async () => {
+    const el = await render({
+      defaults: { target: { entity_id: ['switch.shared'] } },
+    });
+    expect(editors(el).target.inherited).toEqual({
+      entity_id: ['switch.shared'],
+    });
+  });
+
+  it('saves an action and data changed through the service editor', async () => {
+    const el = await render();
+    const saved: any[] = [];
+    el.addEventListener('dialog-save', (e: Event) => {
+      saved.push((e as CustomEvent).detail.form);
+    });
+    editors(el).service.dispatchEvent(new CustomEvent('service-changed', {
+      detail: { action: 'switch.turn_on', data: {} },
+    }));
+    await el.updateComplete;
+    (el.shadowRoot!.querySelector('button.save') as HTMLElement).click();
+    expect(saved[0].action).toBe('switch.turn_on');
+    expect(saved[0].data).toEqual({});
+  });
+
+  it('saves a target changed through the target editor', async () => {
+    const el = await render();
+    const saved: any[] = [];
+    el.addEventListener('dialog-save', (e: Event) => {
+      saved.push((e as CustomEvent).detail.form);
+    });
+    editors(el).target.dispatchEvent(new CustomEvent('target-changed', {
+      detail: { value: { area_id: ['salon'] } },
+    }));
+    await el.updateComplete;
+    (el.shadowRoot!.querySelector('button.save') as HTMLElement).click();
+    expect(saved[0].target).toEqual({ area_id: ['salon'] });
+  });
+
+  it('saves conditions and replay changed through their editors', async () => {
+    const el = await render();
+    const saved: any[] = [];
+    el.addEventListener('dialog-save', (e: Event) => {
+      saved.push((e as CustomEvent).detail.form);
+    });
+    editors(el).condition.dispatchEvent(new CustomEvent('condition-changed', {
+      detail: { value: [{ condition: 'state', entity_id: 'x', state: 'on' }] },
+    }));
+    editors(el).replay.dispatchEvent(new CustomEvent('replay-changed', {
+      detail: { value: { enabled: true, within: '00:30:00' } },
+    }));
+    await el.updateComplete;
+    (el.shadowRoot!.querySelector('button.save') as HTMLElement).click();
+    expect(saved[0].condition).toEqual([
+      { condition: 'state', entity_id: 'x', state: 'on' },
+    ]);
+    expect(saved[0].replay).toEqual({ enabled: true, within: '00:30:00' });
+  });
+
+  it('refuses to save while a condition is unparseable', async () => {
+    // Seeded with one condition already present: `area` below is captured
+    // from that pre-existing row, and non-keyed list rendering reuses the
+    // same DOM node across the edits that follow, so it stays attached
+    // throughout - starting from zero rows would mean `area` was captured
+    // before any row (and its textarea) existed at all.
+    const el = await render({
+      rule: {
+        ...existing,
+        condition: [{ condition: 'state', entity_id: 'binary_sensor.gate', state: 'on' }],
+      },
+    });
+    const saved: any[] = [];
+    el.addEventListener('dialog-save', () => { saved.push(true); });
+    const condition = editors(el).condition as any;
+    const area = condition.shadowRoot.querySelector('textarea');
+    // The dialog must ask the editor, not re-parse the text itself.
+    condition.value = [{ condition: 'state' }];
+    await condition.updateComplete;
+    const box = condition.shadowRoot.querySelector('textarea') as HTMLTextAreaElement;
+    box.value = 'condition: [state';
+    box.dispatchEvent(new Event('change'));
+    await condition.updateComplete;
+    await el.updateComplete;
+    (el.shadowRoot!.querySelector('button.save') as HTMLElement).click();
+    expect(saved).toEqual([]);
+    expect(el.shadowRoot!.querySelector('.error')).not.toBeNull();
+    expect(area).not.toBeNull();
+  });
+
+  it('does not re-seed the form when hass is reassigned', async () => {
+    const el = await render();
+    editors(el).service.dispatchEvent(new CustomEvent('service-changed', {
+      detail: { action: 'switch.turn_on', data: {} },
+    }));
+    await el.updateComplete;
+    el.hass = { states: {}, changed: true };   // HA does this constantly
+    await el.updateComplete;
+    expect(editors(el).service.action).toBe('switch.turn_on');
   });
 });

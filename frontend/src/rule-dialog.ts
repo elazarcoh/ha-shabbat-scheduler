@@ -1,8 +1,12 @@
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { describeTarget, ruleToForm } from './format';
+import { ruleToForm } from './format';
 import { t } from './strings';
 import type { Defaults, Hass, RuleData, RuleFormState } from './types';
+import './condition-editor';
+import './replay-editor';
+import './service-editor';
+import './target-editor';
 
 const EMPTY_FORM: RuleFormState = {
   day: 'erev', time: '', action: '', target: {}, data: {}, condition: [],
@@ -32,6 +36,7 @@ export class ShabbatRuleDialog extends LitElement {
 
   @state() private _form: RuleFormState = EMPTY_FORM;
   @state() private _advanced = false;
+  @state() private _conditionError = false;
   private _seeded: string | null = null;
 
   static override styles = css`
@@ -88,17 +93,6 @@ export class ShabbatRuleDialog extends LitElement {
       font-size: 0.9em;
     }
     .note { color: var(--secondary-text-color, #666); font-size: 0.85em; }
-    .readonly {
-      margin-block: 12px 4px;
-      padding-block: 8px;
-      padding-inline: 10px;
-      border-inline-start: 3px solid var(--divider-color, #e0e0e0);
-      background: var(--secondary-background-color, #f4f4f4);
-      font-size: 0.9em;
-    }
-    .readonly dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
-    .readonly dt { color: var(--secondary-text-color, #666); }
-    .readonly dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
     .migration {
       color: var(--error-color, #d64545);
       margin-block: 8px;
@@ -159,7 +153,7 @@ export class ShabbatRuleDialog extends LitElement {
   }
 
   private _text(
-    key: 'time' | 'action' | 'name' | 'icon' | 'color',
+    key: 'time' | 'name' | 'icon' | 'color',
     label: string,
   ) {
     return html`
@@ -179,50 +173,37 @@ export class ShabbatRuleDialog extends LitElement {
     `;
   }
 
-  private _describeData(): string {
-    const entries = Object.entries(this._form.data);
-    if (!entries.length) return t(this.language, 'none_set');
-    return entries.map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join(', ');
-  }
-
-  private _describeConditions(): string {
-    const { condition } = this._form;
-    if (!condition.length) return t(this.language, 'none_set');
-    return condition.map((item) => JSON.stringify(item)).join(' ; ');
-  }
-
-  private _describeReplay(): string {
-    const { replay } = this._form;
-    if (!replay.enabled) return t(this.language, 'replay_no');
-    const yes = t(this.language, 'replay_yes');
-    return replay.within
-      ? `${yes} (${t(this.language, 'replay_within')} ${replay.within})`
-      : yes;
-  }
-
   /**
-   * The fields this dialog can still edit CORRECTLY, plus a read-only
-   * view of the ones it cannot.
+   * Save, unless a condition is currently unparseable.
    *
-   * v1's device picker and climate settings form are gone: a rule is now
-   * an arbitrary service call with a Home Assistant target selector and
-   * an opaque data payload, and there is no honest way to render either
-   * with a device multi-select and a temperature slider. Saving a
-   * v1-shaped payload would be worse than not offering the control, and
-   * OMITTING the fields would be worse still - a rule that carries a
-   * condition and a replay window would look like a rule that carries
-   * neither. So they are shown, verbatim, marked as not editable here.
+   * The editor is ASKED (`hasError`) rather than the text re-parsed here:
+   * one parser, one answer. Re-parsing would be a second implementation of
+   * the same rule, and the two would drift.
    *
-   * They are still carried through the form (see `ruleToForm`), so an
-   * edit cannot drop them and a duplicate is a real duplicate.
-   *
-   * Plan 2 builds the real editors.
+   * This is not client-side revalidation of the rule - the Python side
+   * still owns whether a condition is *valid*. It is refusing to send
+   * something that is not even a condition yet.
    */
+  private _onSave() {
+    const editor = this.shadowRoot?.querySelector(
+      'shabbat-condition-editor',
+    ) as (HTMLElement & { hasError?: boolean }) | null;
+    if (editor?.hasError) {
+      this._conditionError = true;
+      // Lit batches this into a microtask by default, which a synchronous
+      // caller (a plain DOM `click()`) never gets to see before it moves
+      // on. `performUpdate` is the documented escape hatch for forcing the
+      // pending render through immediately, so the blocked-save message is
+      // visible the instant this handler returns, not on the next tick.
+      this.performUpdate();
+      return;
+    }
+    this._conditionError = false;
+    this._emit('dialog-save');
+  }
+
   override render() {
     const editing = this.rule !== null;
-    const inheritedTarget = this.defaults.target ?? {};
-    const ownTarget = describeTarget(this._form.target);
-    const inherits = ownTarget === '' && Object.keys(inheritedTarget).length > 0;
     return html`
       <div class="sheet" @click=${(event: Event) => {
         if (event.target === event.currentTarget) {
@@ -243,10 +224,14 @@ export class ShabbatRuleDialog extends LitElement {
           ${this.error !== null
             ? html`<div class="error">${this.error}</div>`
             : nothing}
+          ${this._conditionError
+            ? html`<div class="error condition-blocked">
+                ${t(this.language, 'condition_unparseable')}
+              </div>`
+            : nothing}
 
           <div class="form">
             ${this._text('time', t(this.language, 'time'))}
-            ${this._text('action', t(this.language, 'action'))}
             ${this._text('name', t(this.language, 'name'))}
 
             <div class="field">
@@ -262,25 +247,44 @@ export class ShabbatRuleDialog extends LitElement {
               />
             </div>
 
-            <div class="readonly">
-              <div class="note">${t(this.language, 'read_only_fields')}</div>
-              <dl>
-                <dt>${t(this.language, 'target')}</dt>
-                <dd class="ro-target">
-                  ${ownTarget !== ''
-                    ? ownTarget
-                    : inherits
-                      ? `${t(this.language, 'inherits_target')} ${describeTarget(inheritedTarget)}`
-                      : t(this.language, 'none_set')}
-                </dd>
-                <dt>${t(this.language, 'data')}</dt>
-                <dd class="ro-data">${this._describeData()}</dd>
-                <dt>${t(this.language, 'condition')}</dt>
-                <dd class="ro-condition">${this._describeConditions()}</dd>
-                <dt>${t(this.language, 'replay')}</dt>
-                <dd class="ro-replay">${this._describeReplay()}</dd>
-              </dl>
-            </div>
+            <shabbat-service-editor
+              .hass=${this.hass}
+              .action=${this._form.action}
+              .data=${this._form.data}
+              .disabled=${!this.canWrite}
+              @service-changed=${(event: CustomEvent) =>
+                this._patch({
+                  action: event.detail.action, data: event.detail.data,
+                })}
+            ></shabbat-service-editor>
+
+            <shabbat-target-editor
+              .hass=${this.hass}
+              .value=${this._form.target}
+              .inherited=${this.defaults.target ?? {}}
+              .disabled=${!this.canWrite}
+              .language=${this.language}
+              @target-changed=${(event: CustomEvent) =>
+                this._patch({ target: event.detail.value })}
+            ></shabbat-target-editor>
+
+            <shabbat-condition-editor
+              .value=${this._form.condition}
+              .disabled=${!this.canWrite}
+              .language=${this.language}
+              @condition-changed=${(event: CustomEvent) => {
+                this._conditionError = false;
+                this._patch({ condition: event.detail.value });
+              }}
+            ></shabbat-condition-editor>
+
+            <shabbat-replay-editor
+              .value=${this._form.replay}
+              .disabled=${!this.canWrite}
+              .language=${this.language}
+              @replay-changed=${(event: CustomEvent) =>
+                this._patch({ replay: event.detail.value })}
+            ></shabbat-replay-editor>
 
             <button
               class="advanced-toggle"
@@ -324,7 +328,7 @@ export class ShabbatRuleDialog extends LitElement {
               ? html`<button
                   class="save"
                   ?disabled=${this.busy}
-                  @click=${() => this._emit('dialog-save')}
+                  @click=${() => this._onSave()}
                 >
                   ${t(this.language, 'save')}
                 </button>`

@@ -198,6 +198,13 @@ export interface Hass {
   states: Record<string, HassEntity>;
   locale?: { language?: string };
   user?: { is_admin?: boolean };
+  /**
+   * The user's own advanced-mode preference. Passed to
+   * `<ha-service-control>` so this card shows advanced service fields
+   * exactly when Home Assistant itself would - hard-coding it on would
+   * override a preference the user set deliberately.
+   */
+  userData?: { showAdvanced?: boolean };
   connection: unknown;
   callWS: (message: Record<string, unknown>) => Promise<unknown>;
   callService: (
@@ -650,7 +657,7 @@ export class ShabbatServiceEditor extends LitElement {
           .hass=${this.hass}
           .value=${{ action: this.action, data: this.data }}
           .disabled=${this.disabled}
-          .showAdvanced=${true}
+          .showAdvanced=${this.hass?.userData?.showAdvanced === true}
           @value-changed=${this._onChange}
         ></ha-service-control>
       </div>

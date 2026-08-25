@@ -6,9 +6,31 @@ docker compose -f dev/docker-compose.yml up -d
 uv run python dev/seed.py        # prints a token
 ```
 
-Port 8124, never 8123. This instance is disposable - `docker compose down -v`
-and re-seed whenever it gets confusing. It is the only Home Assistant this
-plan is allowed to touch.
+Port 8124, never 8123. It is the only Home Assistant this plan is allowed to
+touch.
+
+`seed.py` is re-runnable: it onboards a fresh instance, and logs in if the
+instance is already onboarded.
+
+**`docker compose down -v` does NOT reset this instance.** `./config` is a bind
+mount and the compose file declares no named volumes, so `-v` removes nothing
+and every bit of state - onboarding, auth, the config entry, the rules -
+survives on the host. This README used to advise `down -v` for a clean slate;
+it never worked. The container also writes as root, so the host user cannot
+delete the state directly. What does work:
+
+```bash
+docker compose -f dev/docker-compose.yml down
+docker run --rm -v "$PWD/dev/config:/config" alpine:3 \
+  sh -c 'find /config -mindepth 1 -maxdepth 1 \
+           ! -name configuration.yaml ! -name custom_components \
+           -exec rm -rf {} +'
+docker compose -f dev/docker-compose.yml up -d
+uv run python dev/seed.py
+```
+
+Only `configuration.yaml` is tracked in git under `dev/config/`; everything
+else there is generated, so that is the full set worth keeping.
 
 The port mapping is currently `0.0.0.0:8124:8123`, so the instance is
 reachable from the LAN for development on other devices. This container ships
@@ -25,10 +47,9 @@ dates - which silently invalidates every date assertion in `e2e/`.
 The two zmanim sensors are fabricated directly via `POST /api/states`, not
 backed by a real integration, so they do not survive a container restart
 (`docker compose stop && start`, a host reboot, etc.) - only the rules and
-dashboard, which live in storage, do. Re-run `dev/seed.py` after any restart
-that was not a full `down -v`; running it against a container that still has
-its onboarding user will fail on the user-creation step, so tear down with
-`down -v` first if the container was only stopped rather than removed.
+dashboard, which live in storage, do. Just re-run `dev/seed.py` after a
+restart - it logs in rather than re-onboarding, so it no longer needs a fresh
+container to work.
 
 **Restart-based testing needs the template pair, not the fabricated one.**
 Because the fabricated sensors vanish on restart, a restart leaves the engine

@@ -20,28 +20,42 @@ def expand_action(action: str, data: dict) -> list[tuple[str, dict]]:
 
     THE ONE COMPATIBILITY SHIM. `climate.set_temperature` carrying an
     `hvac_mode` and/or a `fan_mode` is split into up to three calls, in
-    order - `set_hvac_mode`, `set_temperature`, `set_fan_mode` - because
-    Home Assistant's own `set_temperature` schema is PREVENT_EXTRA and
-    accepts only `temperature`, `target_temp_high` and `target_temp_low`:
-    an author-friendly single action carrying `hvac_mode` or `fan_mode`
-    alongside a temperature is rejected outright, not merely a hardware
-    quirk. Several climate integrations - the `aux_cloud` units this was
-    written for among them - also intermittently fail to power on when
-    hvac_mode and temperature arrive together regardless of the schema.
-    The most-used third-party scheduler in the ecosystem hardcodes the
-    same split for the same reason, which is the evidence that this is a
-    real hardware quirk and not this project's special case. `fan_mode`
-    was a first-class v1 feature - how one unit gets `silent` and another
-    gets `quiet` - so it gets its own call rather than being dropped or
-    smuggled into `set_temperature`, where HA would reject it.
+    order - `set_hvac_mode`, `set_temperature`, `set_fan_mode` - for THREE
+    separate reasons, and keeping them apart is the point: anyone later
+    deciding whether this shim can be deleted needs to know which parts
+    Home Assistant forces and which are a hardware quirk that could
+    outlive any schema change. `docs/known-behaviours.md` quotes the real
+    `SET_TEMPERATURE_SCHEMA` in full.
 
-    `set_temperature` is only ever emitted if at least one key besides
-    `hvac_mode`/`fan_mode` remains - an empty `{}` is rejected by HA too.
+    1. `fan_mode` is peeled off because the schema genuinely rejects it.
+       It names no key at all in `SET_TEMPERATURE_SCHEMA`, and
+       `make_entity_service_schema` defaults to PREVENT_EXTRA, so the
+       combined call is refused with "extra keys not allowed" - HA's own
+       validator, not a hardware opinion. It was a first-class v1 feature
+       (how one unit gets `silent` and another `quiet`), so it gets its
+       own call rather than being dropped.
+    2. `hvac_mode` is peeled off for a HARDWARE reason, not a schema one.
+       `vol.Optional(ATTR_HVAC_MODE)` is right there in
+       `SET_TEMPERATURE_SCHEMA` - HA would accept it alongside a
+       temperature perfectly happily. It is split anyway because several
+       climate integrations, the `aux_cloud` units this was written for
+       among them, intermittently fail to power on when mode and
+       temperature arrive in one call. The ecosystem's most-used
+       third-party scheduler hardcodes the identical split, which is the
+       evidence this is a real shared quirk and not this project's
+       special case.
+    3. `set_temperature` is only emitted if at least one key besides
+       `hvac_mode`/`fan_mode` remains, because
+       `cv.has_at_least_one_key(temperature, target_temp_high,
+       target_temp_low)` rejects the empty `{}` the other way - "must
+       contain at least one of...". Emitting a call guaranteed to fail
+       would only produce a retry storm and a notification.
+
     Any key this shim does not recognise (`swing_mode`, `humidity`, a
-    future addition) rides along on that call rather than being silently
-    dropped - the same outcome as if hvac_mode/fan_mode were absent and
-    no split happened at all, so HA rejects it loudly instead of it
-    vanishing with no trace.
+    future addition) rides along on the `set_temperature` call rather than
+    being silently dropped - the same outcome as if hvac_mode/fan_mode
+    were absent and no split happened at all, so HA rejects it loudly
+    instead of it vanishing with no trace.
 
     An author writes the one natural action; this makes it work. Every
     other action passes through untouched, and no other domain knowledge

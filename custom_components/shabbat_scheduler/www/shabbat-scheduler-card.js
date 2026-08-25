@@ -125,6 +125,9 @@ const STRINGS = {
         preview_banner: 'Preview — not the coming Shabbat. Dates are not shown because this block is not scheduled.',
         inherits_target_from_defaults: 'Inherited from the shared defaults:',
         target_none: 'No target — this rule will not reach anything.',
+        replay_after_restart: 'Replay after a restart',
+        replay_within_label: 'Only if less than',
+        replay_help: 'Off by default: after a restart, nothing that already passed is re-run.',
     },
     he: {
         erev: 'ערב',
@@ -171,6 +174,9 @@ const STRINGS = {
         preview_banner: 'תצוגה מקדימה — לא השבת הקרובה. התאריכים אינם מוצגים כי הבלוק הזה אינו מתוכנן.',
         inherits_target_from_defaults: 'נורש מברירת המחדל המשותפת:',
         target_none: 'ללא יעד — הכלל לא יפעל על שום דבר.',
+        replay_after_restart: 'הפעלה חוזרת לאחר אתחול',
+        replay_within_label: 'רק אם עברו פחות מ־',
+        replay_help: 'כברירת מחדל כבוי: לאחר אתחול, מה שכבר עבר לא יופעל שוב.',
     },
 };
 function t(language, key) {

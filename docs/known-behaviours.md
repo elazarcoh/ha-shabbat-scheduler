@@ -5,6 +5,203 @@ or known-and-deferred. Recorded here because the review scratch directory is
 not committed and these are things a future maintainer will otherwise
 rediscover the hard way.
 
+## The one climate shim
+
+A rule is a single `action` with a `target` and a `data` payload — no
+domain-specific knowledge is supposed to live in this integration at all.
+`climate.set_temperature` is the one exception, and it splits into up to
+three ordered calls (`set_hvac_mode`, `set_temperature`, `set_fan_mode`)
+for **three separate reasons**, not one. It matters that they stay
+separate: someone later deciding whether this shim can be deleted needs
+to know which parts are forced by Home Assistant and which are a
+hardware quirk that might outlive any schema change.
+
+Verified directly against the installed
+`homeassistant/components/climate/__init__.py`:
+
+```python
+SET_TEMPERATURE_SCHEMA = vol.All(
+    cv.has_at_least_one_key(ATTR_TEMPERATURE, ATTR_TARGET_TEMP_HIGH, ATTR_TARGET_TEMP_LOW),
+    cv.make_entity_service_schema({
+        vol.Exclusive(ATTR_TEMPERATURE, "temperature"): vol.Coerce(float),
+        vol.Inclusive(ATTR_TARGET_TEMP_HIGH, "temperature"): vol.Coerce(float),
+        vol.Inclusive(ATTR_TARGET_TEMP_LOW, "temperature"): vol.Coerce(float),
+        vol.Optional(ATTR_HVAC_MODE): vol.Coerce(HVACMode),
+    }),
+)
+```
+
+1. **`fan_mode` is peeled off because the schema genuinely rejects it.**
+   `fan_mode` names no key at all in `SET_TEMPERATURE_SCHEMA`, and
+   `make_entity_service_schema` defaults to `PREVENT_EXTRA`, so a
+   `climate.set_temperature` call carrying `fan_mode` is refused outright
+   with "extra keys not allowed" — HA's own validator, not a hardware
+   opinion.
+2. **`hvac_mode` is peeled off for a hardware reason, not a schema
+   one.** `vol.Optional(ATTR_HVAC_MODE)` is right there in the schema —
+   `hvac_mode` is an explicitly *permitted* key alongside a temperature,
+   and HA would accept the combined call. It is split anyway because
+   several climate integrations — the `aux_cloud` units this was built
+   for among them — intermittently fail to power on when mode and
+   temperature arrive in the same call, schema or no schema. The
+   ecosystem's most-used third-party scheduler hardcodes the identical
+   split, which is the evidence this is a real, shared hardware quirk
+   and not this project's special case.
+3. **`set_temperature` is only emitted when something temperature-ish
+   remains.** `cv.has_at_least_one_key(temperature, target_temp_high,
+   target_temp_low)` means a call with only `hvac_mode` (or only
+   `fan_mode`) would leave `set_temperature` an empty `{}`, which HA
+   rejects the other way — "must contain at least one of…". So the shim
+   drops that call entirely when no temperature-ish key survives the
+   split, rather than emitting a call guaranteed to fail.
+
+Because reason 1 is genuinely a schema constraint and reason 2 is not, a
+future relaxation of `SET_TEMPERATURE_SCHEMA` (say, if HA ever allowed
+`fan_mode` too) would remove the *schema* half of the justification but
+leave the *hardware* half standing — the split would still be worth
+keeping for `hvac_mode`, even though it would no longer be strictly
+required by HA. `expand_action` (`device_ops.py`) is the one place this
+integration still knows something about a domain; every other action
+passes through untouched, in order `set_hvac_mode` → `set_temperature` →
+`set_fan_mode` (v1's order — reversing it can leave a unit briefly at
+the wrong setpoint).
+
+This counts as a compatibility shim rather than domain knowledge
+creeping back in because two of its three reasons are forced by Home
+Assistant's own schema rather than a preference of this project's, and
+the one genuinely domain-specific reason (`hvac_mode`+temperature
+together) is corroborated by the wider ecosystem's most-used scheduler
+making the identical choice for the identical hardware, not invented
+here.
+
+## Conflicts are coarser than they were
+
+`block.find_conflicts` warns when two enabled rules resolve to overlapping
+targets at the same profile/day/time — full stop. It no longer asks
+whether the two rules actually disagree.
+
+The old model could ask that question because a rule's effect was three
+hardcoded fields (`on`/`off`/a climate triple), so "opposite" had a
+concrete meaning: one rule wants the unit on, the other wants it off. A v2
+rule's effect is `action` + arbitrary `data` — an opaque payload for
+whatever service `action` names. Two rules pointing `light.turn_on` at the
+same area with different `brightness` values are trivially "different",
+but so are a `light.turn_on` and a `light.turn_off` on the same target,
+and so, for that matter, are two identical `light.turn_on` calls that
+would produce no observable disagreement at all. Without understanding
+each service's payload — which would mean re-implementing a piece of
+every domain's semantics inside this integration — "same" and "opposite"
+are indistinguishable, so both must be reported alike: as a conflict.
+
+This means some warnings are now for genuinely harmless overlaps (two
+rules that happen to agree), where v1 would have stayed silent on them.
+That is the accepted cost of the trade: a rule with no precedence over
+another is never silently resolved either way, so an over-eager warning
+is the safe direction to err in. See "Two rules on one device at one
+instant can interleave" below for why detection, not resolution, is the
+whole of what this buys.
+
+## Replay is opt-in and bounded
+
+v1's restart catch-up could ask a device "what state should you be in
+right now?" and compare it against what it actually held, because a rule's
+effect was a small, fixed, queryable shape (on/off, or a temperature/mode/
+fan triple) — the same shape the device itself reports back. That
+comparison is what made catch-up idempotent: re-applying an already-true
+state was a no-op.
+
+A v2 rule's effect is an opaque Home Assistant service call. There is no
+general way to ask "did this notification already go out?" or "was this
+scene already applied?" — most services have no queryable desired state
+at all, and the ones that do (like `light.turn_on`) do not expose it in a
+form this integration could compare against arbitrary `data`. So catch-up
+can no longer compute "what should be true" and diff against "what is
+true"; the old mechanism could not survive the move to a generic action.
+
+What replaced it is opt-in, author-declared safety: `replay.enabled`
+(default `false`) says the rule's effect is safe to repeat at all —
+"turn the lights off" is, "start the dishwasher" is not — and
+`replay.within` bounds how late a repeat may still happen. `within`
+exists because being right about *what* to replay is not enough; being
+right about *when* matters just as much. An 11:00 "good morning" scene
+replayed at 23:00 because Home Assistant happened to restart late is
+actively wrong — worse than not replaying it — even though the same
+action at 11:05 would have been exactly correct. A replay older than
+`within` is reported as `skipped_stale`, with how late and how wide the
+window was, rather than either firing blindly or vanishing without a
+trace. Omitting `within` means no bound at all, matching how every rule
+behaved before this option existed.
+
+`replay.enabled` and `replay.within` are not the only gate. `async_catch_up`
+replays through the same `async_apply_rule` path a normal fire uses
+(`engine.py`), which means the rule's own `condition` is evaluated again
+and must pass — a replay is not a bypass of the rule's guard, it is the
+rule firing late, subject to everything that would have blocked it on
+time. So a rule can have `replay.enabled: true`, land well inside
+`within`, and still not replay: it is blocked, reported the same way a
+blocked on-time fire would be, and this is not visible as `skipped_stale`
+at all — that outcome is reserved for staleness specifically. Worth
+knowing before assuming a silent non-replay must be a `within` problem.
+
+## Two rules on one device at one instant can interleave
+
+v1 guaranteed that two rules touching one device at the same instant could
+never have their service calls interleave — its own spec named the
+failure this prevented: "the unit left off with a target temperature
+applied — a state matching neither rule." It bought this with an
+`asyncio.Lock` keyed on `entity_id`.
+
+v2 no longer can. A target may be an area, a floor or a label rather than
+a single device, and some calls (`notify.*`) carry no entity at all — there
+is no single entity left to key a lock on. `ShabbatEngine._locks` is now
+keyed on `rule.id` instead. What survives: one rule still cannot interleave
+with a re-entrant application of itself (a timer racing a restart
+catch-up). What is lost: two *different* rules whose resolved targets
+overlap can now genuinely interleave their service calls, and the result
+can be a device left in a state matching neither rule's `data`.
+
+What protects the household now is detection, not prevention:
+`block.find_conflicts` is what surfaces this to the user (see "Conflicts
+are coarser than they were", above) — the engine no longer refuses to run
+either rule on their behalf, it warns and lets both proceed. The full
+account, including the characterisation tests that pin the bad ending
+deterministically and how to get the guarantee back (a lock keyed on the
+*resolved* target set, costed but not scheduled), is in the ledger entry
+headed "A GUARANTEE v2 GAVE UP" in
+`.superpowers/sdd/2026-08-24-shabbat-scheduler-v2-model/progress.md`.
+
+## A rule that could not be migrated is kept, disabled, and reported
+
+A v1 store can contain a rule shape the v1→v2 migration cannot translate
+into a `target`/`data` pair — a hand-edited `.storage` file, or a v1 field
+combination nobody anticipated. That rule is never dropped. It is kept in
+the store with `enabled: false` and `action: shabbat_scheduler.unmigrated`
+so it cannot fire in a shape nothing understands, `migration_error` names
+why it could not convert, and `migration_source` stashes the entire
+original v1 rule dict verbatim — including anything the migration *did*
+manage to salvage into `target`/`data` along the way.
+
+The user is told through a repair issue (Settings → Repairs), not a log
+line during the one week nobody reads logs: `ISSUE_UNMIGRATED_RULES` names
+every affected rule id so they do not have to hunt through the whole rule
+set to find them. What to do with one: open it in the card, which renders
+the migration error inline, then re-author it by hand as a v2
+`action`/`target`/`data` rule and re-enable it — nothing does this
+automatically, because a migration confident enough to invent a `target`
+on your behalf is exactly the kind of silent guess this project exists to
+avoid. Preserving `migration_source` whole in storage is what makes that
+reconstruction possible instead of a rewrite from memory.
+
+**Do not reach for the YAML export to inspect or recover one.**
+`export_yaml` emits neither `migration_source` nor `migration_error`, and
+`import_yaml` strips both on the way back in. So a YAML round trip cannot
+show you the original v1 payload, and it permanently destroys the stashed
+copy — while also clearing the very flag this repair issue keys on, so the
+warning disappears too. The rule is left a disabled stub pointing at a
+service that does not exist, with nothing anywhere saying why. Read
+`migration_source` out of `.storage` directly if you need it, until the
+export learns to carry these two fields.
+
 ## The zmanim sensors roll forward at havdalah
 
 `sensor.jewish_calendar_upcoming_candle_lighting` and
@@ -49,14 +246,42 @@ executor hop that a real `Store.async_save` performs.
 ## Accepted behaviour: catch-up reaches across havdalah
 
 If the user manually switches a device off after havdalah and Home Assistant
-restarts before the block's tail, restart catch-up re-applies the most recent
-already-passed rule — so a device switched off by hand at 20:30 comes back on
-after a 21:00 restart, until the 23:00 rule turns it off.
+restarts before the block's tail, restart catch-up re-applies every
+already-passed rule that opted in to replay — so a device switched off by hand
+at 20:30 comes back on after a 21:00 restart, until the 23:00 rule turns it
+off.
 
-This is the same trade-off already accepted for any mid-block restart. It
-stays at one rule per device and is idempotent (no service call if the device
-is already in the desired state). The alternative — not restoring the block —
-loses the 23:00 rule entirely, which is worse.
+This is the same trade-off already accepted for any mid-block restart. The
+alternative — not restoring the block — loses the 23:00 rule entirely, which
+is worse.
+
+**This paragraph used to claim catch-up "stays at one rule per device and is
+idempotent (no service call if the device is already in the desired state)".
+Both halves are v1 claims that v2 falsified, and it matters more than ordinary
+doc rot: "fire once, never re-assert" is a binding constraint, and a
+maintainer reasoning from the old wording would conclude a repeat is
+harmless. It is not.**
+
+- **Not idempotent.** Application goes through `async_call_from_config`,
+  which has no "already in that state" check; v1's device comparison, which
+  did, could not survive the move to an opaque service call (see "Replay is
+  opt-in and bounded" above). A repeat re-issues the call.
+- **Not one rule per device.** Catch-up replays *every* opted-in rule whose
+  time has already passed, in time order — `engine.async_catch_up` walks the
+  whole resolved list. `tests/test_replay.py` pins that ordering, and
+  `test_catch_up_declines_to_act_on_a_conflicting_pair` was re-aimed at
+  exactly this behaviour.
+- What bounds repeats now is `engine._caught_up_for`, which compares the
+  current `Block` by value and so runs catch-up at most once per block, and at
+  most once per Home Assistant session. That is a per-*block* bound, not a
+  per-device one.
+
+The three author-declared guards are what make this safe instead:
+`replay.enabled` (default `false`), `replay.within`, and the rule's own
+condition, all evaluated through the normal apply path. A replay declined as
+too stale reports `skipped_stale` and now fires its own
+`shabbat_scheduler_rule_completed` event, so the skip is a logbook row rather
+than an entry in an aggregate `last_run` that the next rule overwrites.
 
 ## Residual risks (accepted, not fixed)
 
@@ -71,14 +296,20 @@ loses the 23:00 rule entirely, which is worse.
   after `async_shutdown` and arm timers on a dead engine. Not reproducible —
   `async_unload_platforms` awaits first and lets the refresh drain. Taking the
   refresh lock in `async_shutdown` would close it definitively.
-- **Static switch entities.** Rule switches are built once at platform setup.
-  `import_yaml` schedules a config-entry reload so they are rebuilt, but there
-  is no dynamic add/remove. **The planned Lovelace card creates and deletes
-  rules over a websocket API and will need this**, most likely via a
-  dispatcher signal.
-- **`RuleStore.rules` hands out shared mutable `Rule` objects.** No current
-  consumer mutates them, but websocket CRUD in the follow-up plan must not
-  either — consider making `Rule` frozen before that lands.
+Two entries that used to sit in this list have been **done** since, and are
+recorded here so nobody plans against the stale version:
+
+- ~~**Static switch entities.**~~ Rule switches are now added and removed
+  dynamically: `switch.py`'s `_sync`, subscribed to `SIGNAL_RULES_CHANGED`,
+  creates a switch for a new rule and removes the entity (and its registry
+  entry) for a deleted one. The websocket CRUD the card uses goes through
+  that same signal, so the "the planned Lovelace card will need this"
+  dependency is satisfied, not pending.
+- ~~**`RuleStore.rules` hands out shared mutable `Rule` objects.**~~ `Rule`
+  is `@dataclass(frozen=True)` (`models.py`), as are `Replay`, `Block`,
+  `ResolvedRule` and `Conflict`. Mutation is a `FrozenInstanceError` rather
+  than a convention, and `Block` being frozen is also what makes
+  `engine._caught_up_for`'s value comparison sound.
 
 ## The card's static path outlives a reload
 

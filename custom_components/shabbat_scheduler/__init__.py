@@ -19,21 +19,78 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 
-from . import websocket_api
+from . import repairs, websocket_api
 from .block import preview_payload
-from .const import CANDLE_SENSOR, DOMAIN, HAVDALAH_SENSOR, SIGNAL_RULES_CHANGED
+from .const import (
+    CONF_CANDLE_SENSOR,
+    CONF_HAVDALAH_SENSOR,
+    DEFAULT_CANDLE_SENSOR,
+    DEFAULT_HAVDALAH_SENSOR,
+    DOMAIN,
+    SIGNAL_RULES_CHANGED,
+)
 from .engine import ShabbatEngine
 from .frontend import async_register_frontend, async_unregister_frontend
+from .ha_validation import async_validate_rule
+from .rule_schema import RuleValidationError
 from .store import RuleStore
 from .yaml_io import export_yaml, import_yaml
 
 PLATFORMS = [Platform.SWITCH, Platform.SENSOR]
 
 
+def _configured_sensor(entry: ConfigEntry, key: str, default: str) -> str:
+    """The entity id for `key`: options override data, which overrides the
+    Jewish Calendar's own default name - the same precedence `ConfigEntry`
+    uses everywhere else a value can be both set at setup and changed later.
+    """
+    return entry.options.get(key) or entry.data.get(key, default)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     store = RuleStore(hass)
     await store.async_load()
-    engine = ShabbatEngine(hass, store)
+
+    # What this session last reported, so a rule toggle that changes nothing
+    # about the migration state does not re-write the issue registry.
+    # `None`, not `()`, until the first pass: a store with nothing broken
+    # still has to issue one delete, in case a previous install left a
+    # persistent issue behind and the rules were repaired while unloaded.
+    reported_unmigrated: dict[str, tuple[str, ...] | None] = {"ids": None}
+
+    @callback
+    def _sync_unmigrated_issue() -> None:
+        """Report the rules that are still unmigrated, from the STORE.
+
+        Not from `store.migration_failures`: that list is populated only
+        inside the store's `_async_migrate_func`, which Home Assistant calls
+        only while the stored version is behind. The migration therefore
+        happens exactly once, ever - so the user was told on the upgrade and
+        never again, while the kept-but-disabled rules sat there permanently
+        inert. Deriving it from `rule.migration_error` re-raises it on every
+        setup for as long as anything is actually broken.
+
+        And it CLEARS. A user who deletes or re-authors the broken rules had
+        no way to make the warning go away, which teaches people to ignore
+        Settings > Repairs - where the unreadable-zmanim error also lives.
+        Same create/delete-on-every-refresh shape as the zmanim pair.
+        """
+        unmigrated = tuple(rule.id for rule in store.rules if rule.migration_error)
+        if unmigrated == reported_unmigrated["ids"]:
+            return
+        reported_unmigrated["ids"] = unmigrated
+        if unmigrated:
+            repairs.async_create_unmigrated_rules_issue(hass, list(unmigrated))
+        else:
+            repairs.async_delete_unmigrated_rules_issue(hass)
+
+    _sync_unmigrated_issue()
+
+    candle_sensor = _configured_sensor(entry, CONF_CANDLE_SENSOR, DEFAULT_CANDLE_SENSOR)
+    havdalah_sensor = _configured_sensor(
+        entry, CONF_HAVDALAH_SENSOR, DEFAULT_HAVDALAH_SENSOR
+    )
+    engine = ShabbatEngine(hass, store, candle_sensor, havdalah_sensor)
 
     @callback
     def _rules_changed() -> None:
@@ -68,6 +125,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         not a wrong one.
         """
         async_dispatcher_send(hass, SIGNAL_RULES_CHANGED)
+        # Cheap, synchronous, and the only way the unmigrated-rules report
+        # can clear without a restart: this is the choke point every
+        # mutation path goes through, including the YAML import that is the
+        # documented way to repair those rules.
+        _sync_unmigrated_issue()
         hass.async_create_task(engine.async_refresh())
 
     store.async_set_change_listener(_rules_changed)
@@ -114,7 +176,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(
         async_track_state_change_event(
-            hass, [CANDLE_SENSOR, HAVDALAH_SENSOR], _zmanim_changed
+            hass, [candle_sensor, havdalah_sensor], _zmanim_changed
         )
     )
 
@@ -128,6 +190,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             store.rules,
             engine.current_block,
             dt_util.get_time_zone(hass.config.time_zone),
+            websocket_api._resolver(hass),
             call.data.get("block_length"),
         )
 
@@ -148,6 +211,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             raise ServiceValidationError(
                 f"Invalid rule set: {err}"
             ) from err
+
+        # yaml_io only checks shape (rule_schema.rule_from_api); target and
+        # condition still need Home Assistant's own schemas, which yaml_io
+        # cannot import without crossing the purity boundary. Applied here,
+        # before anything is persisted, for the same reason the malformed-
+        # defaults guard runs first: a rule that fails this after being
+        # written to .storage would brick every later setup.
+        for rule in rules:
+            try:
+                await async_validate_rule(hass, rule)
+            except RuleValidationError as err:
+                raise ServiceValidationError(
+                    f"Invalid rule set: {err}"
+                ) from err
+
         await store.async_replace_all(defaults, rules)
         await engine.async_refresh()
 

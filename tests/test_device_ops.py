@@ -1,122 +1,101 @@
-from custom_components.shabbat_scheduler.device_ops import (
-    Call,
-    Skip,
-    plan_calls,
-    resolve_fan_mode,
-)
-from custom_components.shabbat_scheduler.models import Action
-
-CLIMATE_ATTRS = {
-    "fan_modes": ["auto", "quiet", "low", "high"],
-    "temperature": 26,
-    "fan_mode": "auto",
-}
+from custom_components.shabbat_scheduler.device_ops import expand_action
 
 
-def test_resolve_fan_mode_exact_match():
-    assert resolve_fan_mode("quiet", ["auto", "quiet"]) == "quiet"
-
-
-def test_resolve_fan_mode_falls_back_to_synonym():
-    # The aux_cloud units expose "silent" where the other AC exposes "quiet".
-    assert resolve_fan_mode("quiet", ["auto", "silent", "low"]) == "silent"
-
-
-def test_resolve_fan_mode_returns_none_when_unsupported():
-    assert resolve_fan_mode("quiet", ["auto", "high"]) is None
-
-
-def test_climate_on_emits_three_separate_calls():
-    calls = plan_calls(
-        "climate.a", "off", CLIMATE_ATTRS, Action.ON,
-        {"hvac_mode": "cool", "temperature": 24, "fan_mode": "quiet"}, force=False,
-    )
-    assert [c.service for c in calls] == [
-        "set_hvac_mode", "set_temperature", "set_fan_mode",
+def test_most_actions_pass_through_untouched():
+    assert expand_action("switch.turn_on", {}) == [("switch.turn_on", {})]
+    assert expand_action("scene.turn_on", {"transition": 2}) == [
+        ("scene.turn_on", {"transition": 2})
     ]
-    # Never the combined form - it silently fails to power on aux_cloud units.
-    assert all("hvac_mode" not in c.data for c in calls if c.service == "set_temperature")
+    assert expand_action("notify.mobile", {"message": "hi"}) == [
+        ("notify.mobile", {"message": "hi"})
+    ]
 
 
-def test_already_correct_values_are_skipped():
-    calls = plan_calls(
-        "climate.a", "cool", CLIMATE_ATTRS, Action.ON,
-        {"hvac_mode": "cool", "temperature": 26, "fan_mode": "auto"}, force=False,
+def test_set_temperature_with_hvac_mode_is_split():
+    """Sent together, several climate integrations silently fail to power on."""
+    assert expand_action(
+        "climate.set_temperature", {"temperature": 26, "hvac_mode": "cool"}
+    ) == [
+        ("climate.set_hvac_mode", {"hvac_mode": "cool"}),
+        ("climate.set_temperature", {"temperature": 26}),
+    ]
+
+
+def test_set_temperature_without_hvac_mode_is_left_alone():
+    assert expand_action("climate.set_temperature", {"temperature": 26}) == [
+        ("climate.set_temperature", {"temperature": 26})
+    ]
+
+
+def test_the_split_keeps_every_other_key_on_the_temperature_call():
+    calls = expand_action(
+        "climate.set_temperature",
+        {"temperature": 26, "hvac_mode": "cool", "target_temp_high": 28},
     )
-    assert calls == []
-
-
-def test_only_differing_values_are_emitted():
-    calls = plan_calls(
-        "climate.a", "cool", CLIMATE_ATTRS, Action.ON,
-        {"hvac_mode": "cool", "temperature": 24, "fan_mode": "auto"}, force=False,
+    assert calls[1] == (
+        "climate.set_temperature",
+        {"temperature": 26, "target_temp_high": 28},
     )
-    assert [c.attribute for c in calls] == ["temperature"]
-    assert calls[0].from_value == 26
-    assert calls[0].to_value == 24
 
 
-def test_force_emits_everything_even_when_matching():
-    calls = plan_calls(
-        "climate.a", "cool", CLIMATE_ATTRS, Action.ON,
-        {"hvac_mode": "cool", "temperature": 26, "fan_mode": "auto"}, force=True,
-    )
-    assert len(calls) == 3
+def test_the_split_does_not_mutate_the_caller_s_data():
+    data = {"temperature": 26, "hvac_mode": "cool"}
+    expand_action("climate.set_temperature", data)
+    assert data == {"temperature": 26, "hvac_mode": "cool"}
 
 
-def test_unsupported_fan_mode_is_skipped_not_fatal():
-    # CHANGED by final-review finding I2: the fan sub-call is still skipped
-    # and the rest of the rule still applies, but the skip is now REPORTED
-    # (a Skip alongside the executable calls) instead of vanishing. It used
-    # to return silently, and fire-once means nothing ever retries it.
-    attrs = {**CLIMATE_ATTRS, "fan_modes": ["auto", "high"]}
-    planned = plan_calls(
-        "climate.a", "off", attrs, Action.ON,
-        {"hvac_mode": "cool", "fan_mode": "quiet"}, force=False,
-    )
-    assert [c.service for c in planned if isinstance(c, Call)] == ["set_hvac_mode"]
-
-    skips = [c for c in planned if isinstance(c, Skip)]
-    assert len(skips) == 1
-    assert skips[0].attribute == "fan_mode"
-    assert skips[0].requested == "quiet"
-    assert skips[0].reason
+def test_no_other_climate_service_is_touched():
+    assert expand_action("climate.set_hvac_mode", {"hvac_mode": "cool"}) == [
+        ("climate.set_hvac_mode", {"hvac_mode": "cool"})
+    ]
+    assert expand_action("climate.turn_off", {}) == [("climate.turn_off", {})]
 
 
-def test_unavailable_device_reporting_no_fan_modes_is_reported():
-    """An unavailable device has empty attributes, so fan_modes is [].
+def test_the_fan_synonym_table_is_gone():
+    """It encoded two AC brands from one house into shared code."""
+    import custom_components.shabbat_scheduler.const as const
 
-    Worst case for a silent drop: the AC runs the night on the wrong fan
-    speed and nothing anywhere says so.
-    """
-    planned = plan_calls(
-        "climate.a", "unavailable", {}, Action.ON,
-        {"hvac_mode": "cool", "fan_mode": "quiet"}, force=True,
-    )
-    assert [c.attribute for c in planned if isinstance(c, Skip)] == ["fan_mode"]
+    assert not hasattr(const, "FAN_SYNONYMS")
 
 
-def test_unsupported_domain_is_reported_not_silently_successful():
-    planned = plan_calls("cover.a", "open", {}, Action.OFF, {}, force=False)
-    assert len(planned) == 1
-    assert isinstance(planned[0], Skip)
-    assert "cover" in planned[0].reason
+def test_fan_mode_gets_its_own_call_not_smuggled_into_set_temperature():
+    """HA's set_temperature schema is PREVENT_EXTRA - fan_mode alongside
+    temperature is rejected outright, not just a hardware quirk."""
+    assert expand_action(
+        "climate.set_temperature",
+        {"temperature": 26, "hvac_mode": "cool", "fan_mode": "high"},
+    ) == [
+        ("climate.set_hvac_mode", {"hvac_mode": "cool"}),
+        ("climate.set_temperature", {"temperature": 26}),
+        ("climate.set_fan_mode", {"fan_mode": "high"}),
+    ]
 
 
-def test_climate_off_when_already_off_is_skipped():
-    assert plan_calls("climate.a", "off", CLIMATE_ATTRS, Action.OFF, {}, force=False) == []
+def test_hvac_mode_only_does_not_emit_an_empty_set_temperature_call():
+    """set_temperature requires at least one of temperature/target_temp_*;
+    an empty {} is rejected by HA, so it must not be emitted at all."""
+    assert expand_action("climate.set_temperature", {"hvac_mode": "cool"}) == [
+        ("climate.set_hvac_mode", {"hvac_mode": "cool"})
+    ]
 
 
-def test_climate_off_when_on_emits_turn_off():
-    calls = plan_calls("climate.a", "cool", CLIMATE_ATTRS, Action.OFF, {}, force=False)
-    assert [(c.domain, c.service) for c in calls] == [("climate", "turn_off")]
+def test_fan_mode_only_produces_just_the_fan_mode_call():
+    assert expand_action("climate.set_temperature", {"fan_mode": "silent"}) == [
+        ("climate.set_fan_mode", {"fan_mode": "silent"})
+    ]
 
 
-def test_switch_domain_uses_turn_on_off():
-    calls = plan_calls("switch.a", "off", {}, Action.ON, {}, force=False)
-    assert [(c.domain, c.service) for c in calls] == [("switch", "turn_on")]
-
-
-def test_input_boolean_domain_supported_for_testing():
-    calls = plan_calls("input_boolean.t", "off", {}, Action.ON, {}, force=False)
-    assert [(c.domain, c.service) for c in calls] == [("input_boolean", "turn_on")]
+def test_an_unrecognized_climate_key_rides_along_on_the_temperature_call():
+    """swing_mode/humidity are not among the three keys this shim knows
+    about, and were never a v1 concept either way. Silently dropping an
+    authored key is the wrong default: it should ride along on
+    set_temperature and be loudly rejected by HA's PREVENT_EXTRA schema,
+    the same way it would be rejected if hvac_mode/fan_mode were absent
+    and no split happened at all."""
+    assert expand_action(
+        "climate.set_temperature",
+        {"temperature": 26, "hvac_mode": "cool", "swing_mode": "vertical"},
+    ) == [
+        ("climate.set_hvac_mode", {"hvac_mode": "cool"}),
+        ("climate.set_temperature", {"temperature": 26, "swing_mode": "vertical"}),
+    ]

@@ -2,6 +2,42 @@
   "config": {
     "abort": {
       "single_instance_allowed": "שעון שבת כבר מוגדר. נתמך מופע אחד בלבד."
+    },
+    "step": {
+      "user": {
+        "data": {
+          "candle_sensor": "חיישן הדלקת נרות",
+          "havdalah_sensor": "חיישן הבדלה"
+        },
+        "data_description": {
+          "candle_sensor": "חיישן הלוח העברי המציין את זמן הדלקת הנרות הקרוב. מזהה הישות שלו נגזר מהשם של אותה אינטגרציה, כך שהוא לא בהכרח ברירת המחדל המוצגת כאן.",
+          "havdalah_sensor": "חיישן הלוח העברי המציין את זמן ההבדלה הקרוב. מזהה הישות שלו נגזר מהשם של אותה אינטגרציה, כך שהוא לא בהכרח ברירת המחדל המוצגת כאן."
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "candle_sensor": "[%key:component::shabbat_scheduler::config::step::user::data::candle_sensor%]",
+          "havdalah_sensor": "[%key:component::shabbat_scheduler::config::step::user::data::havdalah_sensor%]"
+        },
+        "data_description": {
+          "candle_sensor": "[%key:component::shabbat_scheduler::config::step::user::data_description::candle_sensor%]",
+          "havdalah_sensor": "[%key:component::shabbat_scheduler::config::step::user::data_description::havdalah_sensor%]"
+        }
+      }
+    }
+  },
+  "issues": {
+    "zmanim_sensor_missing": {
+      "title": "לא ניתן לקרוא את חיישני הזמנים שהוגדרו",
+      "description": "שעון שבת לא מצליח לקרוא את {candle_sensor} ו/או את {havdalah_sensor}. ודאו שאינטגרציית הלוח העברי מוגדרת ושמזהי הישויות האלה עדיין נכונים, ואם לא - שנו אותם דרך אפשרות ה'הגדרות' של האינטגרציה. שום דבר לא מתוזמן עד שניתן יהיה לקרוא אותם."
+    },
+    "unmigrated_rules": {
+      "title": "חלק מהכללים לא ניתן היה לשדרג",
+      "description": "השדרוג מהגרסה הקודמת לא הצליח להמיר את הכללים האלה באופן אוטומטי, ולכן הם נשמרו במצב מושבת: {rule_ids}. פתחו כל אחד מהם כדי לראות מדוע, ואז הפעילו אותו מחדש או צרו אותו מחדש."
     }
   },
   "services": {

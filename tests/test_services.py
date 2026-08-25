@@ -5,7 +5,7 @@ from homeassistant.exceptions import ServiceValidationError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.shabbat_scheduler.const import DOMAIN
-from custom_components.shabbat_scheduler.models import Action, Rule
+from custom_components.shabbat_scheduler.models import Rule
 from custom_components.shabbat_scheduler.store import RuleStore
 
 
@@ -32,7 +32,7 @@ async def test_simulate_returns_resolved_rules(hass):
     )
     await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="climate.turn_on", target={"entity_id": ["climate.a"]}),
     ])
 
     response = await hass.services.async_call(
@@ -40,7 +40,7 @@ async def test_simulate_returns_resolved_rules(hass):
     )
     assert response["profile"] == 1
     assert len(response["rules"]) == 1
-    assert response["rules"][0]["action"] == "on"
+    assert response["rules"][0]["action"] == "climate.turn_on"
 
 
 async def test_simulate_reports_conflicts(hass):
@@ -53,9 +53,9 @@ async def test_simulate_reports_conflicts(hass):
     )
     await _setup(hass, [
         Rule(id="a", profile=1, day="1", time=time(18, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="climate.turn_on", target={"entity_id": ["climate.a"]}),
         Rule(id="b", profile=1, day="1", time=time(18, 0),
-             action=Action.OFF, devices=("climate.a",)),
+             action="climate.turn_off", target={"entity_id": ["climate.a"]}),
     ])
 
     response = await hass.services.async_call(
@@ -73,7 +73,8 @@ async def test_simulate_warns_when_profile_missing(hass):
         "sensor.jewish_calendar_upcoming_havdalah", "2026-08-15T17:01:00+00:00"
     )
     await _setup(hass, [
-        Rule(id="r1", profile=3, day="1", time=time(11, 0), action=Action.ON),
+        Rule(id="r1", profile=3, day="1", time=time(11, 0),
+             action="climate.turn_on"),
     ])
 
     response = await hass.services.async_call(
@@ -95,7 +96,7 @@ async def test_set_dry_run(hass):
 async def test_yaml_export_then_import(hass):
     await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="climate.turn_on", target={"entity_id": ["climate.a"]}),
     ])
     exported = await hass.services.async_call(
         DOMAIN, "export_yaml", {}, blocking=True, return_response=True
@@ -113,7 +114,7 @@ async def test_yaml_export_then_import(hass):
 async def test_import_yaml_rejects_syntactically_invalid_yaml(hass):
     await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="climate.turn_on", target={"entity_id": ["climate.a"]}),
     ])
 
     with pytest.raises(ServiceValidationError):
@@ -130,7 +131,7 @@ async def test_import_yaml_rejects_syntactically_invalid_yaml(hass):
 async def test_import_yaml_rejects_entry_missing_action(hass):
     await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="climate.turn_on", target={"entity_id": ["climate.a"]}),
     ])
     bad_yaml = """
 defaults: {}
@@ -139,7 +140,7 @@ profiles:
     day_1:
     - id: r2
       at: '11:00:00'
-      devices: [climate.a]
+      target: {entity_id: [climate.a]}
 """
 
     with pytest.raises(ServiceValidationError):
@@ -156,7 +157,7 @@ profiles:
 async def test_import_yaml_rejects_invalid_action_value(hass):
     await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="climate.turn_on", target={"entity_id": ["climate.a"]}),
     ])
     bad_yaml = """
 defaults: {}
@@ -200,7 +201,7 @@ async def test_import_yaml_rejects_an_unknown_day_key_and_keeps_the_store(hass):
     """
     await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="climate.turn_on", target={"entity_id": ["climate.a"]}),
     ])
     bad_yaml = """
 defaults: {}
@@ -209,8 +210,8 @@ profiles:
     dya_1:
     - id: r2
       at: '23:00:00'
-      action: 'off'
-      devices: [climate.a]
+      action: climate.turn_off
+      target: {entity_id: [climate.a]}
 """
 
     with pytest.raises(ServiceValidationError):
@@ -233,7 +234,7 @@ async def test_import_yaml_rebuilds_the_rule_switches(hass, rule_switch_entity_i
     """
     entry = await _setup(hass, [
         Rule(id="old", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="climate.turn_on", target={"entity_id": ["climate.a"]}),
     ])
     assert rule_switch_entity_id(entry, "old") is not None
 
@@ -246,8 +247,8 @@ profiles:
     day_1:
     - id: fresh
       at: '11:00:00'
-      action: 'on'
-      devices: [climate.a]
+      action: climate.turn_on
+      target: {entity_id: [climate.a]}
 """},
         blocking=True,
     )
@@ -271,7 +272,8 @@ async def test_import_yaml_rejects_malformed_defaults_and_persists_nothing(hass)
 
     `import_yaml` wrote the whole rule set to .storage and only then called
     engine.async_refresh(), which blew up inside merge_defaults - by which
-    point `.storage` already held `settings: not_a_dict` and EVERY later
+    point `.storage` already held a non-mapping default (v1 spelled the key
+    `settings`, v2 spells it `data`; the hole is the same) and EVERY later
     setup of the entry raised the same TypeError. The only recovery was
     hand-editing .storage. Validation now happens before anything is
     written, and reports itself as a ServiceValidationError.
@@ -285,12 +287,12 @@ async def test_import_yaml_rejects_malformed_defaults_and_persists_nothing(hass)
     )
     await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action=Action.ON, devices=("climate.a",)),
+             action="climate.turn_on", target={"entity_id": ["climate.a"]}),
     ])
 
     bad_yaml = """
 defaults:
-  settings: not_a_dict
+  data: not_a_dict
 profiles: {}
 """
     with pytest.raises(ServiceValidationError):

@@ -1,49 +1,85 @@
 /** Mirrors _state_payload in websocket_api.py. Keep the two in step. */
 
+/**
+ * One rule: a Home Assistant service call, scheduled.
+ *
+ * v1's `action`/`devices`/`settings`/`script`/`variables` are gone. A rule
+ * now names any `domain.service` (`action`), the entities/areas/labels it
+ * applies to (`target`, a Home Assistant target selector) and that
+ * service's own payload (`data`) - so a rule can drive anything Home
+ * Assistant can, not just the four domains v1 understood.
+ */
 export interface RuleData {
   id: string;
   profile: number;
   day: string;            // 'erev' | '1' | '2' | '3'
   time: string;           // 'HH:MM:SS'
-  action: string;         // 'on' | 'off' | 'custom'
-  devices: string[];
-  settings: Record<string, unknown>;
+  action: string;         // 'domain.service', e.g. 'climate.set_temperature'
+  target: Record<string, unknown>;   // HA target selector
+  data: Record<string, unknown>;     // the service's own data
+  condition: Record<string, unknown>[];  // HA condition configs; all must pass
+  replay: ReplayData;
   name: string | null;
   icon: string | null;
   enabled: boolean;
-  script: string | null;
-  variables: Record<string, unknown>;
-  replay_on_restart: boolean;
   color: string | null;
+  /**
+   * Server-owned and read-only. Set by the v1 -> v2 migration on a rule it
+   * could not convert, so the card can say WHICH rule needs attention
+   * rather than showing a plausible-looking rule that will never fire.
+   * `rule_schema.py` drops these on the way back in - a client cannot set
+   * them, and echoing them back is not an error.
+   */
+  migration_error?: string | null;
+  migration_source?: Record<string, unknown> | null;
 }
 
-/** Everything the rule dialog edits. Mirrors RuleData minus `id` and `profile`. */
+/** Whether, and how late, a rule may be re-run after a restart. */
+export interface ReplayData {
+  enabled: boolean;
+  within?: string;        // 'HH:MM:SS'; absent means no bound
+}
+
+/**
+ * Everything the rule dialog carries. Mirrors RuleData minus `id` and
+ * `profile`.
+ *
+ * NOT all of it is editable yet - see `rule-dialog.ts`. `target`, `data`,
+ * `condition` and `replay` are carried through untouched and displayed
+ * read-only, so an edit cannot silently drop them and a duplicate cannot
+ * silently lose them. Plan 2 builds the editors.
+ */
 export interface RuleFormState {
   day: string;
   time: string;
   action: string;
-  devices: string[];
-  settings: Record<string, unknown>;
+  target: Record<string, unknown>;
+  data: Record<string, unknown>;
+  condition: Record<string, unknown>[];
+  replay: ReplayData;
   name: string | null;
   icon: string | null;
   color: string | null;
   enabled: boolean;
-  script: string | null;
-  variables: Record<string, unknown>;
-  replay_on_restart: boolean;
 }
 
+/** The two keys `validate_defaults` (rule_schema.py) accepts. */
 export interface Defaults {
-  devices?: string[];
-  settings?: Record<string, unknown>;
+  target?: Record<string, unknown>;
+  data?: Record<string, unknown>;
 }
 
 /**
  * This card's `_state_payload` (websocket_api.py) fills `warnings` from
- * `_conflict_warnings` -> `block.conflict_warnings` (block.py:135-154),
- * which emits exactly `{kind: "conflict", device, profile, day, time,
+ * `_conflict_warnings` -> `block.conflict_warnings` (block.py), which
+ * emits exactly `{kind: "conflict", targets, profile, day, time,
  * rule_ids}` and NEVER a `message`. There is no `message` field on the
  * warnings this card ever receives.
+ *
+ * `targets` is a LIST, not a single string. v1's key was `device`, one
+ * entity id; a conflict is now the INTERSECTION of two rules' resolved
+ * targets, which an area or label can expand to several entities, so one
+ * string could no longer represent it.
  *
  * `no_profile` and `no_block` do carry `message`, but they come from
  * `preview_payload` (block.py), a different websocket command this card
@@ -53,12 +89,12 @@ export interface Defaults {
  */
 export interface WarningData {
   kind: string;                 // 'conflict' from this card; 'no_profile' | 'no_block' from preview_payload only
-  device?: string;               // conflict: the device with two disagreeing rules
-  profile?: number;              // conflict: the block length the clash was found in
-  day?: string;                  // conflict: 'erev' | '1' | '2' | '3'
-  time?: string;                 // conflict: 'HH:MM:SS'
-  rule_ids?: string[];           // conflict: the rules that disagree
-  message?: string;              // preview_payload only - never present on a conflict from this card
+  targets?: string[];           // conflict: the entity ids two rules both resolve to
+  profile?: number;             // conflict: the block length the clash was found in
+  day?: string;                 // conflict: 'erev' | '1' | '2' | '3'
+  time?: string;                // conflict: 'HH:MM:SS'
+  rule_ids?: string[];          // conflict: the rules that disagree
+  message?: string;             // preview_payload only - never present on a conflict from this card
 }
 
 export interface BlockData {
@@ -89,18 +125,4 @@ export interface DayGroup {
 export interface HassEntity {
   state: string;
   attributes: Record<string, unknown>;
-}
-
-export interface DeviceOptions {
-  hvacModes: string[];
-  fanModes: string[];
-  minTemp: number | null;
-  maxTemp: number | null;
-  tempStep: number | null;
-  /** Entity ids that could not be read - missing, unavailable or unknown. */
-  unreadable: string[];
-  /** False when not one selected device is a climate entity. */
-  climate: boolean;
-  /** True when more than one climate device contributed, so these are an intersection. */
-  intersected: boolean;
 }

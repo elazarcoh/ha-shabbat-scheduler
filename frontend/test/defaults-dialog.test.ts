@@ -1,101 +1,84 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import '../src/defaults-dialog';
 
 async function render(props: Record<string, unknown> = {}) {
   const el = document.createElement('shabbat-defaults-dialog') as HTMLElement &
     Record<string, any>;
   Object.assign(el, {
-    defaults: { devices: ['climate.salon'], settings: { temperature: 26 } },
-    states: {}, canWrite: true, busy: false, error: null, language: 'en', ...props,
+    defaults: {
+      target: { entity_id: ['climate.salon'] },
+      data: { temperature: 26 },
+    },
+    canWrite: true, busy: false, error: null, language: 'en', ...props,
   });
   document.body.appendChild(el);
   await el.updateComplete;
   return el;
 }
 
+/**
+ * This dialog is READ-ONLY until Plan 2 builds a target/data editor.
+ *
+ * v1's editor wrote `{devices, settings}`; `validate_defaults`
+ * (rule_schema.py) now accepts exactly `{target, data}`, so every press of
+ * the old save button would be rejected by the server. A save button that
+ * cannot succeed is worse than none, and a form that quietly rewrote the
+ * defaults into a v1 shape would be worse still - so the button is gone
+ * and the truth is shown instead. The tests below pin BOTH halves: what it
+ * shows, and that it offers no way to save.
+ */
 describe('shabbat-defaults-dialog', () => {
-  it('shows the shared defaults', async () => {
+  it('shows the shared defaults as they actually are', async () => {
     const el = await render();
-    expect(el.shadowRoot!.textContent).toContain('Shared defaults');
-    expect(el.shadowRoot!.querySelector('shabbat-device-settings')).not.toBeNull();
+    const text = el.shadowRoot!.textContent!;
+    expect(text).toContain('Shared defaults');
+    expect(text).toContain('climate.salon');
+    expect(text).toContain('temperature');
+    expect(text).toContain('26');
   });
 
-  it('saves the nested devices/settings shape and nothing else', async () => {
+  it('offers no save button at all, to anyone', async () => {
+    expect((await render()).shadowRoot!.querySelector('.save')).toBeNull();
+    expect((await render({ canWrite: false })).shadowRoot!.querySelector('.save'))
+      .toBeNull();
+  });
+
+  it('says the defaults are not editable here rather than looking broken', async () => {
     const el = await render();
-    const listener = vi.fn();
-    el.addEventListener('defaults-save', listener);
-
-    (el.shadowRoot!.querySelector('.save') as HTMLElement).click();
-
-    const { defaults } = (listener.mock.calls[0][0] as CustomEvent).detail;
-    // validate_defaults rejects any key other than these two, so a flat
-    // `temperature` here is an error the server refuses - not a
-    // harmlessly ignored extra.
-    expect(Object.keys(defaults).sort()).toEqual(['devices', 'settings']);
-    expect(defaults.settings.temperature).toBe(26);
+    expect(el.shadowRoot!.textContent).toContain('Not editable here');
   });
 
-  // The pick above is two explicit keys, not a spread of `_draft` - and
-  // `_draft` is built by spreading the server's own defaults object. The
-  // day the server's payload grows a third key, spreading it would send
-  // that key straight into `defaults/update`, where `_check_unknown_fields`
-  // rejects the WHOLE call: shared defaults would stop saving at all, and
-  // every rule that inherits them would keep whatever it had. Only a stray
-  // key in the incoming payload can prove the pick is doing the work.
-  it('never forwards a key the server did not ask for, even one it sent itself', async () => {
-    const el = await render({
-      defaults: {
-        devices: ['climate.salon'],
-        settings: { temperature: 26 },
-        // A field a future server version might add to the read payload.
-        updated_at: '2026-08-19T00:00:00+03:00',
-      },
-    });
-    const listener = vi.fn();
-    el.addEventListener('defaults-save', listener);
-
-    (el.shadowRoot!.querySelector('.save') as HTMLElement).click();
-
-    const { defaults } = (listener.mock.calls[0][0] as CustomEvent).detail;
-    expect(Object.keys(defaults).sort()).toEqual(['devices', 'settings']);
-    expect('updated_at' in defaults).toBe(false);
-    // ...and the two keys it does send are still the real values.
-    expect(defaults.devices).toEqual(['climate.salon']);
-    expect(defaults.settings.temperature).toBe(26);
-  });
-
-  it('still forwards only the two keys after the user has edited a draft', async () => {
-    // `_draft` is `{...current, devices}` - the spread carries the stray
-    // key forward, so an edited draft is the same trap one step later.
-    const el = await render({
-      defaults: {
-        devices: ['climate.salon'],
-        settings: {},
-        updated_at: '2026-08-19T00:00:00+03:00',
-      },
-    });
-    el.shadowRoot!.querySelector('shabbat-device-settings')!.dispatchEvent(
-      new CustomEvent('devices-changed', { detail: { devices: ['climate.kids'] } }),
-    );
-    await el.updateComplete;
-
-    const listener = vi.fn();
-    el.addEventListener('defaults-save', listener);
-    (el.shadowRoot!.querySelector('.save') as HTMLElement).click();
-
-    const { defaults } = (listener.mock.calls[0][0] as CustomEvent).detail;
-    expect(Object.keys(defaults).sort()).toEqual(['devices', 'settings']);
-    expect(defaults.devices).toEqual(['climate.kids']);
+  it('says so when there are no defaults, rather than showing a blank', async () => {
+    const el = await render({ defaults: {} });
+    expect((el.shadowRoot!.querySelector('.ro-target') as HTMLElement).textContent)
+      .toContain('none');
+    expect((el.shadowRoot!.querySelector('.ro-data') as HTMLElement).textContent)
+      .toContain('none');
   });
 
   it('shows a server rejection and stays open', async () => {
     const el = await render({ error: "unknown field(s): ['temperature']" });
     expect(el.shadowRoot!.textContent).toContain('unknown field');
-    expect(el.shadowRoot!.querySelector('shabbat-device-settings')).not.toBeNull();
+    expect(el.shadowRoot!.querySelector('.ro-target')).not.toBeNull();
   });
 
-  it('offers no save to a read-only user', async () => {
-    const el = await render({ canWrite: false });
-    expect(el.shadowRoot!.querySelector('.save')).toBeNull();
+  it('closes on cancel', async () => {
+    const el = await render();
+    let closed = false;
+    el.addEventListener('dialog-close', () => { closed = true; });
+    (el.shadowRoot!.querySelector('button') as HTMLElement).click();
+    expect(closed).toBe(true);
+  });
+
+  // The card must not keep a listener for an event this component can
+  // never emit - that reads as a working feature. See card.ts.
+  it('emits no defaults-save event when it is clicked through', async () => {
+    const el = await render();
+    let saved = false;
+    el.addEventListener('defaults-save', () => { saved = true; });
+    for (const button of el.shadowRoot!.querySelectorAll('button')) {
+      (button as HTMLElement).click();
+    }
+    expect(saved).toBe(false);
   });
 });

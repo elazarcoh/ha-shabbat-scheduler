@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timedelta, tzinfo
 
-from .models import EREV, Action, Block, Conflict, ResolvedRule, Rule
+from .models import EREV, Block, Conflict, ResolvedRule, Rule
+
+Resolver = Callable[[dict], frozenset[str]]
 
 
 def compute_block(candle_lighting: datetime, havdalah: datetime) -> Block:
@@ -57,10 +60,15 @@ def block_payload(block: Block | None) -> dict | None:
 
 
 def merge_defaults(defaults: dict, rule: Rule) -> Rule:
-    """Fill unset keys from the global defaults, per key, without mutating."""
-    devices = rule.devices or tuple(defaults.get("devices", ()))
-    settings = {**defaults.get("settings", {}), **rule.settings}
-    return replace(rule, devices=tuple(devices), settings=settings)
+    """Fill unset keys from the global defaults, per key, without mutating.
+
+    v1's `devices`/`settings` became `target`/`data` in the v2 Rule
+    (models.py, Task 1); this still had to be updated to match, because
+    `engine._merged_rules()` calls this on every refresh and catch-up.
+    """
+    target = dict(rule.target) or dict(defaults.get("target", {}))
+    data = {**defaults.get("data", {}), **rule.data}
+    return replace(rule, target=target, data=data)
 
 
 def has_profile(rules: list[Rule], length: int) -> bool:
@@ -85,7 +93,14 @@ def resolve_rules(
         if rule.day == EREV:
             day_date = block.erev_date
         else:
-            index = int(rule.day)
+            try:
+                index = int(rule.day)
+            except ValueError:
+                # An unparsable day is no more this rule's fault to abort
+                # every OTHER rule's resolution than an out-of-range one
+                # is (guarded right below) - a hand-edited `.storage` file
+                # or a future YAML path can still deliver either.
+                continue
             if index < 1 or index > block.length:
                 continue
             day_date = block.day_dates[index - 1]
@@ -99,44 +114,66 @@ def resolve_rules(
     return sorted(resolved, key=lambda item: item.when)
 
 
-_STATEFUL_ACTIONS = (Action.ON, Action.OFF)
-
-
-def find_conflicts(rules: list[Rule]) -> list[Conflict]:
-    """Find enabled rules that disagree for one device at one moment.
+def find_conflicts(rules: list[Rule], resolve: Resolver) -> list[Conflict]:
+    """Find enabled rule pairs, same profile/day/time, whose targets overlap.
 
     There is no precedence rule by design, so a conflict has no defined
     winner - it is reported rather than resolved.
+
+    `resolve` turns a rule's raw target selector (which may be an area,
+    device, floor or label, not just bare entity ids) into the concrete
+    entity ids it actually covers - that expansion is the only way an
+    area and an entity can be recognised as the same conflict, and it is
+    intentionally the caller's job so this module stays free of Home
+    Assistant imports.
+
+    A conflict is now "same profile, same day, same time, overlapping
+    resolved targets" - weaker than v1, which also required opposing
+    actions. Two rules setting the same device to the same value now
+    count as conflicting, because without understanding the payload,
+    "same" and "opposite" are indistinguishable from here.
+
+    Each rule's target is resolved once, up front, and reused for every
+    pair it appears in within its group.
     """
     grouped: dict[tuple, list[Rule]] = {}
     for rule in rules:
-        if not rule.enabled or rule.action not in _STATEFUL_ACTIONS:
+        if not rule.enabled:
             continue
-        for device in rule.devices:
-            grouped.setdefault(
-                (rule.profile, rule.day, rule.time, device), []
-            ).append(rule)
+        grouped.setdefault((rule.profile, rule.day, rule.time), []).append(rule)
 
     conflicts: list[Conflict] = []
-    for (profile, day, at, device), group in grouped.items():
-        if len({rule.action for rule in group}) > 1:
-            conflicts.append(
-                Conflict(
-                    profile=profile,
-                    day=day,
-                    time=at,
-                    device=device,
-                    rule_ids=tuple(rule.id for rule in group),
-                )
-            )
+    for (profile, day, at), group in grouped.items():
+        if len(group) < 2:
+            continue
+        resolved = {rule.id: resolve(rule.target) for rule in group}
+        # One conflict PER PAIR, deliberately, even for a group of 3+: a
+        # single merged conflict would have to summarise non-uniform
+        # overlaps across rules, reintroducing the ambiguity resolving
+        # targets exists to remove.
+        for i, first in enumerate(group):
+            for second in group[i + 1 :]:
+                overlap = resolved[first.id] & resolved[second.id]
+                if overlap:
+                    conflicts.append(
+                        Conflict(
+                            profile=profile,
+                            day=day,
+                            time=at,
+                            targets=overlap,
+                            rule_ids=(first.id, second.id),
+                        )
+                    )
     return conflicts
 
 
-def conflict_warnings(defaults: dict, rules: list[Rule]) -> list[dict]:
+def conflict_warnings(
+    defaults: dict, rules: list[Rule], resolve: Resolver
+) -> list[dict]:
     """Conflicts as plain data, with the defaults merged in FIRST.
 
-    The merge is not optional: find_conflicts iterates `rule.devices`, so a
-    rule taking its devices from `defaults` - the shape the README
+    The merge is not optional: find_conflicts resolves `rule.target`, so a
+    rule taking its target from `defaults` - the shape the README
     documents as the common case - contributes nothing at all unmerged,
     and every caller is then told a conflicting schedule is clean.
     """
@@ -144,13 +181,13 @@ def conflict_warnings(defaults: dict, rules: list[Rule]) -> list[dict]:
     return [
         {
             "kind": "conflict",
-            "device": conflict.device,
+            "targets": sorted(conflict.targets),
             "profile": conflict.profile,
             "day": conflict.day,
             "time": conflict.time.isoformat(),
             "rule_ids": list(conflict.rule_ids),
         }
-        for conflict in find_conflicts(merged)
+        for conflict in find_conflicts(merged, resolve)
     ]
 
 
@@ -159,6 +196,7 @@ def preview_payload(
     rules: list[Rule],
     block: Block | None,
     tz: tzinfo,
+    resolve: Resolver,
     block_length: int | None = None,
 ) -> dict:
     """What a block WOULD do: the one answer behind `preview` and `simulate`.
@@ -212,54 +250,12 @@ def preview_payload(
                 "when": item.when.isoformat(),
                 "rule_id": item.rule.id,
                 "name": item.rule.name,
-                "action": item.rule.action.value,
-                "devices": list(item.rule.devices),
+                "action": item.rule.action,
+                "target": item.rule.target,
+                "data": item.rule.data,
             }
             for item in resolve_rules(merged, block, tz)
         ],
-        "conflicts": conflict_warnings(defaults, rules),
+        "conflicts": conflict_warnings(defaults, rules, resolve),
         "warnings": warnings,
     }
-
-
-def desired_state_at(
-    rules: list[Rule],
-    block: Block,
-    when: datetime,
-    device: str,
-    tz: tzinfo,
-) -> Rule | Conflict | None:
-    """What state should `device` be in at `when`?
-
-    Restart catch-up is one caller; enforcement would be a second caller of
-    this same function, which is why it lives here rather than inside the
-    catch-up routine.
-
-    Returns None where undefined (before the first rule, or the device is
-    driven only by custom rules), and a Conflict where the answer is
-    ambiguous - callers must decline to act rather than guess.
-    """
-    passed = [
-        item
-        for item in resolve_rules(rules, block, tz)
-        if item.when <= when
-        and item.rule.action in _STATEFUL_ACTIONS
-        and device in item.rule.devices
-    ]
-    if not passed:
-        return None
-
-    latest = passed[-1].when
-    tied = [item.rule for item in passed if item.when == latest]
-
-    if len({rule.action for rule in tied}) > 1:
-        first = tied[0]
-        return Conflict(
-            profile=first.profile,
-            day=first.day,
-            time=first.time,
-            device=device,
-            rule_ids=tuple(rule.id for rule in tied),
-        )
-
-    return tied[-1]

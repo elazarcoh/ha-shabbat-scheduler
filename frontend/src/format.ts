@@ -4,8 +4,6 @@ import type {
   CardState,
   DayGroup,
   Defaults,
-  DeviceOptions,
-  HassEntity,
   RuleData,
   RuleFormState,
   WarningData,
@@ -92,35 +90,62 @@ export function buildGroups(state: CardState, profile?: number): DayGroup[] {
 }
 
 /**
- * One line describing what a rule does, resolved exactly the way the
- * engine resolves it: the rule's own devices and settings win, and
- * anything it omits falls back to the defaults.
+ * One line describing what a rule does: its action, then what it applies
+ * to, resolved exactly the way the engine resolves it - the rule's own
+ * `target`/`data` win, and anything it omits falls back to the defaults
+ * (see `merge_defaults` in block.py).
+ *
+ * A rule is now an arbitrary Home Assistant service call, so there is no
+ * on/off/custom vocabulary left to describe. Naming the service is the
+ * honest summary: `climate.set_temperature` says exactly what will
+ * happen, where v1's "on" left the reader to remember what "on" meant
+ * for that particular device.
  */
 export function ruleBrief(rule: RuleData, defaults: Defaults): string {
-  if (rule.action === 'custom') {
-    return rule.script ?? '';
-  }
+  const target = Object.keys(rule.target).length
+    ? rule.target
+    : (defaults.target ?? {});
+  const data = { ...(defaults.data ?? {}), ...rule.data };
 
-  const devices = rule.devices.length ? rule.devices : (defaults.devices ?? []);
-  const settings = { ...(defaults.settings ?? {}), ...rule.settings };
-
-  const parts = [devices.join(', ')];
-  if (rule.action === 'on') {
-    for (const value of Object.values(settings)) {
-      if (value !== undefined && value !== null) parts.push(String(value));
-    }
+  const parts = [rule.action, describeTarget(target)];
+  for (const value of Object.values(data)) {
+    if (value !== undefined && value !== null) parts.push(String(value));
   }
-  return parts.filter((part) => part !== '').join(' · ');
+  return parts.filter((part) => part !== '').join(' \u00b7 ');
 }
 
-const COLOURS: Record<string, string> = {
-  on: 'var(--success-color, #2e9e5b)',
-  off: 'var(--error-color, #d64545)',
-  custom: 'var(--info-color, #3b7ddd)',
-};
+/**
+ * A target selector as a flat, readable list of what it names.
+ *
+ * A selector may hold `entity_id`, `area_id`, `device_id`, `floor_id` or
+ * `label_id`, each a string or a list of strings. Everything it names is
+ * shown; nothing is guessed at, expanded or filtered. An area target
+ * reads as its area id rather than as the entities it will expand to,
+ * because the card cannot resolve that and inventing an answer is the
+ * one thing it must not do.
+ */
+export function describeTarget(target: Record<string, unknown>): string {
+  const names: string[] = [];
+  for (const value of Object.values(target)) {
+    if (Array.isArray(value)) names.push(...value.map(String));
+    else if (value !== null && value !== undefined) names.push(String(value));
+  }
+  return names.join(', ');
+}
 
-export function actionColour(action: string): string {
-  return COLOURS[action] ?? 'var(--secondary-text-color, #888)';
+/**
+ * The colour of a rule's dot.
+ *
+ * v1 keyed this off its three-value action enum: green for on, red for
+ * off, blue for custom. A v2 action is an arbitrary "domain.service", so
+ * there is no on/off to read - and guessing from the service name would
+ * be wrong for exactly the actions that are not switches
+ * (`climate.set_temperature`, `notify.mobile_app`). The rule's own
+ * `color` field is how an author says what they want; everything else
+ * gets one neutral colour rather than a colour that means nothing.
+ */
+export function ruleColour(rule: RuleData): string {
+  return rule.color ?? 'var(--secondary-text-color, #888)';
 }
 
 /** Warnings naming this rule, so a conflict shows where it happens. */
@@ -161,17 +186,28 @@ function dayLabel(day: string, language: string | undefined): string {
  * A warning as prose a person can act on. The only warning this card's
  * `_state_payload` ever sends is a conflict - see the comment on
  * `WarningData` - which carries no `message`, so this is the sole place
- * a conflict becomes human-readable text, naming the device and the
+ * a conflict becomes human-readable text, naming the entities and the
  * time so the person who must resolve it (nothing here auto-resolves)
  * knows exactly what to look at.
+ *
+ * Reads `warning.targets`, a LIST. It used to read `warning.device`, a
+ * single string, and when the backend renamed that key every conflict
+ * warning silently stopped rendering: the guard below was never true, so
+ * a genuinely conflicting schedule displayed as clean while the conflict
+ * sat correctly detected and unread in the payload.
  *
  * Falls back to `message` for the `preview_payload` shape this card
  * does not currently receive, so a stray warning still renders as
  * something rather than nothing.
  */
 export function formatWarning(warning: WarningData, language?: string): string {
-  if (warning.kind === 'conflict' && warning.device !== undefined && warning.time !== undefined) {
-    const parts = [t(language, 'conflict_prefix'), warning.device];
+  if (
+    warning.kind === 'conflict' &&
+    warning.targets !== undefined &&
+    warning.targets.length > 0 &&
+    warning.time !== undefined
+  ) {
+    const parts = [t(language, 'conflict_prefix'), warning.targets.join(', ')];
     if (warning.day !== undefined) parts.push(dayLabel(warning.day, language));
     parts.push(warning.time);
     return parts.join(' · ');
@@ -179,104 +215,18 @@ export function formatWarning(warning: WarningData, language?: string): string {
   return warning.message ?? '';
 }
 
-function readList(entity: HassEntity, key: string): string[] | null {
-  const value = entity.attributes[key];
-  return Array.isArray(value) ? value.map(String) : null;
-}
-
-function readNumber(entity: HassEntity, key: string): number | null {
-  const value = entity.attributes[key];
-  return typeof value === 'number' ? value : null;
-}
-
 /**
- * What the selected devices actually offer, read from their own state.
+ * Every field the form carries, including the four it displays read-only.
  *
- * The three units here disagree: the salon offers `quiet` and not
- * `silent`, the AUX units the reverse. Offering a fixed list is how a
- * rule gets saved with a fan mode its device rejects - discovered at
- * 11:00 on Shabbat, when nobody can fix it. With several devices the
- * intersection is the only honest answer: a mode only one of them
- * supports cannot be applied to the others.
- *
- * A device that cannot be read is REPORTED, never silently treated as
- * offering nothing - that would intersect every option away and present
- * an empty form as though the device were the problem.
+ * `target`, `data`, `condition` and `replay` are in the diff on purpose
+ * even though nothing edits them: carrying them means an edit cannot
+ * silently drop a rule's payload, and it makes a duplicate a real
+ * duplicate rather than a stripped copy. They compare equal on an
+ * ordinary edit, so they simply never appear in the changes.
  */
-export function deviceOptions(
-  states: Record<string, HassEntity | undefined>,
-  entityIds: string[],
-): DeviceOptions {
-  const unreadable: string[] = [];
-  const readable: HassEntity[] = [];
-
-  for (const id of entityIds) {
-    const entity = states[id];
-    if (
-      entity === undefined ||
-      entity.state === 'unavailable' ||
-      entity.state === 'unknown'
-    ) {
-      unreadable.push(id);
-      continue;
-    }
-    readable.push(entity);
-  }
-
-  const climates = readable.filter((entity) => readList(entity, 'hvac_modes') !== null);
-  if (climates.length === 0) {
-    return {
-      hvacModes: [], fanModes: [], minTemp: null, maxTemp: null,
-      tempStep: null, unreadable, climate: false, intersected: false,
-    };
-  }
-
-  const intersect = (key: string): string[] =>
-    climates
-      .map((entity) => readList(entity, key) ?? [])
-      .reduce((acc, list) => acc.filter((item) => list.includes(item)));
-
-  const bounds = (key: string, pick: (values: number[]) => number): number | null => {
-    const values = climates
-      .map((entity) => readNumber(entity, key))
-      .filter((value): value is number => value !== null);
-    return values.length ? pick(values) : null;
-  };
-
-  return {
-    hvacModes: intersect('hvac_modes'),
-    fanModes: intersect('fan_modes'),
-    // The narrowest range every device accepts.
-    minTemp: bounds('min_temp', (values) => Math.max(...values)),
-    maxTemp: bounds('max_temp', (values) => Math.min(...values)),
-    tempStep: bounds('target_temp_step', (values) => Math.max(...values)),
-    unreadable,
-    climate: true,
-    intersected: climates.length > 1,
-  };
-}
-
-/** The domains this integration can actually drive. */
-const DRIVABLE = ['climate.', 'input_boolean.', 'switch.'];
-
-/**
- * Entities a rule may target, sorted.
- *
- * Sorted because an unsorted list reshuffles whenever `hass.states` is
- * rebuilt, which is every state change in the whole system - a select
- * whose options move under the user's finger.
- */
-export function selectableDevices(
-  states: Record<string, HassEntity | undefined>,
-): string[] {
-  return Object.keys(states)
-    .filter((id) => DRIVABLE.some((prefix) => id.startsWith(prefix)))
-    .sort();
-}
-
 const FORM_FIELDS = [
-  'day', 'time', 'action', 'devices', 'settings', 'name', 'icon',
-  'color', 'enabled', 'script', 'variables', 'replay_on_restart',
+  'day', 'time', 'action', 'target', 'data', 'condition', 'replay',
+  'name', 'icon', 'color', 'enabled',
 ] as const;
 
 export function ruleToForm(rule: RuleData): RuleFormState {
@@ -284,15 +234,14 @@ export function ruleToForm(rule: RuleData): RuleFormState {
     day: rule.day,
     time: rule.time,
     action: rule.action,
-    devices: [...rule.devices],
-    settings: { ...rule.settings },
+    target: { ...rule.target },
+    data: { ...rule.data },
+    condition: rule.condition.map((item) => ({ ...item })),
+    replay: { ...rule.replay },
     name: rule.name,
     icon: rule.icon,
     color: rule.color,
     enabled: rule.enabled,
-    script: rule.script,
-    variables: { ...rule.variables },
-    replay_on_restart: rule.replay_on_restart,
   };
 }
 
@@ -313,8 +262,8 @@ export function formToCreate(
  * always asks the server rather than assuming a diff of `{}` means
  * nothing could go wrong (the entry could be unloaded, the connection
  * dead, the rule deleted by another client). See `_saveChanges` in
- * `card.ts`. Compared by value, not reference - a devices array rebuilt
- * from the same strings has not changed.
+ * `card.ts`. Compared by value, not reference - a target rebuilt
+ * from the same keys has not changed.
  */
 export function formToChanges(
   form: RuleFormState,

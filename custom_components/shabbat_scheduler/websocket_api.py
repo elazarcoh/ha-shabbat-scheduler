@@ -10,9 +10,11 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import target as target_helper
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.util import dt as dt_util
 
+from . import ha_validation
 from .block import block_payload, conflict_warnings, preview_payload
 from .const import DOMAIN, SIGNAL_RULES_CHANGED
 from .rule_schema import (
@@ -20,7 +22,6 @@ from .rule_schema import (
     changes_from_api,
     rule_from_api,
     validate_defaults,
-    validate_rule,
 )
 from .store import rule_to_dict
 
@@ -31,13 +32,39 @@ def _entry_data(hass: HomeAssistant) -> dict | None:
     return entries[0] if entries else None
 
 
-def _conflict_warnings(store) -> list[dict]:
+def _resolver(hass: HomeAssistant):
+    """Resolve a target selector to the entity ids it actually covers.
+
+    Verified against the installed 2026.8.2: `TargetSelection.__init__`
+    takes the target dict directly (`helpers/target.py:72`), and
+    `async_extract_referenced_entity_ids` - a plain function despite the
+    `async_` name, so it is called directly, not awaited - returns a
+    `SelectedEntities` whose `referenced` holds what was named outright
+    and whose `indirectly_referenced` holds what an area, device, floor
+    or label expanded into (`:117-125`). A conflict cares about both: an
+    area target and a bare entity target for that same entity must
+    resolve to the same id to ever be recognised as overlapping.
+
+    Getting either name wrong yields a silently empty set here, which
+    reports NO conflicts on a genuinely conflicting schedule - the
+    failure mode worth re-checking this against future HA versions for.
+    """
+
+    def resolve(target: dict) -> frozenset[str]:
+        selection = target_helper.TargetSelection(dict(target))
+        selected = target_helper.async_extract_referenced_entity_ids(hass, selection)
+        return frozenset(selected.referenced | selected.indirectly_referenced)
+
+    return resolve
+
+
+def _conflict_warnings(hass: HomeAssistant, store) -> list[dict]:
     """Conflict warnings for the whole rule set of `store`.
 
     Takes the store, not a rule list, precisely so no caller can forget to
     merge the defaults first - see block.conflict_warnings.
     """
-    return conflict_warnings(store.defaults, store.rules)
+    return conflict_warnings(store.defaults, store.rules, _resolver(hass))
 
 
 def _state_payload(hass: HomeAssistant, data: dict) -> dict:
@@ -48,7 +75,7 @@ def _state_payload(hass: HomeAssistant, data: dict) -> dict:
         "rules": [rule_to_dict(rule) for rule in store.rules],
         "enabled": store.enabled,
         "dry_run": store.dry_run,
-        "warnings": _conflict_warnings(store),
+        "warnings": _conflict_warnings(hass, store),
         # The card draws dates and the zmanim markers from this, and picks
         # which profile to show from its length. None when the Jewish
         # Calendar sensors give us nothing to derive a block from.
@@ -100,6 +127,7 @@ def ws_preview(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
             store.rules,
             engine.current_block,
             dt_util.get_time_zone(hass.config.time_zone),
+            _resolver(hass),
             msg.get("block_length"),
         ),
     )
@@ -121,6 +149,12 @@ async def ws_create(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
     store = data["store"]
     try:
         rule = rule_from_api(msg["rule"], uuid.uuid4().hex)
+        # The other half of validation, and the same one the YAML import
+        # already applies (services.py). Without it a `target` or
+        # `condition` shape that a YAML import rejects can still be
+        # written through this door, and it then fails at fire time on
+        # Shabbat instead of in the dialog the author is looking at.
+        await ha_validation.async_validate_rule(hass, rule)
     except RuleValidationError as err:
         connection.send_error(msg["id"], "invalid_rule", str(err))
         return
@@ -128,7 +162,7 @@ async def ws_create(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
     await store.async_add(rule)
     connection.send_result(
         msg["id"],
-        {"rule": rule_to_dict(rule), "warnings": _conflict_warnings(store)},
+        {"rule": rule_to_dict(rule), "warnings": _conflict_warnings(hass, store)},
     )
 
 
@@ -158,9 +192,14 @@ async def ws_update(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
         connection.send_error(msg["id"], "not_found", f"No rule {msg['rule_id']}")
         return
 
+    # Validated on the MERGED rule, not on `changes`: `condition` and
+    # `target` are validated together with whatever the rule already
+    # carries, and a partial update that changes only `target` must still
+    # be checked against HA's own schema. Nothing is persisted until it
+    # passes - a rejected update must leave the store exactly as it was.
     updated = replace(existing, **changes)
     try:
-        validate_rule(updated)
+        await ha_validation.async_validate_rule(hass, updated)
     except RuleValidationError as err:
         connection.send_error(msg["id"], "invalid_rule", str(err))
         return
@@ -169,7 +208,7 @@ async def ws_update(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
 
     connection.send_result(
         msg["id"],
-        {"rule": rule_to_dict(updated), "warnings": _conflict_warnings(store)},
+        {"rule": rule_to_dict(updated), "warnings": _conflict_warnings(hass, store)},
     )
 
 
@@ -219,7 +258,7 @@ async def ws_defaults(hass: HomeAssistant, connection, msg: dict[str, Any]) -> N
     await store.async_replace_all(defaults, store.rules)
     connection.send_result(
         msg["id"],
-        {"defaults": store.defaults, "warnings": _conflict_warnings(store)},
+        {"defaults": store.defaults, "warnings": _conflict_warnings(hass, store)},
     )
 
 

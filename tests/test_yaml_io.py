@@ -1,46 +1,43 @@
-from datetime import time
+from datetime import time, timedelta
 
+import pytest
 import yaml
 
-from custom_components.shabbat_scheduler.models import Action, EREV, Rule
+from custom_components.shabbat_scheduler.models import EREV, Replay, Rule
 from custom_components.shabbat_scheduler.yaml_io import export_yaml, import_yaml
 
 
 def _rules():
     return [
-        Rule(id="a", profile=1, day=EREV, time=time(23, 0), action=Action.OFF,
-             devices=("climate.a",)),
-        Rule(id="b", profile=1, day="1", time=time(11, 0), action=Action.ON,
-             devices=("climate.a",), name="בוקר שבת"),
+        Rule(id="a", profile=1, day=EREV, time=time(23, 0),
+             action="switch.turn_off", target={"entity_id": ["climate.a"]}),
+        Rule(id="b", profile=1, day="1", time=time(11, 0),
+             action="switch.turn_on", target={"entity_id": ["climate.a"]},
+             name="בוקר שבת"),
     ]
 
 
 def test_export_groups_by_profile_and_day():
-    parsed = yaml.safe_load(export_yaml({"temperature": 26}, _rules()))
-    assert parsed["defaults"] == {"temperature": 26}
+    parsed = yaml.safe_load(export_yaml({}, _rules()))
     assert set(parsed["profiles"]["1_day"]) == {"erev", "day_1"}
     assert parsed["profiles"]["1_day"]["erev"][0]["at"] == "23:00:00"
     assert parsed["profiles"]["1_day"]["day_1"][0]["name"] == "בוקר שבת"
 
 
 def test_round_trip_preserves_rules():
-    # The nested form README documents. A flat `{"temperature": 26}` used to
-    # round-trip, but it never meant anything - merge_defaults only reads
-    # `devices` and `settings` - and import now rejects it rather than
-    # persisting a default that silently does nothing (final review C2).
     defaults, rules = import_yaml(
-        export_yaml({"settings": {"temperature": 26}}, _rules())
+        export_yaml({"data": {"temperature": 26}}, _rules())
     )
-    assert defaults == {"settings": {"temperature": 26}}
+    assert defaults == {"data": {"temperature": 26}}
     assert {(r.profile, r.day, r.time, r.action) for r in rules} == {
-        (1, EREV, time(23, 0), Action.OFF),
-        (1, "1", time(11, 0), Action.ON),
+        (1, EREV, time(23, 0), "switch.turn_off"),
+        (1, "1", time(11, 0), "switch.turn_on"),
     }
     assert {r.id for r in rules} == {"a", "b"}
 
 
 def test_export_writes_hebrew_unescaped_in_raw_text():
-    text = export_yaml({"temperature": 26}, _rules())
+    text = export_yaml({}, _rules())
     assert "בוקר שבת" in text
     assert "\\u" not in text
 
@@ -48,6 +45,60 @@ def test_export_writes_hebrew_unescaped_in_raw_text():
 def test_export_orders_erev_before_numbered_days():
     keys = list(yaml.safe_load(export_yaml({}, _rules()))["profiles"]["1_day"])
     assert keys.index("erev") < keys.index("day_1")
+
+
+def test_a_v2_rule_round_trips():
+    """A full v2 rule - action, target, data, condition and replay - all
+    survive an export/import cycle with the same id.
+    """
+    rules = [Rule(id="a", profile=1, day="1", time=time(11, 0),
+                  action="climate.set_temperature",
+                  target={"entity_id": ["climate.salon"]},
+                  data={"temperature": 26},
+                  condition=({"condition": "state", "entity_id": "x", "state": "on"},),
+                  replay=Replay(enabled=True, within=timedelta(hours=2)))]
+    _defaults, back = import_yaml(export_yaml({}, rules))
+    assert back[0] == rules[0]
+
+
+def test_the_window_survives_as_a_duration():
+    """`replay.within` round-trips as 'HH:MM:SS', not as a raw number of
+    seconds - Task 5's bug, where the store briefly wrote seconds while
+    the API accepted only 'HH:MM:SS' and a read-then-write was rejected.
+    """
+    rules = [Rule(id="a", profile=1, day="1", time=time(11, 0),
+                  action="switch.turn_on",
+                  replay=Replay(enabled=True, within=timedelta(hours=2)))]
+    text = export_yaml({}, rules)
+    assert "02:00:00" in text
+    _defaults, back = import_yaml(text)
+    assert back[0].replay.within == timedelta(hours=2)
+
+
+def test_an_empty_condition_is_not_written():
+    text = export_yaml({}, [Rule(id="a", profile=1, day="1", time=time(11, 0),
+                                  action="switch.turn_on")])
+    assert "condition" not in text
+
+
+def test_empty_target_and_data_are_not_written():
+    text = export_yaml({}, [Rule(id="a", profile=1, day="1", time=time(11, 0),
+                                  action="switch.turn_on")])
+    assert "target" not in text
+    assert "data" not in text
+
+
+def test_default_replay_is_not_written():
+    text = export_yaml({}, [Rule(id="a", profile=1, day="1", time=time(11, 0),
+                                  action="switch.turn_on")])
+    assert "replay" not in text
+
+
+def test_a_v1_file_is_rejected_with_a_useful_message():
+    """Not silently half-imported."""
+    with pytest.raises(ValueError, match="v1"):
+        import_yaml("profiles:\n  1_day:\n    day_1:\n"
+                    "      - {id: a, at: '11:00:00', action: 'on', devices: [climate.x]}\n")
 
 
 def test_import_honours_existing_id():
@@ -58,8 +109,8 @@ profiles:
     day_2:
       - id: "existing-id"
         at: "18:00"
-        action: "off"
-        devices: [climate.a]
+        action: "switch.turn_off"
+        target: {entity_id: [climate.a]}
 """
     _defaults, rules = import_yaml(text)
     assert len(rules) == 1
@@ -73,8 +124,8 @@ profiles:
   2_day:
     day_2:
       - at: "18:00"
-        action: "off"
-        devices: [climate.a]
+        action: "switch.turn_off"
+        target: {entity_id: [climate.a]}
 """
     _defaults, rules = import_yaml(text)
     assert len(rules) == 1
@@ -90,11 +141,6 @@ def test_import_accepts_empty_document():
     assert rules == []
 
 
-# --- Final review C3: an unvalidated day key used to brick the integration -
-
-import pytest
-
-
 def _one_rule(profile_key: str, day_key: str) -> str:
     return f"""
 defaults: {{}}
@@ -102,8 +148,8 @@ profiles:
   {profile_key}:
     {day_key}:
       - at: "23:00"
-        action: "off"
-        devices: [climate.a]
+        action: "switch.turn_off"
+        target: {{entity_id: [climate.a]}}
 """
 
 
@@ -133,48 +179,21 @@ def test_import_rejects_an_unrecognised_profile_key():
         import_yaml(_one_rule("one_day", "day_1"))
 
 
-def test_import_accepts_yaml_1_1_booleans_for_actions():
-    """Unquoted `action: on` is what a human writes; YAML 1.1 makes it True.
-
-    Export always quotes, so only hand-edited documents hit this - and they
-    used to fail with a bare "'True' is not a valid Action".
-    """
-    text = """
-defaults: {}
-profiles:
-  1_day:
-    day_1:
-      - at: "11:00"
-        action: on
-      - at: "23:00"
-        action: off
-"""
-    _defaults, rules = import_yaml(text)
-    assert [rule.action for rule in rules] == [Action.ON, Action.OFF]
+# --- defaults are now {target, data}, the same shape merge_defaults reads ---
 
 
-# --- Final review C2: unvalidated defaults used to brick the integration ---
-
-
-def test_import_rejects_a_non_mapping_settings_default():
-    """`settings: not_a_dict` used to be written straight to .storage.
-
-    merge_defaults then did `{**"not_a_dict"}` on every setup, so the entry
-    could never load again without hand-editing .storage - and nothing ran
-    on Shabbat with nothing to say why. Validated with the same guard the
-    websocket API uses, at the door.
-    """
+def test_import_rejects_a_non_mapping_target_default():
     with pytest.raises(ValueError):
-        import_yaml("defaults:\n  settings: not_a_dict\n")
+        import_yaml("defaults:\n  target: not_a_dict\n")
 
 
-def test_import_rejects_a_bare_string_devices_default():
+def test_import_rejects_a_bare_string_data_default():
     with pytest.raises(ValueError):
-        import_yaml("defaults:\n  devices: climate.a\n")
+        import_yaml("defaults:\n  data: climate.a\n")
 
 
 def test_import_rejects_an_unknown_defaults_key():
-    """Only `devices` and `settings` mean anything to merge_defaults.
+    """Only `target` and `data` mean anything to merge_defaults.
 
     Anything else silently did nothing, which is worse than being told.
     """
@@ -189,10 +208,10 @@ def test_import_rejects_a_non_mapping_defaults_block():
 
 def test_import_keeps_a_valid_nested_defaults_block():
     defaults, _rules = import_yaml(
-        "defaults:\n  devices: [climate.a]\n  settings: {temperature: 26}\n"
+        "defaults:\n  target: {entity_id: [climate.a]}\n  data: {temperature: 26}\n"
     )
-    assert list(defaults["devices"]) == ["climate.a"]
-    assert defaults["settings"] == {"temperature": 26}
+    assert list(defaults["target"]["entity_id"]) == ["climate.a"]
+    assert defaults["data"] == {"temperature": 26}
 
 
 # --- The YAML door gets the same typing the API door got ---
@@ -207,17 +226,7 @@ def test_import_rejects_a_quoted_false_for_enabled():
     """
     text = (
         'profiles:\n  1_day:\n    day_1:\n'
-        '      - {id: r1, at: "11:00:00", action: "on", enabled: "false"}\n'
-    )
-    with pytest.raises(ValueError):
-        import_yaml(text)
-
-
-def test_import_rejects_a_custom_action_with_no_script():
-    """It used to import, and then do precisely nothing, forever."""
-    text = (
-        'profiles:\n  1_day:\n    day_1:\n'
-        '      - {id: r1, at: "11:00:00", action: custom}\n'
+        '      - {id: r1, at: "11:00:00", action: "switch.turn_on", enabled: "false"}\n'
     )
     with pytest.raises(ValueError):
         import_yaml(text)
@@ -227,7 +236,7 @@ def test_import_rejects_a_misspelt_key():
     """`temperture` used to be dropped in silence."""
     text = (
         'profiles:\n  1_day:\n    day_1:\n'
-        '      - {id: r1, at: "11:00:00", action: "on", temperture: 26}\n'
+        '      - {id: r1, at: "11:00:00", action: "switch.turn_on", temperture: 26}\n'
     )
     with pytest.raises(ValueError):
         import_yaml(text)
@@ -236,14 +245,20 @@ def test_import_rejects_a_misspelt_key():
 def test_import_rejects_a_non_string_name():
     text = (
         'profiles:\n  1_day:\n    day_1:\n'
-        '      - {id: r1, at: "11:00:00", action: "on", name: {a: b}}\n'
+        '      - {id: r1, at: "11:00:00", action: "switch.turn_on", name: {a: b}}\n'
     )
     with pytest.raises(ValueError):
         import_yaml(text)
 
 
 def test_import_rejects_a_rule_with_no_at():
-    text = 'profiles:\n  1_day:\n    day_1:\n      - {id: r1, action: "on"}\n'
+    text = 'profiles:\n  1_day:\n    day_1:\n      - {id: r1, action: "switch.turn_on"}\n'
+    with pytest.raises(ValueError):
+        import_yaml(text)
+
+
+def test_import_rejects_an_invalid_action_shape():
+    text = 'profiles:\n  1_day:\n    day_1:\n      - {id: r1, at: "11:00:00", action: sideways}\n'
     with pytest.raises(ValueError):
         import_yaml(text)
 
@@ -251,14 +266,6 @@ def test_import_rejects_a_rule_with_no_at():
 def test_import_still_accepts_a_real_boolean_enabled():
     _defaults, rules = import_yaml(
         'profiles:\n  1_day:\n    day_1:\n'
-        '      - {id: r1, at: "11:00:00", action: "on", enabled: false}\n'
+        '      - {id: r1, at: "11:00:00", action: "switch.turn_on", enabled: false}\n'
     )
     assert rules[0].enabled is False
-
-
-def test_import_still_accepts_unquoted_yaml_booleans_for_action():
-    """`action: on` parses as True. Hand-writing that must keep working."""
-    _defaults, rules = import_yaml(
-        'profiles:\n  1_day:\n    day_1:\n      - {id: r1, at: "11:00:00", action: on}\n'
-    )
-    assert rules[0].action is Action.ON

@@ -111,11 +111,20 @@ def test_a_rule_is_immutable():
         rule.action = "switch.turn_on"
 
 
-def test_the_action_enum_is_gone():
-    """v1's three-value vocabulary is what made this a climate controller."""
+def test_the_action_enum_still_exists_for_now():
+    """Deliberately NOT deleted yet - see the note below.
+
+    `Action` is dead to `Rule` as of this task, but `block.py`,
+    `device_ops.py` and `engine.py` still reference it at module level.
+    Deleting it here makes `custom_components/shabbat_scheduler/__init__.py`
+    unimportable, and because `tests/conftest.py` imports from that
+    package, EVERY test in the repo becomes uncollectable - which would
+    leave Tasks 2-11 with no way to run their own tests. It dies in
+    Task 8, once its last consumer is gone.
+    """
     import custom_components.shabbat_scheduler.models as models
 
-    assert not hasattr(models, "Action")
+    assert hasattr(models, "Action")
 ```
 
 Add `from datetime import time, timedelta` at the top.
@@ -130,7 +139,7 @@ Expected: FAIL — `ImportError: cannot import name 'Replay'`.
 
 - [ ] **Step 3: Reshape `models.py`**
 
-Delete the `Action` enum entirely. Replace the `Rule` dataclass with:
+**Leave the `Action` enum in place**, with a comment saying it is dead to `Rule` and awaiting its last consumer in Task 8. Deleting it now would make the whole package unimportable and every test in the repo uncollectable — see the test above. Replace the `Rule` dataclass with:
 
 ```python
 @dataclass(frozen=True)
@@ -321,7 +330,7 @@ def expand_action(action: str, data: dict) -> list[tuple[str, dict]]:
 
 - [ ] **Step 4: Delete `FAN_SYNONYMS` from `const.py`**
 
-Remove the whole `FAN_SYNONYMS` dict. Add `STORAGE_VERSION = 2` in place of the existing `= 1` (Task 5 relies on it).
+Remove the whole `FAN_SYNONYMS` dict. **Leave `STORAGE_VERSION` at 1** — Task 5 raises it to 2 in the same commit that adds the migration. Raising it here would mean every load between this task and Task 5 sees a version it has no migration for.
 
 - [ ] **Step 5: Run the tests**
 
@@ -954,7 +963,9 @@ class _MigratingStore(Store):
         return old_data
 ```
 
-Change `RuleStore.__init__` to `self._store = _MigratingStore(hass)`, and expose `migration_failures` as a property reading `self._store.migration_failures`. Add a `migration_error: str | None = None` field to the v2 `Rule` in `models.py` so a failed rule keeps its reason, and carry it through `rule_to_dict`/`rule_from_dict`.
+Change `RuleStore.__init__` to `self._store = _MigratingStore(hass)`, and expose `migration_failures` as a property reading `self._store.migration_failures`. **Raise `STORAGE_VERSION` to 2 in `const.py` in this same commit** — the bump and the migration that services it must land together.
+
+Add a `migration_error: str | None = None` field to the v2 `Rule` in `models.py` so a failed rule keeps its reason, and carry it through `rule_to_dict`/`rule_from_dict`. Deliberately do **not** add it to `rule_schema._FIELDS`: it is written by the migration, never by a client, so the API should keep rejecting it.
 
 - [ ] **Step 5: Add the end-to-end migration test**
 
@@ -1001,7 +1012,7 @@ git commit -m "feat: migrate v1 rules, keeping and reporting what cannot convert
 
 **Interfaces:**
 - Consumes: `expand_action` (Task 2), `Rule` (Task 1).
-- Produces: `ShabbatEngine.async_apply_rule(rule, force=False) -> list[dict]` with per-call results `{action, outcome, error?}` where `outcome` is `called` or `failed`.
+- Produces: `ShabbatEngine.async_apply_rule(rule, force=False) -> list[dict]` with per-call results `{action, target, data, outcome, error?}`. `outcome` is `called`, `failed`, or `would_call` under dry run. (Task 7 adds a fourth, `blocked`, which is a whole-rule result rather than a per-call one and carries `reason` instead of `action`.)
 
 **What changes and what does not.** Replace `_apply_custom`, `_apply_device` and `plan_calls` with one path built on `async_call_from_config` (`helpers/service.py:239`), which accepts a `context` — so the Context attribution survives. **Keep** the retry (3 × 30s), the per-device lock, the two-event split, and the staleness stamp ordering.
 
@@ -1131,7 +1142,7 @@ and add:
                     result["outcome"] = "failed"
                     result["error"] = str(err)
                     return result
-                await asyncio.sleep(RETRY_DELAY)
+                await asyncio.sleep(RETRY_DELAY_SECONDS)
             else:
                 result["outcome"] = "called"
                 return result
@@ -1366,6 +1377,19 @@ def test_desired_state_at_is_gone():
     import custom_components.shabbat_scheduler.block as block
 
     assert not hasattr(block, "desired_state_at")
+
+
+def test_the_action_enum_is_finally_gone():
+    """v1's three-value vocabulary is what made this a climate controller.
+
+    Kept alive since Task 1 only because block.py, device_ops.py and
+    engine.py referenced it at module level, and an unimportable package
+    makes every test in the repo uncollectable. This task removes the
+    last consumer, so it goes.
+    """
+    import custom_components.shabbat_scheduler.models as models
+
+    assert not hasattr(models, "Action")
 ```
 
 - [ ] **Step 2: Run and watch them fail**
@@ -1376,9 +1400,11 @@ uv run pytest tests/test_replay.py -q
 
 Expected: FAIL.
 
-- [ ] **Step 3: Rewrite catch-up**
+- [ ] **Step 3: Rewrite catch-up, and bury `Action`**
 
-Delete `desired_state_at` from `block.py` and its tests. Replace the engine's catch-up body:
+Delete `desired_state_at` from `block.py` and its tests, along with `_STATEFUL_ACTIONS` — that was its only user. Then remove the last `Action` references in `engine.py` and delete the enum from `models.py`; this task is where it finally goes, having been kept alive since Task 1 purely to keep the package importable.
+
+Replace the engine's catch-up body:
 
 ```python
         now = dt_util.now()
@@ -1792,4 +1818,8 @@ git commit -m "docs: the v2 rule model, and three behaviours worth knowing"
 
 **Two things a reviewer should watch.** Task 6 changes the per-device lock to a per-rule lock, since a target may be an area and there is no single entity to key on — that is a real semantic change and it deserves scrutiny. And Task 9's resolver, though its signature was verified against the installed `helpers/target.py` while writing this plan, still needs a test with a **real area registered** asserting that area's entities come back: a wrong resolver returns an empty set, and an empty set reports *no conflicts* on a genuinely conflicting schedule, which is the quietest possible way to break the one safety feature this plan keeps.
 
-**Task ordering note.** Tasks 1–3 deliberately leave the suite red — `models.py` changes shape before anything else catches up. Only Task 12 returns it to green. An implementer should not "fix" unrelated failing tests along the way; each task's own tests are its gate, and Task 12 owns the reconciliation.
+**Task ordering note.** Tasks 1–11 deliberately leave the suite red — `models.py` changes shape before anything else catches up. Only Task 12 returns it to green. An implementer should not "fix" unrelated failing tests along the way; each task's own tests are its gate, and Task 12 owns the reconciliation.
+
+**Red must mean failing, not uncollectable.** `tests/conftest.py` imports from the integration package, whose `__init__.py` eagerly imports `websocket_api → block → models`. So anything that makes `models.py` unimportable takes *every test in the repo* down with it — not "some tests fail" but "pytest cannot collect", which would leave Tasks 2–11 with no gate at all. This was found the hard way during execution: Task 1 originally deleted the `Action` enum, and `block.py`'s module-level `_STATEFUL_ACTIONS = (Action.ON, Action.OFF)` made the whole package unimportable.
+
+Hence `Action` survives until Task 8, where its last consumer dies. The general rule for every task here: **you may break behaviour, but never importability.**

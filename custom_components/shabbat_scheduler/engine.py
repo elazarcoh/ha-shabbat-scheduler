@@ -9,33 +9,34 @@ from datetime import datetime, timedelta
 
 from homeassistant.components import persistent_notification
 from homeassistant.core import Context, CoreState, HomeAssistant
+from homeassistant.helpers import condition
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_time
+from homeassistant.helpers.service import async_call_from_config
 from homeassistant.util import dt as dt_util
 
 from .block import (
     compute_block,
-    desired_state_at,
     has_profile,
     merge_defaults,
     resolve_rules,
 )
 from .const import (
-    CANDLE_SENSOR,
+    DEFAULT_CANDLE_SENSOR,
+    DEFAULT_HAVDALAH_SENSOR,
     EVENT_RULE_APPLIED,
     EVENT_RULE_COMPLETED,
-    HAVDALAH_SENSOR,
     RETRY_ATTEMPTS,
     RETRY_DELAY_SECONDS,
     SIGNAL_RULES_CHANGED,
 )
-from .device_ops import Skip, plan_calls
-from .models import Action, Block, Conflict, ResolvedRule, Rule
+from . import repairs
+from .device_ops import expand_action
+from .models import Block, ResolvedRule, Rule
 from .store import RuleStore
 
 _LOGGER = logging.getLogger(__name__)
-
-_UNTRUSTED_STATES = ("unknown", "unavailable")
 
 # Fixed notification ids so a condition that is re-evaluated on every state
 # change replaces its own notification instead of stacking dozens of copies,
@@ -43,11 +44,13 @@ _UNTRUSTED_STATES = ("unknown", "unavailable")
 _NOTIFY_ZMANIM = "shabbat_scheduler_zmanim"
 _NOTIFY_NO_PROFILE = "shabbat_scheduler_no_profile"
 
-# How many of our own recent context ids we remember per device. Bounded so a
+# How many of our own recent context ids we remember. Bounded so a
 # long-running instance cannot grow this without limit; generous enough that
-# no realistic burst of calls to one device evicts a context before anything
-# could plausibly ask about it.
-_CONTEXT_HISTORY_PER_DEVICE = 20
+# no realistic burst of rule applications evicts a context before anything
+# could plausibly ask about it. No longer keyed per device: a target may be
+# an area or a label rather than a single entity, so there is nothing to key
+# on but the context itself.
+_CONTEXT_HISTORY = 200
 
 # How long after a held block's last rule the candidate block is adopted.
 # Strictly greater than zero so the refresh it schedules is guaranteed to
@@ -56,23 +59,65 @@ _CONTEXT_HISTORY_PER_DEVICE = 20
 _HOLD_RELEASE_GRACE = timedelta(seconds=1)
 
 
-class ShabbatEngine:
-    """Applies rules idempotently, one device at a time."""
+def _condition_label(index: int, total: int, item) -> str:
+    """Name one condition well enough for the user to find it in the rule.
 
-    def __init__(self, hass: HomeAssistant, store: RuleStore) -> None:
+    Its position in the rule plus its own identifying fields. Never the
+    whole config: a condition may carry templates and nested conditions,
+    and a logbook row is one line. `entity_id` is what almost every real
+    condition is actually about.
+    """
+    raw = item if isinstance(item, dict) else {}
+    kind = raw.get("condition")
+    kind = str(kind) if kind else "condition"
+    entity = raw.get("entity_id")
+    if isinstance(entity, (list, tuple)):
+        entity = ", ".join(str(one) for one in entity)
+    where = f" on {entity}" if entity else ""
+    return f"condition {index} of {total} ({kind}{where})"
+
+
+class ShabbatEngine:
+    """Applies rules by handing their action to Home Assistant to execute."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        store: RuleStore,
+        candle_sensor: str = DEFAULT_CANDLE_SENSOR,
+        havdalah_sensor: str = DEFAULT_HAVDALAH_SENSOR,
+    ) -> None:
         self.hass = hass
         self.store = store
+        # Configurable since Task 10: the Jewish Calendar integration derives
+        # these entity ids from its own config entry's title, so there is no
+        # name every install shares. Defaulted, not required, so every
+        # pre-existing direct construction of this class keeps working.
+        self._candle_sensor = candle_sensor
+        self._havdalah_sensor = havdalah_sensor
         self.last_run: list[dict] = []
         self.last_run_at: datetime | None = None
+        # Keyed on rule id, not entity_id: a target may be an area or a
+        # label rather than one device, so there is no single entity to key
+        # a lock on. This still guarantees one rule's own calls do not
+        # interleave with a re-entrant application of that SAME rule; it no
+        # longer guarantees that two DIFFERENT rules targeting the same
+        # device cannot interleave with each other.
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-        self._last_command: dict[str, datetime] = {}
-        self._our_contexts: dict[str, deque[str]] = defaultdict(
-            lambda: deque(maxlen=_CONTEXT_HISTORY_PER_DEVICE)
-        )
+        self._our_contexts: deque[str] = deque(maxlen=_CONTEXT_HISTORY)
         self._block: Block | None = None
         self._unsubscribes: list = []
         self._upcoming: list[ResolvedRule] = []
         self._refresh_lock = asyncio.Lock()
+        # Which block async_catch_up has already run for. Compared by
+        # value (Block is a frozen dataclass), so a genuinely new block
+        # naturally re-arms this without any explicit reset - but the
+        # SAME block cannot be caught up twice. Application through
+        # async_call_from_config has no "already in that state" check the
+        # way v1's device comparison did, so without this a second call
+        # (setup races, a manual re-trigger) would repeat every side
+        # effect rather than harmlessly no-op.
+        self._caught_up_for: Block | None = None
 
     async def async_apply_rule(self, rule: Rule, force: bool = False) -> list[dict]:
         """Apply one rule, returning a per-attribute outcome report.
@@ -84,37 +129,115 @@ class ShabbatEngine:
         device's own change back to this rule, the same way automations do.
         """
         context = Context()
+        self._our_contexts.append(context.id)
 
         self.hass.bus.async_fire(
             EVENT_RULE_APPLIED,
             {
                 "rule_id": rule.id,
                 "name": rule.name,
-                "action": rule.action.value,
-                "devices": list(rule.devices),
+                "action": rule.action,
+                "target": dict(rule.target),
                 "dry_run": self.store.dry_run,
             },
             context=context,
         )
 
-        if rule.action is Action.CUSTOM:
-            results = await self._apply_custom(rule, context)
-        else:
+        if rule.condition:
+            blocked_by = await self._condition_block_reason(rule)
+            if blocked_by is not None:
+                results = [{"outcome": "blocked", "reason": blocked_by}]
+                self.last_run = results
+                self.last_run_at = dt_util.utcnow()
+                self._fire_completed(rule, results)
+                return results
+
+        async with self._locks[rule.id]:
             results = []
-            for entity_id in rule.devices:
-                results.extend(
-                    await self._apply_device(rule, entity_id, force, context)
+            for action, data in expand_action(rule.action, dict(rule.data)):
+                results.append(
+                    await self._call(rule, action, rule.target, data, context)
                 )
 
         self.last_run = results
         self.last_run_at = dt_util.utcnow()
-        # Fired after the results exist, for consumers that need them.
-        # EVENT_RULE_APPLIED cannot carry them: it must precede the calls so
-        # Home Assistant can attribute each device's change back to this rule.
-        self.hass.bus.async_fire(
-            EVENT_RULE_COMPLETED, {"rule_id": rule.id, "results": results}
-        )
+        self._fire_completed(rule, results)
         return results
+
+    def _fire_completed(self, rule: Rule, results: list[dict]) -> None:
+        """Announce the outcome, carrying enough to describe itself.
+
+        Fired after the results exist, for consumers that need them.
+        EVENT_RULE_APPLIED cannot carry them: it must precede the calls so
+        Home Assistant can attribute each device's change back to this rule.
+
+        It carries `name`/`action`/`target`/`dry_run` as well as the
+        results, for the same reason EVENT_RULE_APPLIED does: the logbook
+        renders HISTORICAL events, so its describer cannot look the rule up
+        - it may have been renamed or deleted by then. Without these the
+        outcome row could not say which rule or which device it was about,
+        and an outcome nobody can attribute is barely an outcome.
+        """
+        self.hass.bus.async_fire(
+            EVENT_RULE_COMPLETED,
+            {
+                "rule_id": rule.id,
+                "name": rule.name,
+                "action": rule.action,
+                "target": dict(rule.target),
+                "dry_run": self.store.dry_run,
+                "results": results,
+            },
+        )
+
+    async def _condition_block_reason(self, rule: Rule) -> str | None:
+        """None if every condition passes, else WHY the rule is blocked.
+
+        Every condition must pass. An error counts as not passing: erring
+        towards NOT acting, because an unexpected error is not consent to
+        drive an appliance on a day nobody can undo it.
+
+        Returns a reason rather than a bool because this stops at the FIRST
+        failing condition, so a rule carrying three of them would otherwise
+        report a bare "condition not met" and leave the user no way at all
+        to tell which one held it back - on the one day they cannot
+        investigate. The index and the condition's own identifying fields
+        are the difference between a report and a shrug.
+
+        `async_from_config` builds its checker straight from the raw dict
+        without normalising it first (e.g. a bare `entity_id: "a.b"` string
+        is never turned into `["a.b"]"), so a config that skipped schema
+        validation is silently misread rather than rejected -
+        `cv.CONDITION_SCHEMA` + `async_validate_condition_config` is what
+        does that normalising, same as `ha_validation.py` does at
+        authoring time for the identical reason.
+        """
+        total = len(rule.condition)
+        for index, item in enumerate(rule.condition, start=1):
+            label = _condition_label(index, total, item)
+            try:
+                validated = cv.CONDITION_SCHEMA(dict(item))
+                validated = await condition.async_validate_condition_config(
+                    self.hass, validated
+                )
+                checker = await condition.async_from_config(self.hass, validated)
+                if not checker(self.hass, {}):
+                    return f"{label} not met"
+            except Exception as err:  # noqa: BLE001 - a broken condition blocks
+                _LOGGER.exception(
+                    "Rule %s: %s could not be evaluated; not acting",
+                    rule.id,
+                    label,
+                )
+                # Type-prefixed, like `_call`'s failure reason: a good many
+                # Home Assistant exceptions stringify to "", and
+                # "could not be evaluated: " says nothing.
+                detail = (
+                    f"{type(err).__name__}: {err}" if str(err)
+                    else type(err).__name__
+                )
+                return f"{label} could not be evaluated ({detail})"
+        return None
 
     @property
     def current_block(self) -> Block | None:
@@ -131,14 +254,25 @@ class ShabbatEngine:
         return [merge_defaults(self.store.defaults, r) for r in self.store.rules]
 
     def _read_zmanim(self) -> tuple[datetime, datetime] | None:
-        candle = self.hass.states.get(CANDLE_SENSOR)
-        havdalah = self.hass.states.get(HAVDALAH_SENSOR)
-        if candle is None or havdalah is None:
-            return None
-        start = dt_util.parse_datetime(candle.state)
-        end = dt_util.parse_datetime(havdalah.state)
+        """Read the two configured zmanim entities, reporting via a repair
+        issue - not just a log line - when they cannot be read at all.
+
+        v1 hardcoded the entity ids and logged a warning on this path; that
+        warning is invisible on the one day anyone would need to see it, and
+        the entity ids it hardcoded are only the Jewish Calendar integration's
+        own default names, derived from ITS config entry's title. A second
+        Jewish Calendar entry, or one simply renamed, never matches.
+        """
+        candle = self.hass.states.get(self._candle_sensor)
+        havdalah = self.hass.states.get(self._havdalah_sensor)
+        start = dt_util.parse_datetime(candle.state) if candle else None
+        end = dt_util.parse_datetime(havdalah.state) if havdalah else None
         if start is None or end is None:
+            repairs.async_create_zmanim_issue(
+                self.hass, self._candle_sensor, self._havdalah_sensor
+            )
             return None
+        repairs.async_delete_zmanim_issue(self.hass)
         # HA serialises timestamp sensor states as UTC. compute_block takes
         # `.date()` of each instant while resolve_rules combines those dates
         # with the LOCAL timezone, so they must be localised here or every
@@ -228,7 +362,7 @@ class ShabbatEngine:
                 _LOGGER.warning("Ignoring implausible zmanim pair %s", zmanim)
                 persistent_notification.async_create(
                     self.hass,
-                    f"The {CANDLE_SENSOR} and {HAVDALAH_SENSOR} sensors "
+                    f"The {self._candle_sensor} and {self._havdalah_sensor} sensors "
                     "don't describe a valid Shabbat/Chag block (havdalah "
                     "must be after candle lighting). The schedule is not "
                     "running until this is fixed.",
@@ -369,13 +503,13 @@ class ShabbatEngine:
             return
         _LOGGER.warning(
             "Cannot read %s / %s; no block is known, so nothing is scheduled",
-            CANDLE_SENSOR,
-            HAVDALAH_SENSOR,
+            self._candle_sensor,
+            self._havdalah_sensor,
         )
         persistent_notification.async_create(
             self.hass,
-            f"Shabbat Scheduler cannot read {CANDLE_SENSOR} and "
-            f"{HAVDALAH_SENSOR}. Is the Jewish Calendar integration set up, "
+            f"Shabbat Scheduler cannot read {self._candle_sensor} and "
+            f"{self._havdalah_sensor}. Is the Jewish Calendar integration set up, "
             "and are those entity ids still correct? Nothing is scheduled "
             "until they can be read.",
             title="Shabbat Scheduler",
@@ -394,53 +528,64 @@ class ShabbatEngine:
         return _fire
 
     async def async_catch_up(self) -> list[dict]:
-        """Re-apply the current desired state after a restart.
+        """Replay the rules that opted in to it, after a restart.
 
-        Only the most recent already-passed rule per device is applied, and
-        because application is idempotent this is safe to repeat.
+        An opaque service call has no queryable desired state the way
+        v1's `hvac_mode`/`temperature`/`fan_mode` did, so catch-up can no
+        longer ask "what state should this device be in now?". Instead
+        the rule's own author says what is safe to repeat
+        (`rule.replay.enabled`), how stale it may be and still be worth
+        repeating (`rule.replay.within`), and the rule's own condition -
+        evaluated through the normal `async_apply_rule` path - still
+        guards it.
+
+        A rule that does not fire must say why: a rule replayed too late
+        is reported as `skipped_stale` rather than silently dropped.
+
+        At most once per block: application through
+        `async_call_from_config` has no "already in that state" check to
+        make a repeat harmless the way v1's device comparison did.
         """
         if self._block is None or not self.store.enabled:
             return []
+        if self._block == self._caught_up_for:
+            return []
 
-        tz = self._tz()
         now = dt_util.now()
-        rules = self._merged_rules()
-
-        devices = {device for rule in rules for device in rule.devices}
         results: list[dict] = []
-
-        for device in sorted(devices):
-            wanted = desired_state_at(rules, self._block, now, device, tz)
-            if wanted is None:
+        for item in resolve_rules(self._merged_rules(), self._block, self._tz()):
+            if item.when > now:
+                continue                      # future: armed, not replayed
+            if not item.rule.replay.enabled:
+                continue                      # the author did not opt in
+            within = item.rule.replay.within
+            if within is not None and now - item.when > within:
+                skipped = {
+                    "rule_id": item.rule.id,
+                    "outcome": "skipped_stale",
+                    "reason": f"{now - item.when} late, window {within}",
+                }
+                results.append(skipped)
+                # Fired per rule, not only folded into the aggregate below.
+                # This path never reaches `async_apply_rule`, so it used to
+                # emit no event whatsoever: the skip lived only in the
+                # aggregate `last_run`, which the next rule to run
+                # overwrites. A replay skip that nothing records is exactly
+                # the silence "a rule that does not fire must say why"
+                # forbids.
+                self._fire_completed(item.rule, [skipped])
                 continue
-            if isinstance(wanted, Conflict):
-                _LOGGER.warning(
-                    "%s: ambiguous desired state (rules %s); not acting",
-                    device, ", ".join(wanted.rule_ids),
-                )
-                continue
-            results.extend(
-                await self._apply_device(wanted, device, force=False, context=Context())
-            )
+            results.extend(await self.async_apply_rule(item.rule))
 
-        # Custom rules are excluded above because desired_state_at ignores
-        # them; replay them only where explicitly opted in, and only once
-        # they have actually passed. Reuse resolve_rules rather than
-        # hand-rolling profile/enabled/time filtering a second time - it
-        # already binds each rule to the concrete datetime the on/off path
-        # trusts.
-        for item in resolve_rules(rules, self._block, tz):
-            if (
-                item.rule.action is Action.CUSTOM
-                and item.rule.replay_on_restart
-                and item.when <= now
-            ):
-                results.extend(await self._apply_custom(item.rule, Context()))
-
+        self._caught_up_for = self._block
         self.last_run = results
         self.last_run_at = dt_util.utcnow()
+        # The pass summary. `catch_up` marks it so the logbook renders it as
+        # one summary row rather than as a rule with no name; `rule_id` stays
+        # None for the consumers (sensor.py) that only use it as a trigger.
         self.hass.bus.async_fire(
-            EVENT_RULE_COMPLETED, {"rule_id": None, "results": results}
+            EVENT_RULE_COMPLETED,
+            {"rule_id": None, "catch_up": True, "results": results},
         )
         return results
 
@@ -450,160 +595,84 @@ class ShabbatEngine:
             cancel()
         self._unsubscribes = []
 
-    async def _apply_custom(self, rule: Rule, context: Context) -> list[dict]:
-        if not rule.script:
-            return []
-        if self.store.dry_run:
-            return [
-                {
-                    "entity_id": rule.script, "attribute": "script",
-                    "outcome": "changed", "from": None, "to": "run",
-                }
-            ]
-        await self.hass.services.async_call(
-            "script", "turn_on",
-            {"entity_id": rule.script, "variables": dict(rule.variables)},
-            blocking=True, context=self._record_context(rule.script, context),
-        )
-        return [
-            {
-                "entity_id": rule.script, "attribute": "script",
-                "outcome": "changed", "from": None, "to": "run",
-            }
-        ]
+    def is_our_context(self, context: Context) -> bool:
+        """Was `context` one this engine itself issued?
 
-    async def _apply_device(
-        self, rule: Rule, entity_id: str, force: bool, context: Context
-    ) -> list[dict]:
-        state = self.hass.states.get(entity_id)
-        if state is None:
-            _LOGGER.warning("%s: entity not found", entity_id)
-            return [
-                {
-                    "entity_id": entity_id, "attribute": "state",
-                    "outcome": "failed", "from": None, "to": None,
-                }
-            ]
-
-        must_apply = force or state.state in _UNTRUSTED_STATES or self._is_stale(
-            entity_id, state.last_updated
-        )
-        calls = plan_calls(
-            entity_id, state.state, dict(state.attributes),
-            rule.action, rule.settings, must_apply,
-        )
-
-        if not calls:
-            return [
-                {
-                    "entity_id": entity_id, "attribute": "state",
-                    "outcome": "ok", "from": state.state, "to": state.state,
-                }
-            ]
-
-        results: list[dict] = []
-        async with self._locks[entity_id]:
-            for call in calls:
-                if isinstance(call, Skip):
-                    # Nothing retries a dropped sub-call, so it is reported
-                    # rather than passed over in silence.
-                    _LOGGER.warning(
-                        "%s: cannot apply %s=%r: %s",
-                        entity_id, call.attribute, call.requested, call.reason,
-                    )
-                    results.append(
-                        {
-                            "entity_id": entity_id,
-                            "attribute": call.attribute,
-                            "outcome": "skipped",
-                            "from": None,
-                            "to": call.requested,
-                            "reason": call.reason,
-                        }
-                    )
-                    continue
-                results.append(await self._execute(entity_id, call, context))
-        return results
-
-    def _is_stale(self, entity_id: str, last_updated: datetime) -> bool:
-        """True when the reading predates our own most recent command.
-
-        The aux_cloud units lag several seconds on fan_mode, so a naive read
-        would skip a command that never actually landed.
+        No longer keyed per entity: a target may be an area or a label, so
+        there is no single entity to key on, and the calls a rule makes may
+        not even carry an `entity_id` at all (e.g. a `notify.*` action).
         """
-        sent = self._last_command.get(entity_id)
-        return sent is not None and last_updated < sent
+        return context.id in self._our_contexts
 
-    def _record_context(self, entity_id: str, context: Context) -> Context:
-        """Remember a context as ours, for the given entity.
+    async def _call(
+        self, rule: Rule, action: str, target: dict, data: dict, context: Context
+    ) -> dict:
+        """One service call, retried, reported either way.
 
-        Retaining our own context ids is what lets a future enforcement
-        feature tell "we changed it" from "a human changed it" when looking
-        at a state_changed event.
+        Everything here is Home Assistant's own service machinery -
+        `async_call_from_config` validates the config, resolves the target
+        and makes the call. This integration's contribution is deciding
+        that now is the moment.
         """
-        self._our_contexts[entity_id].append(context.id)
-        return context
-
-    def is_our_context(self, entity_id: str, context: Context) -> bool:
-        """Was `context` one the engine itself issued for `entity_id`?"""
-        return context.id in self._our_contexts.get(entity_id, ())
-
-    async def _execute(self, entity_id: str, call, context: Context) -> dict:
-        result = {
-            "entity_id": entity_id,
-            "attribute": call.attribute,
-            "from": call.from_value,
-            "to": call.to_value,
-        }
+        result = {"action": action, "target": dict(target), "data": dict(data)}
 
         if self.store.dry_run:
-            result["outcome"] = "changed"
+            result["outcome"] = "would_call"
             return result
 
-        data = {"entity_id": entity_id, **call.data}
+        config = {"action": action, "data": data}
+        if target:
+            config["target"] = dict(target)
+
         for attempt in range(1, RETRY_ATTEMPTS + 1):
-            # Stamped BEFORE each attempt, deliberately: the entity's own
-            # `last_updated` is written during the awaited call, so a stamp
-            # taken afterwards is always later than that write and the
-            # staleness guard would then report the reading stale forever -
-            # forcing a real service call on every later apply, which is the
-            # re-asserting behaviour this integration exists to avoid.
-            self._last_command[entity_id] = dt_util.utcnow()
             try:
-                await self.hass.services.async_call(
-                    call.domain, call.service, data,
-                    blocking=True, context=self._record_context(entity_id, context),
+                await async_call_from_config(
+                    self.hass, config, blocking=True, validate_config=True,
+                    context=context,
                 )
-            except Exception as err:  # noqa: BLE001 - one device must not abort the rest
-                # The reason matters: this log line and the notification below
-                # are the only forensic surface for a Shabbat-night failure,
-                # when nobody can investigate live. Without it a missing
-                # service, a timeout and a cloud auth error look identical.
-                if attempt < RETRY_ATTEMPTS:
-                    _LOGGER.warning(
-                        "%s: %s.%s failed (attempt %s/%s): %s: %s",
-                        entity_id, call.domain, call.service, attempt,
-                        RETRY_ATTEMPTS, type(err).__name__, err,
+            except Exception as err:  # noqa: BLE001 - reported, never swallowed
+                # This log line, and the notification below, are the only
+                # forensic surface for a Shabbat-night failure, when nobody
+                # can investigate live. Without them a missing service, a
+                # timeout and a cloud auth error look identical - and on a
+                # headless instance during Shabbat, a log line is invisible.
+                # A rule that does not fire must say why.
+                if attempt == RETRY_ATTEMPTS:
+                    reason = (
+                        f"{type(err).__name__}: {err}" if str(err)
+                        else type(err).__name__
                     )
-                    await asyncio.sleep(RETRY_DELAY_SECONDS)
-                    continue
-
-                _LOGGER.error(
-                    "%s: %s.%s failed after %s attempts: %s: %s",
-                    entity_id, call.domain, call.service, RETRY_ATTEMPTS,
-                    type(err).__name__, err, exc_info=True,
+                    _LOGGER.error(
+                        "%s failed after %s attempts: %s",
+                        action, RETRY_ATTEMPTS, reason, exc_info=True,
+                    )
+                    # Keyed on the action, not an entity id: a v2 target may
+                    # be an area or a label, or the call may carry no
+                    # entity at all (e.g. notify.*), so there is no single
+                    # entity to key the notification on the way v1 did.
+                    who = rule.name or rule.id
+                    persistent_notification.async_create(
+                        self.hass,
+                        f"Rule '{who}': {action} (target: {target or 'none'}) "
+                        f"failed after {RETRY_ATTEMPTS} attempts. "
+                        f"Reason: {reason}",
+                        title="Shabbat Scheduler",
+                        notification_id=f"shabbat_scheduler_fail_{action}",
+                    )
+                    result["outcome"] = "failed"
+                    # The type-prefixed `reason`, not the bare `str(err)`:
+                    # this dict is what the last_run sensor exposes, and a
+                    # good many Home Assistant exceptions stringify to "".
+                    # `{"outcome": "failed", "error": ""}` is a rule that
+                    # does not say why it did not fire.
+                    result["error"] = reason
+                    return result
+                _LOGGER.warning(
+                    "%s failed (attempt %s/%s): %s: %s",
+                    action, attempt, RETRY_ATTEMPTS, type(err).__name__, err,
                 )
-                reason = f"{type(err).__name__}: {err}" if str(err) else type(err).__name__
-                persistent_notification.async_create(
-                    self.hass,
-                    f"{entity_id}: {call.domain}.{call.service} failed after "
-                    f"{RETRY_ATTEMPTS} attempts. Reason: {reason}",
-                    title="Shabbat Scheduler",
-                    notification_id=f"shabbat_scheduler_fail_{entity_id}_{call.service}",
-                )
-                result["outcome"] = "failed"
-                result["reason"] = reason
+                await asyncio.sleep(RETRY_DELAY_SECONDS)
+            else:
+                result["outcome"] = "called"
                 return result
-
-            result["outcome"] = "changed"
-            return result
+        return result

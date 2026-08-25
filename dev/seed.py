@@ -101,9 +101,14 @@ def onboard() -> str:
             },
         )
     except urllib.error.HTTPError as err:
-        # 403 means onboarding is already done. Anything else is a real
-        # problem and should not be swallowed.
-        if err.code != 403:
+        # Already onboarded. Home Assistant answers this endpoint with
+        # EITHER code depending on how far onboarding got: 403 while the
+        # onboarding views are still registered but the owner exists, and
+        # 404 once they have been torn down entirely. Catching only 403
+        # made re-runs fail with a bare traceback on a fully-onboarded
+        # instance - which is the normal case for every run after the
+        # first. Anything else is a real problem and is not swallowed.
+        if err.code not in (403, 404):
             raise
         return log_in()
 
@@ -305,7 +310,18 @@ def seed_dashboard(token: str) -> None:
             }))
             reply = json.loads(await socket.recv())
             if not reply.get("success"):
-                raise SystemExit(f"creating the dashboard failed: {reply}")
+                # An existing dashboard is the normal case on a re-run, and
+                # it is not a failure: the config save below overwrites its
+                # contents anyway, which is the part that matters. Keyed on
+                # the translation_key rather than the message text so a
+                # reworded HA string does not turn a benign re-run back
+                # into a hard exit.
+                already = (
+                    reply.get("error", {}).get("translation_key")
+                    == "url_already_exists"
+                )
+                if not already:
+                    raise SystemExit(f"creating the dashboard failed: {reply}")
 
             await socket.send(json.dumps({
                 "id": 2,

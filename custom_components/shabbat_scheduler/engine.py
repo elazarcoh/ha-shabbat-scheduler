@@ -59,6 +59,24 @@ _CONTEXT_HISTORY = 200
 _HOLD_RELEASE_GRACE = timedelta(seconds=1)
 
 
+def _condition_label(index: int, total: int, item) -> str:
+    """Name one condition well enough for the user to find it in the rule.
+
+    Its position in the rule plus its own identifying fields. Never the
+    whole config: a condition may carry templates and nested conditions,
+    and a logbook row is one line. `entity_id` is what almost every real
+    condition is actually about.
+    """
+    raw = item if isinstance(item, dict) else {}
+    kind = raw.get("condition")
+    kind = str(kind) if kind else "condition"
+    entity = raw.get("entity_id")
+    if isinstance(entity, (list, tuple)):
+        entity = ", ".join(str(one) for one in entity)
+    where = f" on {entity}" if entity else ""
+    return f"condition {index} of {total} ({kind}{where})"
+
+
 class ShabbatEngine:
     """Applies rules by handing their action to Home Assistant to execute."""
 
@@ -125,14 +143,14 @@ class ShabbatEngine:
             context=context,
         )
 
-        if rule.condition and not await self._conditions_pass(rule):
-            results = [{"outcome": "blocked", "reason": "condition not met"}]
-            self.last_run = results
-            self.last_run_at = dt_util.utcnow()
-            self.hass.bus.async_fire(
-                EVENT_RULE_COMPLETED, {"rule_id": rule.id, "results": results}
-            )
-            return results
+        if rule.condition:
+            blocked_by = await self._condition_block_reason(rule)
+            if blocked_by is not None:
+                results = [{"outcome": "blocked", "reason": blocked_by}]
+                self.last_run = results
+                self.last_run_at = dt_util.utcnow()
+                self._fire_completed(rule, results)
+                return results
 
         async with self._locks[rule.id]:
             results = []
@@ -143,19 +161,48 @@ class ShabbatEngine:
 
         self.last_run = results
         self.last_run_at = dt_util.utcnow()
-        # Fired after the results exist, for consumers that need them.
-        # EVENT_RULE_APPLIED cannot carry them: it must precede the calls so
-        # Home Assistant can attribute each device's change back to this rule.
-        self.hass.bus.async_fire(
-            EVENT_RULE_COMPLETED, {"rule_id": rule.id, "results": results}
-        )
+        self._fire_completed(rule, results)
         return results
 
-    async def _conditions_pass(self, rule: Rule) -> bool:
-        """Every condition must pass. An error counts as not passing.
+    def _fire_completed(self, rule: Rule, results: list[dict]) -> None:
+        """Announce the outcome, carrying enough to describe itself.
 
-        Erring towards NOT acting: an unexpected error is not consent to
+        Fired after the results exist, for consumers that need them.
+        EVENT_RULE_APPLIED cannot carry them: it must precede the calls so
+        Home Assistant can attribute each device's change back to this rule.
+
+        It carries `name`/`action`/`target`/`dry_run` as well as the
+        results, for the same reason EVENT_RULE_APPLIED does: the logbook
+        renders HISTORICAL events, so its describer cannot look the rule up
+        - it may have been renamed or deleted by then. Without these the
+        outcome row could not say which rule or which device it was about,
+        and an outcome nobody can attribute is barely an outcome.
+        """
+        self.hass.bus.async_fire(
+            EVENT_RULE_COMPLETED,
+            {
+                "rule_id": rule.id,
+                "name": rule.name,
+                "action": rule.action,
+                "target": dict(rule.target),
+                "dry_run": self.store.dry_run,
+                "results": results,
+            },
+        )
+
+    async def _condition_block_reason(self, rule: Rule) -> str | None:
+        """None if every condition passes, else WHY the rule is blocked.
+
+        Every condition must pass. An error counts as not passing: erring
+        towards NOT acting, because an unexpected error is not consent to
         drive an appliance on a day nobody can undo it.
+
+        Returns a reason rather than a bool because this stops at the FIRST
+        failing condition, so a rule carrying three of them would otherwise
+        report a bare "condition not met" and leave the user no way at all
+        to tell which one held it back - on the one day they cannot
+        investigate. The index and the condition's own identifying fields
+        are the difference between a report and a shrug.
 
         `async_from_config` builds its checker straight from the raw dict
         without normalising it first (e.g. a bare `entity_id: "a.b"` string
@@ -165,7 +212,9 @@ class ShabbatEngine:
         does that normalising, same as `ha_validation.py` does at
         authoring time for the identical reason.
         """
-        for item in rule.condition:
+        total = len(rule.condition)
+        for index, item in enumerate(rule.condition, start=1):
+            label = _condition_label(index, total, item)
             try:
                 validated = cv.CONDITION_SCHEMA(dict(item))
                 validated = await condition.async_validate_condition_config(
@@ -173,14 +222,22 @@ class ShabbatEngine:
                 )
                 checker = await condition.async_from_config(self.hass, validated)
                 if not checker(self.hass, {}):
-                    return False
-            except Exception:  # noqa: BLE001 - a broken condition blocks
+                    return f"{label} not met"
+            except Exception as err:  # noqa: BLE001 - a broken condition blocks
                 _LOGGER.exception(
-                    "Condition on rule %s could not be evaluated; not acting",
+                    "Rule %s: %s could not be evaluated; not acting",
                     rule.id,
+                    label,
                 )
-                return False
-        return True
+                # Type-prefixed, like `_call`'s failure reason: a good many
+                # Home Assistant exceptions stringify to "", and
+                # "could not be evaluated: " says nothing.
+                detail = (
+                    f"{type(err).__name__}: {err}" if str(err)
+                    else type(err).__name__
+                )
+                return f"{label} could not be evaluated ({detail})"
+        return None
 
     @property
     def current_block(self) -> Block | None:
@@ -503,21 +560,32 @@ class ShabbatEngine:
                 continue                      # the author did not opt in
             within = item.rule.replay.within
             if within is not None and now - item.when > within:
-                results.append(
-                    {
-                        "rule_id": item.rule.id,
-                        "outcome": "skipped_stale",
-                        "reason": f"{now - item.when} late, window {within}",
-                    }
-                )
+                skipped = {
+                    "rule_id": item.rule.id,
+                    "outcome": "skipped_stale",
+                    "reason": f"{now - item.when} late, window {within}",
+                }
+                results.append(skipped)
+                # Fired per rule, not only folded into the aggregate below.
+                # This path never reaches `async_apply_rule`, so it used to
+                # emit no event whatsoever: the skip lived only in the
+                # aggregate `last_run`, which the next rule to run
+                # overwrites. A replay skip that nothing records is exactly
+                # the silence "a rule that does not fire must say why"
+                # forbids.
+                self._fire_completed(item.rule, [skipped])
                 continue
             results.extend(await self.async_apply_rule(item.rule))
 
         self._caught_up_for = self._block
         self.last_run = results
         self.last_run_at = dt_util.utcnow()
+        # The pass summary. `catch_up` marks it so the logbook renders it as
+        # one summary row rather than as a rule with no name; `rule_id` stays
+        # None for the consumers (sensor.py) that only use it as a trigger.
         self.hass.bus.async_fire(
-            EVENT_RULE_COMPLETED, {"rule_id": None, "results": results}
+            EVENT_RULE_COMPLETED,
+            {"rule_id": None, "catch_up": True, "results": results},
         )
         return results
 

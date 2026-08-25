@@ -13,10 +13,18 @@ from datetime import date, datetime, time, timedelta
 
 import pytest
 from freezegun import freeze_time
-from pytest_homeassistant_custom_component.common import async_mock_service
+from pytest_homeassistant_custom_component.common import (
+    async_capture_events,
+    async_mock_service,
+)
 
-from custom_components.shabbat_scheduler.const import CANDLE_SENSOR, HAVDALAH_SENSOR
+from custom_components.shabbat_scheduler.const import (
+    CANDLE_SENSOR,
+    EVENT_RULE_COMPLETED,
+    HAVDALAH_SENSOR,
+)
 from custom_components.shabbat_scheduler.engine import ShabbatEngine
+from custom_components.shabbat_scheduler.logbook import async_describe_events
 from custom_components.shabbat_scheduler.models import Replay, Rule
 from custom_components.shabbat_scheduler.store import RuleStore
 
@@ -129,6 +137,40 @@ async def test_a_rule_older_than_its_window_is_skipped_and_reported(hass, engine
 
     assert any(r["outcome"] == "skipped_stale" for r in results)
     assert calls == []
+
+
+async def test_a_stale_skip_fires_its_own_event_and_reaches_the_logbook(hass, engine):
+    """A stale skip used to fire NO event at all.
+
+    `async_catch_up` appended the result and `continue`d, so
+    `async_apply_rule` - the only thing that fires anything - was never
+    reached. The skip existed solely inside the aggregate `last_run`,
+    which the next rule to run overwrites. Nothing durable said the rule
+    had not been replayed.
+    """
+    events = async_capture_events(hass, EVENT_RULE_COMPLETED)
+    described = {}
+    async_describe_events(hass, lambda d, e, f: described.__setitem__(e, f))
+
+    await _prepare(engine, hass, [
+        _rule(
+            "on11", time(11, 0), "input_boolean.t",
+            Replay(enabled=True, within=timedelta(hours=2)),
+        ),
+    ])
+
+    with freeze_time(_local("23:00")):
+        await engine.async_catch_up()
+    await hass.async_block_till_done()
+
+    per_rule = [e for e in events if e.data.get("rule_id") == "on11"]
+    assert len(per_rule) == 1
+    assert per_rule[0].data["results"][0]["outcome"] == "skipped_stale"
+
+    row = described[EVENT_RULE_COMPLETED](per_rule[0])["message"]
+    assert "stale" in row.lower()
+    assert "did not run" in row.lower()
+    assert "on11" in row
 
 
 async def test_a_rule_inside_its_window_is_replayed(hass, engine, test_booleans):

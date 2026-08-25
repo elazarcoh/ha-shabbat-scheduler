@@ -80,8 +80,8 @@ class NextActionSensor(_Base):
         return {
             "rule_id": item.rule.id,
             "name": item.rule.name,
-            "action": item.rule.action.value,
-            "devices": list(item.rule.devices),
+            "action": item.rule.action,
+            "target": dict(item.rule.target),
         }
 
 

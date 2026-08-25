@@ -3,10 +3,11 @@ import '../src/rule-row';
 import type { RuleData } from '../src/types';
 
 const rule = (over: Partial<RuleData>): RuleData => ({
-  id: 'r', profile: 1, day: '1', time: '11:00:00', action: 'on',
-  devices: ['climate.salon'], settings: {}, name: null, icon: null,
-  enabled: true, script: null, variables: {}, replay_on_restart: false,
-  color: null, ...over,
+  id: 'r', profile: 1, day: '1', time: '11:00:00',
+  action: 'climate.turn_on',
+  target: { entity_id: ['climate.salon'] },
+  data: {}, condition: [], replay: { enabled: false },
+  name: null, icon: null, enabled: true, color: null, ...over,
 });
 
 async function render(props: Record<string, unknown>) {
@@ -41,7 +42,7 @@ describe('shabbat-rule-row', () => {
     const el = await render({
       rule: rule({ id: 'a' }),
       warnings: [
-        { kind: 'conflict', device: 'climate.salon', profile: 1, day: '1', time: '11:00:00', rule_ids: ['a'] },
+        { kind: 'conflict', targets: ['climate.salon'], profile: 1, day: '1', time: '11:00:00', rule_ids: ['a'] },
       ],
     });
     expect(el.shadowRoot!.querySelector('.conflict')).not.toBeNull();
@@ -61,7 +62,7 @@ describe('shabbat-rule-row', () => {
     const el = await render({
       rule: rule({ id: 'a' }),
       warnings: [
-        { kind: 'conflict', device: 'climate.salon', profile: 1, day: '1', time: '11:00:00', rule_ids: ['a'] },
+        { kind: 'conflict', targets: ['climate.salon'], profile: 1, day: '1', time: '11:00:00', rule_ids: ['a'] },
       ],
     });
 
@@ -87,8 +88,8 @@ describe('shabbat-rule-row', () => {
     const el = await render({
       rule: rule({ id: 'a' }),
       warnings: [
-        { kind: 'conflict', device: 'climate.salon', profile: 1, day: '1', time: '11:00:00', rule_ids: ['a'] },
-        { kind: 'conflict', device: 'climate.bedroom', profile: 1, day: '1', time: '11:00:00', rule_ids: ['a'] },
+        { kind: 'conflict', targets: ['climate.salon'], profile: 1, day: '1', time: '11:00:00', rule_ids: ['a'] },
+        { kind: 'conflict', targets: ['climate.bedroom'], profile: 1, day: '1', time: '11:00:00', rule_ids: ['a'] },
       ],
     });
     const detail = el.shadowRoot!.querySelector('.conflict-detail')!.textContent!;
@@ -100,7 +101,7 @@ describe('shabbat-rule-row', () => {
     const el = await render({
       rule: rule({ id: 'a' }),
       warnings: [
-        { kind: 'conflict', device: 'climate.salon', profile: 1, day: '1', time: '11:00:00', rule_ids: ['b'] },
+        { kind: 'conflict', targets: ['climate.salon'], profile: 1, day: '1', time: '11:00:00', rule_ids: ['b'] },
       ],
     });
     expect(el.shadowRoot!.querySelector('.conflict')).toBeNull();

@@ -1,14 +1,13 @@
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import './device-settings';
-import { ruleToForm } from './format';
+import { describeTarget, ruleToForm } from './format';
 import { t } from './strings';
-import type { Defaults, HassEntity, RuleData, RuleFormState } from './types';
+import type { Defaults, RuleData, RuleFormState } from './types';
 
 const EMPTY_FORM: RuleFormState = {
-  day: 'erev', time: '', action: 'on', devices: [], settings: {},
-  name: null, icon: null, color: null, enabled: true, script: null,
-  variables: {}, replay_on_restart: false,
+  day: 'erev', time: '', action: '', target: {}, data: {}, condition: [],
+  replay: { enabled: false }, name: null, icon: null, color: null,
+  enabled: true,
 };
 
 @customElement('shabbat-rule-dialog')
@@ -20,7 +19,6 @@ export class ShabbatRuleDialog extends LitElement {
   @property() day = 'erev';
   @property({ type: Number }) profile = 1;
   @property({ attribute: false }) defaults: Defaults = {};
-  @property({ attribute: false }) states: Record<string, HassEntity | undefined> = {};
   @property({ type: Boolean }) canWrite = false;
   @property({ type: Boolean }) busy = false;
   @property() error: string | null = null;
@@ -84,6 +82,28 @@ export class ShabbatRuleDialog extends LitElement {
       font-size: 0.9em;
     }
     .note { color: var(--secondary-text-color, #666); font-size: 0.85em; }
+    .readonly {
+      margin-block: 12px 4px;
+      padding-block: 8px;
+      padding-inline: 10px;
+      border-inline-start: 3px solid var(--divider-color, #e0e0e0);
+      background: var(--secondary-background-color, #f4f4f4);
+      font-size: 0.9em;
+    }
+    .readonly dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+    .readonly dt { color: var(--secondary-text-color, #666); }
+    .readonly dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+    .migration {
+      color: var(--error-color, #d64545);
+      margin-block: 8px;
+      font-size: 0.9em;
+      overflow-wrap: anywhere;
+    }
+    /* The wrapper around the advanced fields is load-bearing under this
+       repo's pinned lit-html + happy-dom: a template whose root holds
+       several top-level expressions renders NONE of them. Same constraint
+       day-group.ts documents. Do not unwrap it. */
+    .advanced { display: contents; }
     .advanced-toggle {
       background: none;
       border: none;
@@ -133,7 +153,7 @@ export class ShabbatRuleDialog extends LitElement {
   }
 
   private _text(
-    key: 'time' | 'name' | 'icon' | 'color' | 'script',
+    key: 'time' | 'action' | 'name' | 'icon' | 'color',
     label: string,
   ) {
     return html`
@@ -153,16 +173,50 @@ export class ShabbatRuleDialog extends LitElement {
     `;
   }
 
+  private _describeData(): string {
+    const entries = Object.entries(this._form.data);
+    if (!entries.length) return t(this.language, 'none_set');
+    return entries.map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join(', ');
+  }
+
+  private _describeConditions(): string {
+    const { condition } = this._form;
+    if (!condition.length) return t(this.language, 'none_set');
+    return condition.map((item) => JSON.stringify(item)).join(' ; ');
+  }
+
+  private _describeReplay(): string {
+    const { replay } = this._form;
+    if (!replay.enabled) return t(this.language, 'replay_no');
+    const yes = t(this.language, 'replay_yes');
+    return replay.within
+      ? `${yes} (${t(this.language, 'replay_within')} ${replay.within})`
+      : yes;
+  }
+
+  /**
+   * The fields this dialog can still edit CORRECTLY, plus a read-only
+   * view of the ones it cannot.
+   *
+   * v1's device picker and climate settings form are gone: a rule is now
+   * an arbitrary service call with a Home Assistant target selector and
+   * an opaque data payload, and there is no honest way to render either
+   * with a device multi-select and a temperature slider. Saving a
+   * v1-shaped payload would be worse than not offering the control, and
+   * OMITTING the fields would be worse still - a rule that carries a
+   * condition and a replay window would look like a rule that carries
+   * neither. So they are shown, verbatim, marked as not editable here.
+   *
+   * They are still carried through the form (see `ruleToForm`), so an
+   * edit cannot drop them and a duplicate is a real duplicate.
+   *
+   * Plan 2 builds the real editors.
+   */
   override render() {
     const editing = this.rule !== null;
-    const inheritedDevices = this.defaults.devices ?? [];
-    // An empty `devices` on a rule means "inherit the shared defaults" -
-    // see `merge_defaults` in block.py. The picker must still show the
-    // rule's own (empty) selection, or clearing it would look like it
-    // snapped back to the defaults' devices when the pending save
-    // actually sends `[]`. This is only what the settings below are
-    // computed against, never what the picker displays.
-    const effectiveDevices = this._form.devices.length ? this._form.devices : inheritedDevices;
+    const inheritedTarget = this.defaults.target ?? {};
+    const ownTarget = describeTarget(this._form.target);
+    const inherits = ownTarget === '' && Object.keys(inheritedTarget).length > 0;
     return html`
       <div class="sheet" @click=${(event: Event) => {
         if (event.target === event.currentTarget) {
@@ -175,55 +229,19 @@ export class ShabbatRuleDialog extends LitElement {
           ${this.canWrite
             ? nothing
             : html`<div class="note">${t(this.language, 'read_only')}</div>`}
+          ${this.rule?.migration_error
+            ? html`<div class="migration">
+                ${t(this.language, 'migration_error')} ${this.rule.migration_error}
+              </div>`
+            : nothing}
           ${this.error !== null
             ? html`<div class="error">${this.error}</div>`
             : nothing}
 
           <div class="form">
             ${this._text('time', t(this.language, 'time'))}
-            <div class="field">
-              <label for="action">${t(this.language, 'action')}</label>
-              <select
-                id="action"
-                class="action"
-                ?disabled=${!this.canWrite}
-                @change=${(event: Event) =>
-                  this._patch({ action: (event.target as HTMLSelectElement).value })}
-              >
-                ${['on', 'off', 'custom'].map(
-                  (option) => html`
-                    <option value=${option} ?selected=${this._form.action === option}>
-                      ${option}
-                    </option>
-                  `,
-                )}
-              </select>
-            </div>
+            ${this._text('action', t(this.language, 'action'))}
             ${this._text('name', t(this.language, 'name'))}
-
-            ${this._form.action === 'custom'
-              ? this._text('script', t(this.language, 'script'))
-              : html`
-                  <div>
-                    ${!this._form.devices.length && inheritedDevices.length
-                      ? html`<div class="note">
-                          ${t(this.language, 'inherits_devices')} ${inheritedDevices.join(', ')}
-                        </div>`
-                      : nothing}
-                    <shabbat-device-settings
-                      .states=${this.states}
-                      .devices=${this._form.devices}
-                      .effectiveDevices=${effectiveDevices}
-                      .settings=${this._form.settings}
-                      .disabled=${!this.canWrite}
-                      .language=${this.language}
-                      @settings-changed=${(event: Event) =>
-                        this._patch({ settings: (event as CustomEvent).detail.settings })}
-                      @devices-changed=${(event: Event) =>
-                        this._patch({ devices: (event as CustomEvent).detail.devices })}
-                    ></shabbat-device-settings>
-                  </div>
-                `}
 
             <div class="field">
               <label for="enabled">${t(this.language, 'enabled')}</label>
@@ -238,6 +256,26 @@ export class ShabbatRuleDialog extends LitElement {
               />
             </div>
 
+            <div class="readonly">
+              <div class="note">${t(this.language, 'read_only_fields')}</div>
+              <dl>
+                <dt>${t(this.language, 'target')}</dt>
+                <dd class="ro-target">
+                  ${ownTarget !== ''
+                    ? ownTarget
+                    : inherits
+                      ? `${t(this.language, 'inherits_target')} ${describeTarget(inheritedTarget)}`
+                      : t(this.language, 'none_set')}
+                </dd>
+                <dt>${t(this.language, 'data')}</dt>
+                <dd class="ro-data">${this._describeData()}</dd>
+                <dt>${t(this.language, 'condition')}</dt>
+                <dd class="ro-condition">${this._describeConditions()}</dd>
+                <dt>${t(this.language, 'replay')}</dt>
+                <dd class="ro-replay">${this._describeReplay()}</dd>
+              </dl>
+            </div>
+
             <button
               class="advanced-toggle"
               @click=${() => { this._advanced = !this._advanced; }}
@@ -246,21 +284,9 @@ export class ShabbatRuleDialog extends LitElement {
             </button>
             ${this._advanced
               ? html`
-                  ${this._text('icon', t(this.language, 'icon'))}
-                  ${this._text('color', t(this.language, 'colour'))}
-                  <div class="field">
-                    <label for="replay">${t(this.language, 'replay')}</label>
-                    <input
-                      id="replay"
-                      class="replay"
-                      type="checkbox"
-                      .checked=${this._form.replay_on_restart}
-                      ?disabled=${!this.canWrite}
-                      @change=${(event: Event) =>
-                        this._patch({
-                          replay_on_restart: (event.target as HTMLInputElement).checked,
-                        })}
-                    />
+                  <div class="advanced">
+                    ${this._text('icon', t(this.language, 'icon'))}
+                    ${this._text('color', t(this.language, 'colour'))}
                   </div>
                 `
               : nothing}

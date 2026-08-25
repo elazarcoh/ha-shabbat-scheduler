@@ -4,17 +4,20 @@ import { ruleToForm } from '../src/format';
 import type { RuleData } from '../src/types';
 
 const existing: RuleData = {
-  id: 'r1', profile: 1, day: '1', time: '11:00:00', action: 'on',
-  devices: ['climate.salon'], settings: { temperature: 26 }, name: 'Morning',
-  icon: null, enabled: true, script: null, variables: {},
-  replay_on_restart: false, color: null,
+  id: 'r1', profile: 1, day: '1', time: '11:00:00',
+  action: 'climate.set_temperature',
+  target: { entity_id: ['climate.salon'] },
+  data: { temperature: 26 },
+  condition: [],
+  replay: { enabled: false },
+  name: 'Morning', icon: null, enabled: true, color: null,
 };
 
 async function render(props: Record<string, unknown> = {}) {
   const el = document.createElement('shabbat-rule-dialog') as HTMLElement &
     Record<string, any>;
   Object.assign(el, {
-    rule: existing, day: '1', profile: 1, defaults: {}, states: {},
+    rule: existing, day: '1', profile: 1, defaults: {},
     canWrite: true, language: 'en', error: null, busy: false, ...props,
   });
   document.body.appendChild(el);
@@ -83,12 +86,24 @@ describe('shabbat-rule-dialog', () => {
     expect(el.shadowRoot!.querySelector('.icon')).not.toBeNull();
   });
 
-  it('asks for a script when the action is custom', async () => {
+  // v1 had a separate `script` text field, shown only when the action was
+  // the magic value 'custom'. In v2 a script rule is just an action, so
+  // the special case is gone and the action itself is the text field.
+  it('edits the action as free text, since any service is now valid', async () => {
     const el = await render({
-      rule: { ...existing, action: 'custom', script: 'script.boiler' },
+      rule: { ...existing, action: 'script.turn_on' },
     });
-    expect((el.shadowRoot!.querySelector('.script') as HTMLInputElement).value)
-      .toBe('script.boiler');
+    const action = el.shadowRoot!.querySelector('.action') as HTMLInputElement;
+    expect(action.value).toBe('script.turn_on');
+
+    const listener = vi.fn();
+    el.addEventListener('dialog-save', listener);
+    action.value = 'notify.mobile_app';
+    action.dispatchEvent(new Event('change'));
+    (el.shadowRoot!.querySelector('.save') as HTMLElement).click();
+
+    expect((listener.mock.calls[0][0] as CustomEvent).detail.form.action)
+      .toBe('notify.mobile_app');
   });
 
   it('starts a seeded create from the seed, which is what makes duplicate duplicate', async () => {
@@ -168,7 +183,7 @@ describe('shabbat-rule-dialog', () => {
   it('reseeds when a different rule is duplicated for the same day and profile', async () => {
     const other: RuleData = {
       ...existing, id: 'r2', name: 'Evening', time: '22:00:00',
-      devices: ['climate.mamad'],
+      target: { entity_id: ['climate.mamad'] },
     };
     const el = await render({ rule: null, seed: ruleToForm(existing) });
     expect((el.shadowRoot!.querySelector('.name') as HTMLInputElement).value)
@@ -193,9 +208,9 @@ describe('shabbat-rule-dialog', () => {
     await el.updateComplete;
 
     // Simulate an unrelated push arriving - e.g. `hass` reassigned elsewhere
-    // in the system, propagating a new `states` reference with the same
+    // in the system, propagating a new `defaults` reference with the same
     // day/profile/seed. This must not touch what the user has typed.
-    el.states = { ...el.states };
+    el.defaults = { ...el.defaults };
     await el.updateComplete;
 
     expect((el.shadowRoot!.querySelector('.name') as HTMLInputElement).value)
@@ -219,82 +234,86 @@ describe('shabbat-rule-dialog', () => {
       .toBe('22:00:00');
   });
 
-  const DEVICE_STATES = {
-    'climate.salon': { state: 'off', attributes: {
-      hvac_modes: ['off', 'cool'], fan_modes: ['auto', 'quiet'],
-      min_temp: 16, max_temp: 31, target_temp_step: 0.5,
-    } },
-    'climate.mamad': { state: 'off', attributes: {} },
-  };
+  // ---- the fields the dialog cannot yet edit ----
+  //
+  // v1's device multi-select and climate settings form are gone: a rule is
+  // now an arbitrary service call with a Home Assistant target selector
+  // and an opaque data payload, and neither can be rendered honestly as a
+  // device list and a temperature slider. The rule for this task is that
+  // where the card cannot edit something it must SHOW THE TRUTH, never a
+  // stale climate-shaped guess and never silence.
 
-  function devicesSelect(el: HTMLElement & Record<string, any>): HTMLSelectElement {
-    const settings = el.shadowRoot!.querySelector('shabbat-device-settings') as HTMLElement &
-      Record<string, any>;
-    return settings.shadowRoot!.querySelector('.devices') as HTMLSelectElement;
-  }
-
-  it('never shows a rule\'s cleared devices as if the defaults were selected', async () => {
-    // existing.devices is ['climate.salon']; clearing it must leave the
-    // picker showing nothing selected, not silently redisplay the
-    // defaults' devices as though they were the rule's own choice.
+  it('shows the target, data, conditions and replay it cannot edit', async () => {
     const el = await render({
-      defaults: { devices: ['climate.mamad', 'climate.salon'] },
-      states: DEVICE_STATES,
+      rule: {
+        ...existing,
+        condition: [{ condition: 'state', entity_id: 'binary_sensor.gate', state: 'on' }],
+        replay: { enabled: true, within: '02:00:00' },
+      },
     });
+    const text = el.shadowRoot!.textContent!;
+    expect(text).toContain('climate.salon');     // target
+    expect(text).toContain('temperature');       // data
+    expect(text).toContain('binary_sensor.gate');// condition
+    expect(text).toContain('02:00:00');          // replay window
+    // ...and says out loud that they are not editable here, rather than
+    // showing them as if they were inputs.
+    expect(text).toContain('Not editable here');
+    expect(el.shadowRoot!.querySelector('shabbat-device-settings')).toBeNull();
+  });
 
-    const select = devicesSelect(el);
-    for (const option of select.options) option.selected = false;
-    select.dispatchEvent(new Event('change'));
-    await el.updateComplete;
+  it('says a rule has no target rather than showing an empty gap', async () => {
+    const el = await render({ rule: { ...existing, target: {}, data: {} } });
+    expect((el.shadowRoot!.querySelector('.ro-target') as HTMLElement).textContent)
+      .toContain('none');
+    expect((el.shadowRoot!.querySelector('.ro-data') as HTMLElement).textContent)
+      .toContain('none');
+  });
 
-    const picked = [...devicesSelect(el).options].filter((o) => o.selected);
-    expect(picked).toEqual([]);
+  it('says a rule with no target of its own inherits the defaults', async () => {
+    const el = await render({
+      rule: { ...existing, target: {} },
+      defaults: { target: { entity_id: ['climate.mamad'] } },
+    });
+    const text = (el.shadowRoot!.querySelector('.ro-target') as HTMLElement).textContent!;
+    expect(text).toContain('inherits');
+    expect(text).toContain('climate.mamad');
+  });
 
-    // Inheritance is now shown honestly, as a note, rather than by
-    // faking the picker's selection.
-    expect(el.shadowRoot!.textContent).toContain('climate.mamad');
-    expect(el.shadowRoot!.textContent).toContain('climate.salon');
-    expect(el.shadowRoot!.textContent).toContain('inherits');
-
-    // And what would actually be saved agrees with what is shown: [].
+  it('carries the fields it cannot edit through a save untouched', async () => {
+    // The dialog must not turn "I cannot edit this" into "this is now
+    // empty". An edit that dropped a rule's conditions would make it
+    // fire on a day it was meant to be blocked.
+    const rule = {
+      ...existing,
+      condition: [{ condition: 'state', entity_id: 'binary_sensor.gate', state: 'on' }],
+      replay: { enabled: true, within: '02:00:00' },
+    };
+    const el = await render({ rule });
     const listener = vi.fn();
     el.addEventListener('dialog-save', listener);
+
+    const name = el.shadowRoot!.querySelector('.name') as HTMLInputElement;
+    name.value = 'Renamed';
+    name.dispatchEvent(new Event('change'));
     (el.shadowRoot!.querySelector('.save') as HTMLElement).click();
-    expect((listener.mock.calls[0][0] as CustomEvent).detail.form.devices).toEqual([]);
+
+    const { form } = (listener.mock.calls[0][0] as CustomEvent).detail;
+    expect(form.name).toBe('Renamed');
+    expect(form.target).toEqual(rule.target);
+    expect(form.data).toEqual(rule.data);
+    expect(form.condition).toEqual(rule.condition);
+    expect(form.replay).toEqual(rule.replay);
   });
 
-  it('shows a rule\'s own devices with no inheritance note', async () => {
+  it('says so when a rule could not be migrated, instead of showing it as normal', async () => {
     const el = await render({
-      defaults: { devices: ['climate.mamad'] },
-      states: DEVICE_STATES,
+      rule: {
+        ...existing,
+        migration_error: 'no v2 target could be derived from the v1 devices',
+      },
     });
-
-    const picked = [...devicesSelect(el).options]
-      .filter((o) => o.selected)
-      .map((o) => o.value);
-    expect(picked).toEqual(['climate.salon']);
-    expect(el.shadowRoot!.textContent).not.toContain('climate.mamad');
-  });
-
-  it('offers settings for the inherited devices even while the picker is empty', async () => {
-    // The picker must show the truth (nothing selected), but the settings
-    // beneath it must still reflect what will actually run: the inherited
-    // devices from defaults.
-    const el = await render({
-      rule: { ...existing, devices: [] },
-      defaults: { devices: ['climate.salon'] },
-      states: DEVICE_STATES,
-    });
-
-    const picked = [...devicesSelect(el).options].filter((o) => o.selected);
-    expect(picked).toEqual([]);
-
-    const settings = el.shadowRoot!.querySelector('shabbat-device-settings') as HTMLElement &
-      Record<string, any>;
-    expect(settings.shadowRoot!.querySelector('.hvac')).not.toBeNull();
-    const fans = [...settings.shadowRoot!.querySelectorAll('.fan option')].map(
-      (o) => (o as HTMLOptionElement).value,
-    );
-    expect(fans).toContain('quiet');
+    expect(el.shadowRoot!.textContent).toContain('could not be converted');
+    expect(el.shadowRoot!.textContent).toContain('no v2 target could be derived');
   });
 });

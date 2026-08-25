@@ -14,6 +14,7 @@ from homeassistant.helpers import target as target_helper
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.util import dt as dt_util
 
+from . import ha_validation
 from .block import block_payload, conflict_warnings, preview_payload
 from .const import DOMAIN, SIGNAL_RULES_CHANGED
 from .rule_schema import (
@@ -148,6 +149,12 @@ async def ws_create(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
     store = data["store"]
     try:
         rule = rule_from_api(msg["rule"], uuid.uuid4().hex)
+        # The other half of validation, and the same one the YAML import
+        # already applies (services.py). Without it a `target` or
+        # `condition` shape that a YAML import rejects can still be
+        # written through this door, and it then fails at fire time on
+        # Shabbat instead of in the dialog the author is looking at.
+        await ha_validation.async_validate_rule(hass, rule)
     except RuleValidationError as err:
         connection.send_error(msg["id"], "invalid_rule", str(err))
         return
@@ -185,12 +192,17 @@ async def ws_update(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
         connection.send_error(msg["id"], "not_found", f"No rule {msg['rule_id']}")
         return
 
-    # No whole-rule invariant remains to check here: field-level validation
-    # in changes_from_api is now the whole story. (Task 3 removed
-    # validate_rule, which enforced v1's custom-action-needs-a-script rule;
-    # ha_validation.py, Task 4, is where a whole-rule HA-aware check would
-    # belong if one is ever needed again.)
+    # Validated on the MERGED rule, not on `changes`: `condition` and
+    # `target` are validated together with whatever the rule already
+    # carries, and a partial update that changes only `target` must still
+    # be checked against HA's own schema. Nothing is persisted until it
+    # passes - a rejected update must leave the store exactly as it was.
     updated = replace(existing, **changes)
+    try:
+        await ha_validation.async_validate_rule(hass, updated)
+    except RuleValidationError as err:
+        connection.send_error(msg["id"], "invalid_rule", str(err))
+        return
 
     await store.async_update(msg["rule_id"], **changes)
 

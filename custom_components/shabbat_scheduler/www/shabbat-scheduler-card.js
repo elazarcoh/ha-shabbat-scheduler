@@ -91,21 +91,6 @@ const STRINGS = {
         no_rules: 'No rules for this block.',
         disabled_rule: 'disabled',
         conflict_prefix: 'Conflict',
-        devices: 'Devices',
-        temperature: 'Temperature',
-        hvac_mode: 'Mode',
-        fan_mode: 'Fan',
-        intersected: 'Showing only what every selected device supports.',
-        unreadable: 'Could not read these devices, so their options are unknown:',
-        not_climate: 'These devices take no settings — on and off only.',
-        // Deliberately NOT `not_climate`. "I cannot read this device" and
-        // "this device has no settings" are different statements, and
-        // rendering the second for the first tells someone a rule sets
-        // nothing when it sets 24 degrees - the card saying something other
-        // than what will happen, which is the one thing it must never do.
-        options_unknown: 'These devices cannot be read, so their settings cannot be edited here.',
-        saved_settings: 'The settings this rule already has are kept exactly as they are:',
-        kept_setting: 'kept, but this device does not list it',
         edit_rule: 'Edit rule',
         add_rule: 'Add rule',
         time: 'Time',
@@ -115,8 +100,6 @@ const STRINGS = {
         advanced: 'Advanced',
         icon: 'Icon',
         colour: 'Colour',
-        script: 'Script',
-        replay: 'Re-apply after a restart',
         save: 'Save',
         cancel: 'Cancel',
         delete_rule: 'Delete',
@@ -125,7 +108,20 @@ const STRINGS = {
         will_conflict: 'This overlaps another rule. You can still save it — nothing is resolved for you.',
         defaults_title: 'Shared defaults',
         defaults_help: 'Rules inherit these unless they set their own.',
-        inherits_devices: 'No devices set — inherits from the shared defaults:',
+        inherits_target: 'No target set — inherits from the shared defaults:',
+        // The read-only half of the rule dialog. Saying "not editable here"
+        // out loud is the point: a field the card silently omitted would read
+        // as a field the rule does not have.
+        read_only_fields: 'Not editable here yet — shown so you can see what this rule actually carries. Use the YAML import/export service to change them.',
+        target: 'Target',
+        data: 'Data',
+        condition: 'Conditions',
+        replay: 'Re-apply after a restart',
+        replay_no: 'no',
+        replay_yes: 'yes',
+        replay_within: 'within',
+        none_set: 'none',
+        migration_error: 'This rule could not be converted from the old format and will not fire:',
         preview_banner: 'Preview — not the coming Shabbat. Dates are not shown because this block is not scheduled.',
     },
     he: {
@@ -142,16 +138,6 @@ const STRINGS = {
         no_rules: 'אין כללים לבלוק הזה.',
         disabled_rule: 'מושבת',
         conflict_prefix: 'התנגשות',
-        devices: 'מכשירים',
-        temperature: 'טמפרטורה',
-        hvac_mode: 'מצב',
-        fan_mode: 'מאוורר',
-        intersected: 'מוצג רק מה שכל המכשירים שנבחרו תומכים בו.',
-        unreadable: 'לא ניתן לקרוא את המכשירים האלה, לכן האפשרויות שלהם אינן ידועות:',
-        not_climate: 'המכשירים האלה לא מקבלים הגדרות — הפעלה וכיבוי בלבד.',
-        options_unknown: 'לא ניתן לקרוא את המכשירים האלה, ולכן אי אפשר לערוך כאן את ההגדרות שלהם.',
-        saved_settings: 'ההגדרות שכבר קיימות בכלל נשמרות בדיוק כפי שהן:',
-        kept_setting: 'נשמר, אך המכשיר לא מציג אותו',
         edit_rule: 'עריכת כלל',
         add_rule: 'הוספת כלל',
         time: 'שעה',
@@ -161,8 +147,6 @@ const STRINGS = {
         advanced: 'מתקדם',
         icon: 'סמל',
         colour: 'צבע',
-        script: 'סקריפט',
-        replay: 'החלה מחדש לאחר הפעלה מחדש',
         save: 'שמירה',
         cancel: 'ביטול',
         delete_rule: 'מחיקה',
@@ -171,7 +155,17 @@ const STRINGS = {
         will_conflict: 'הכלל חופף לכלל אחר. אפשר לשמור בכל זאת — שום דבר לא ייפתר עבורך.',
         defaults_title: 'ברירות מחדל משותפות',
         defaults_help: 'כללים יורשים אותן אלא אם הגדירו משלהם.',
-        inherits_devices: 'לא נבחרו מכשירים — יורש מברירות המחדל המשותפות:',
+        inherits_target: 'לא נבחר יעד — יורש מברירות המחדל המשותפות:',
+        read_only_fields: 'לא ניתן לערוך כאן עדיין — מוצג כדי שתראו מה הכלל באמת מכיל. לשינוי השתמשו בשירות ייבוא/ייצוא YAML.',
+        target: 'יעד',
+        data: 'נתונים',
+        condition: 'תנאים',
+        replay: 'החלה מחדש לאחר הפעלה מחדש',
+        replay_no: 'לא',
+        replay_yes: 'כן',
+        replay_within: 'בתוך',
+        none_set: 'ללא',
+        migration_error: 'לא ניתן להמיר את הכלל הזה מהפורמט הישן והוא לא יופעל:',
         preview_banner: 'תצוגה מקדימה — לא השבת הקרובה. התאריכים אינם מוצגים כי הבלוק הזה אינו מתוכנן.',
     },
 };
@@ -254,32 +248,62 @@ function buildGroups(state, profile) {
         .sort((a, b) => dayRank(a.day) - dayRank(b.day));
 }
 /**
- * One line describing what a rule does, resolved exactly the way the
- * engine resolves it: the rule's own devices and settings win, and
- * anything it omits falls back to the defaults.
+ * One line describing what a rule does: its action, then what it applies
+ * to, resolved exactly the way the engine resolves it - the rule's own
+ * `target`/`data` win, and anything it omits falls back to the defaults
+ * (see `merge_defaults` in block.py).
+ *
+ * A rule is now an arbitrary Home Assistant service call, so there is no
+ * on/off/custom vocabulary left to describe. Naming the service is the
+ * honest summary: `climate.set_temperature` says exactly what will
+ * happen, where v1's "on" left the reader to remember what "on" meant
+ * for that particular device.
  */
 function ruleBrief(rule, defaults) {
-    if (rule.action === 'custom') {
-        return rule.script ?? '';
+    const target = Object.keys(rule.target).length
+        ? rule.target
+        : (defaults.target ?? {});
+    const data = { ...(defaults.data ?? {}), ...rule.data };
+    const parts = [rule.action, describeTarget(target)];
+    for (const value of Object.values(data)) {
+        if (value !== undefined && value !== null)
+            parts.push(String(value));
     }
-    const devices = rule.devices.length ? rule.devices : (defaults.devices ?? []);
-    const settings = { ...(defaults.settings ?? {}), ...rule.settings };
-    const parts = [devices.join(', ')];
-    if (rule.action === 'on') {
-        for (const value of Object.values(settings)) {
-            if (value !== undefined && value !== null)
-                parts.push(String(value));
-        }
-    }
-    return parts.filter((part) => part !== '').join(' · ');
+    return parts.filter((part) => part !== '').join(' \u00b7 ');
 }
-const COLOURS = {
-    on: 'var(--success-color, #2e9e5b)',
-    off: 'var(--error-color, #d64545)',
-    custom: 'var(--info-color, #3b7ddd)',
-};
-function actionColour(action) {
-    return COLOURS[action] ?? 'var(--secondary-text-color, #888)';
+/**
+ * A target selector as a flat, readable list of what it names.
+ *
+ * A selector may hold `entity_id`, `area_id`, `device_id`, `floor_id` or
+ * `label_id`, each a string or a list of strings. Everything it names is
+ * shown; nothing is guessed at, expanded or filtered. An area target
+ * reads as its area id rather than as the entities it will expand to,
+ * because the card cannot resolve that and inventing an answer is the
+ * one thing it must not do.
+ */
+function describeTarget(target) {
+    const names = [];
+    for (const value of Object.values(target)) {
+        if (Array.isArray(value))
+            names.push(...value.map(String));
+        else if (value !== null && value !== undefined)
+            names.push(String(value));
+    }
+    return names.join(', ');
+}
+/**
+ * The colour of a rule's dot.
+ *
+ * v1 keyed this off its three-value action enum: green for on, red for
+ * off, blue for custom. A v2 action is an arbitrary "domain.service", so
+ * there is no on/off to read - and guessing from the service name would
+ * be wrong for exactly the actions that are not switches
+ * (`climate.set_temperature`, `notify.mobile_app`). The rule's own
+ * `color` field is how an author says what they want; everything else
+ * gets one neutral colour rather than a colour that means nothing.
+ */
+function ruleColour(rule) {
+    return rule.color ?? 'var(--secondary-text-color, #888)';
 }
 /** Warnings naming this rule, so a conflict shows where it happens. */
 function warningsForRule(ruleId, warnings) {
@@ -308,17 +332,26 @@ function dayLabel(day, language) {
  * A warning as prose a person can act on. The only warning this card's
  * `_state_payload` ever sends is a conflict - see the comment on
  * `WarningData` - which carries no `message`, so this is the sole place
- * a conflict becomes human-readable text, naming the device and the
+ * a conflict becomes human-readable text, naming the entities and the
  * time so the person who must resolve it (nothing here auto-resolves)
  * knows exactly what to look at.
+ *
+ * Reads `warning.targets`, a LIST. It used to read `warning.device`, a
+ * single string, and when the backend renamed that key every conflict
+ * warning silently stopped rendering: the guard below was never true, so
+ * a genuinely conflicting schedule displayed as clean while the conflict
+ * sat correctly detected and unread in the payload.
  *
  * Falls back to `message` for the `preview_payload` shape this card
  * does not currently receive, so a stray warning still renders as
  * something rather than nothing.
  */
 function formatWarning(warning, language) {
-    if (warning.kind === 'conflict' && warning.device !== undefined && warning.time !== undefined) {
-        const parts = [t(language, 'conflict_prefix'), warning.device];
+    if (warning.kind === 'conflict' &&
+        warning.targets !== undefined &&
+        warning.targets.length > 0 &&
+        warning.time !== undefined) {
+        const parts = [t(language, 'conflict_prefix'), warning.targets.join(', ')];
         if (warning.day !== undefined)
             parts.push(dayLabel(warning.day, language));
         parts.push(warning.time);
@@ -326,101 +359,32 @@ function formatWarning(warning, language) {
     }
     return warning.message ?? '';
 }
-function readList(entity, key) {
-    const value = entity.attributes[key];
-    return Array.isArray(value) ? value.map(String) : null;
-}
-function readNumber(entity, key) {
-    const value = entity.attributes[key];
-    return typeof value === 'number' ? value : null;
-}
 /**
- * What the selected devices actually offer, read from their own state.
+ * Every field the form carries, including the four it displays read-only.
  *
- * The three units here disagree: the salon offers `quiet` and not
- * `silent`, the AUX units the reverse. Offering a fixed list is how a
- * rule gets saved with a fan mode its device rejects - discovered at
- * 11:00 on Shabbat, when nobody can fix it. With several devices the
- * intersection is the only honest answer: a mode only one of them
- * supports cannot be applied to the others.
- *
- * A device that cannot be read is REPORTED, never silently treated as
- * offering nothing - that would intersect every option away and present
- * an empty form as though the device were the problem.
+ * `target`, `data`, `condition` and `replay` are in the diff on purpose
+ * even though nothing edits them: carrying them means an edit cannot
+ * silently drop a rule's payload, and it makes a duplicate a real
+ * duplicate rather than a stripped copy. They compare equal on an
+ * ordinary edit, so they simply never appear in the changes.
  */
-function deviceOptions(states, entityIds) {
-    const unreadable = [];
-    const readable = [];
-    for (const id of entityIds) {
-        const entity = states[id];
-        if (entity === undefined ||
-            entity.state === 'unavailable' ||
-            entity.state === 'unknown') {
-            unreadable.push(id);
-            continue;
-        }
-        readable.push(entity);
-    }
-    const climates = readable.filter((entity) => readList(entity, 'hvac_modes') !== null);
-    if (climates.length === 0) {
-        return {
-            hvacModes: [], fanModes: [], minTemp: null, maxTemp: null,
-            tempStep: null, unreadable, climate: false, intersected: false,
-        };
-    }
-    const intersect = (key) => climates
-        .map((entity) => readList(entity, key) ?? [])
-        .reduce((acc, list) => acc.filter((item) => list.includes(item)));
-    const bounds = (key, pick) => {
-        const values = climates
-            .map((entity) => readNumber(entity, key))
-            .filter((value) => value !== null);
-        return values.length ? pick(values) : null;
-    };
-    return {
-        hvacModes: intersect('hvac_modes'),
-        fanModes: intersect('fan_modes'),
-        // The narrowest range every device accepts.
-        minTemp: bounds('min_temp', (values) => Math.max(...values)),
-        maxTemp: bounds('max_temp', (values) => Math.min(...values)),
-        tempStep: bounds('target_temp_step', (values) => Math.max(...values)),
-        unreadable,
-        climate: true,
-        intersected: climates.length > 1,
-    };
-}
-/** The domains this integration can actually drive. */
-const DRIVABLE = ['climate.', 'input_boolean.', 'switch.'];
-/**
- * Entities a rule may target, sorted.
- *
- * Sorted because an unsorted list reshuffles whenever `hass.states` is
- * rebuilt, which is every state change in the whole system - a select
- * whose options move under the user's finger.
- */
-function selectableDevices(states) {
-    return Object.keys(states)
-        .filter((id) => DRIVABLE.some((prefix) => id.startsWith(prefix)))
-        .sort();
-}
 const FORM_FIELDS = [
-    'day', 'time', 'action', 'devices', 'settings', 'name', 'icon',
-    'color', 'enabled', 'script', 'variables', 'replay_on_restart',
+    'day', 'time', 'action', 'target', 'data', 'condition', 'replay',
+    'name', 'icon', 'color', 'enabled',
 ];
 function ruleToForm(rule) {
     return {
         day: rule.day,
         time: rule.time,
         action: rule.action,
-        devices: [...rule.devices],
-        settings: { ...rule.settings },
+        target: { ...rule.target },
+        data: { ...rule.data },
+        condition: rule.condition.map((item) => ({ ...item })),
+        replay: { ...rule.replay },
         name: rule.name,
         icon: rule.icon,
         color: rule.color,
         enabled: rule.enabled,
-        script: rule.script,
-        variables: { ...rule.variables },
-        replay_on_restart: rule.replay_on_restart,
     };
 }
 /** Everything, plus the profile the day is being authored under. */
@@ -436,8 +400,8 @@ function formToCreate(form, profile) {
  * always asks the server rather than assuming a diff of `{}` means
  * nothing could go wrong (the entry could be unloaded, the connection
  * dead, the rule deleted by another client). See `_saveChanges` in
- * `card.ts`. Compared by value, not reference - a devices array rebuilt
- * from the same strings has not changed.
+ * `card.ts`. Compared by value, not reference - a target rebuilt
+ * from the same keys has not changed.
  */
 function formToChanges(form, original) {
     const changes = {};
@@ -644,7 +608,7 @@ let ShabbatRuleRow = class ShabbatRuleRow extends i {
             }
         }}
       >
-        <span class="dot" style="background:${actionColour(this.rule.action)}"></span>
+        <span class="dot" style="background:${ruleColour(this.rule)}"></span>
         <span class="time">${this.rule.time.slice(0, 5)}</span>
         <div class="body">
           ${title ? b `<div class="title">${title}</div>` : A}
@@ -904,243 +868,10 @@ ShabbatWarnings = __decorate([
     t$1('shabbat-warnings')
 ], ShabbatWarnings);
 
-/** Settings keys this card has its own words for. Anything else reads raw. */
-const LABELLED = ['temperature', 'hvac_mode', 'fan_mode'];
-let ShabbatDeviceSettings = class ShabbatDeviceSettings extends i {
-    constructor() {
-        super(...arguments);
-        this.states = {};
-        /** The rule's actual saved selection. Always shown in the picker as-is. */
-        this.devices = [];
-        /**
-         * The devices this rule will actually run against once inheritance is
-         * applied - `devices` itself when the rule has its own, otherwise the
-         * caller's merged-in defaults. Used only to compute what settings to
-         * offer, never to decide what the picker shows: an empty `devices`
-         * must still render as empty, or the picker would misrepresent what a
-         * save sends. Defaults to `devices` so callers with no inheritance
-         * concept (the defaults dialog itself) need not think about it.
-         */
-        this.effectiveDevices = null;
-        this.settings = {};
-        this.disabled = false;
-        this.language = 'en';
-    }
-    get _options() {
-        return deviceOptions(this.states, this.effectiveDevices ?? this.devices);
-    }
-    _emit(settings) {
-        // Reports intent. The parent owns the value and passes it back down,
-        // so this element never disagrees with what will actually be saved.
-        this.dispatchEvent(new CustomEvent('settings-changed', { detail: { settings } }));
-    }
-    _set(key, value) {
-        const next = { ...this.settings };
-        if (value === '' || value === null)
-            delete next[key];
-        else
-            next[key] = value;
-        this._emit(next);
-    }
-    /** A saved value the current devices do not list. Kept, never dropped. */
-    _orphan(key, offered) {
-        const value = this.settings[key];
-        if (typeof value !== 'string' || value === '')
-            return null;
-        return offered.includes(value) ? null : value;
-    }
-    /**
-     * What to show when nothing could be read.
-     *
-     * `deviceOptions` returns `climate: false` both for a device that
-     * genuinely takes no settings and for one it could not read at all -
-     * but those are two different statements, and only the first one means
-     * "this rule sets nothing". Rendering `not_climate` for an unreadable
-     * device made a rule holding `{temperature: 24, hvac_mode: 'cool'}`
-     * display as a rule with no settings at all, while the engine went on
-     * applying 24 / cool at 11:00 the next morning. A cloud-backed unit
-     * reports `unavailable` on any upstream hiccup and `unknown` after a
-     * restart before its first poll, so this is the normal case, not an
-     * exotic one.
-     *
-     * The values cannot be *edited* here - the bounds and the accepted
-     * modes are exactly what could not be read, so offering a control
-     * would be inventing them - but they must stay visible, because a
-     * saved setting the card does not show is a saved setting nobody knows
-     * about.
-     */
-    _unreadableSettings() {
-        const entries = Object.entries(this.settings).filter(([, value]) => value !== null && value !== undefined && value !== '');
-        return b `
-      <div class="unknown">
-        <div class="note warn">${t(this.language, 'options_unknown')}</div>
-        ${entries.length
-            ? b `<div class="note kept">
-              <div>${t(this.language, 'saved_settings')}</div>
-              ${entries.map(([key, value]) => b `<div class="kept-row">
-                  ${LABELLED.includes(key) ? t(this.language, key) : key}:
-                  ${String(value)}
-                </div>`)}
-            </div>`
-            : A}
-      </div>
-    `;
-    }
-    _select(key, offered) {
-        const current = this.settings[key];
-        const orphan = this._orphan(key, offered);
-        // Wrapped in one root: under happy-dom 15.11.7 with lit-html 3.3.3, a
-        // template result with more than one top-level node - here the field
-        // and the conditional orphan note - fails to render either branch of
-        // a ternary in tests. A real browser is unaffected, but this is
-        // shared with the rule and defaults dialogs and must render in tests.
-        return b `
-      <div>
-        <div class="field">
-          <label for=${key}>${t(this.language, key)}</label>
-          <select
-            id=${key}
-            class=${key === 'fan_mode' ? 'fan' : 'hvac'}
-            ?disabled=${this.disabled}
-            @change=${(event) => this._set(key, event.target.value)}
-          >
-            <option value=""></option>
-            ${orphan !== null
-            ? b `<option value=${orphan} selected>${orphan}</option>`
-            : A}
-            ${offered.map((option) => b `
-                <option value=${option} ?selected=${current === option}>
-                  ${option}
-                </option>
-              `)}
-          </select>
-        </div>
-        ${orphan !== null
-            ? b `<div class="note warn">
-              ${orphan} — ${t(this.language, 'kept_setting')}
-            </div>`
-            : A}
-      </div>
-    `;
-    }
-    render() {
-        const options = this._options;
-        // Three distinct answers, never conflated: the real controls; "these
-        // devices could not be read, and here is what the rule already
-        // holds"; or "these devices genuinely take no settings". Computed
-        // here rather than as a nested ternary inside the template, so each
-        // branch is one whole template result - see the note in `_select`.
-        const settings = options.climate
-            ? b `
-          <div>
-            <div class="field">
-              <label for="temperature">${t(this.language, 'temperature')}</label>
-              <input
-                id="temperature"
-                class="temperature"
-                type="number"
-                .value=${String(this.settings.temperature ?? '')}
-                min=${options.minTemp ?? 5}
-                max=${options.maxTemp ?? 35}
-                step=${options.tempStep ?? 0.5}
-                ?disabled=${this.disabled}
-                @change=${(event) => {
-                const raw = event.target.value;
-                this._set('temperature', raw === '' ? null : Number(raw));
-            }}
-              />
-            </div>
-            ${this._select('hvac_mode', options.hvacModes)}
-            ${this._select('fan_mode', options.fanModes)}
-          </div>
-        `
-            : options.unreadable.length
-                ? this._unreadableSettings()
-                : b `<div class="note">${t(this.language, 'not_climate')}</div>`;
-        return b `
-      <div class="settings">
-        <div class="field">
-          <label for="devices">${t(this.language, 'devices')}</label>
-          <select
-            id="devices"
-            class="devices"
-            multiple
-            size="4"
-            ?disabled=${this.disabled}
-            @change=${(event) => {
-            const select = event.target;
-            const devices = [...select.selectedOptions].map((o) => o.value);
-            this.dispatchEvent(new CustomEvent('devices-changed', { detail: { devices } }));
-        }}
-          >
-            ${selectableDevices(this.states).map((id) => b `
-                <option value=${id} ?selected=${this.devices.includes(id)}>
-                  ${id}
-                </option>
-              `)}
-          </select>
-        </div>
-        ${options.unreadable.length
-            ? b `<div class="note warn">
-              ${t(this.language, 'unreadable')} ${options.unreadable.join(', ')}
-            </div>`
-            : A}
-        ${options.intersected
-            ? b `<div class="note">${t(this.language, 'intersected')}</div>`
-            : A}
-        ${settings}
-      </div>
-    `;
-    }
-};
-ShabbatDeviceSettings.styles = i$3 `
-    .field {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-block: 8px;
-    }
-    .field label { min-inline-size: 7em; }
-    select, input {
-      font: inherit;
-      padding-block: 4px;
-      padding-inline: 6px;
-      flex: 1;
-      min-inline-size: 0;
-    }
-    .note {
-      color: var(--secondary-text-color, #666);
-      font-size: 0.85em;
-      margin-block: 4px;
-    }
-    .warn { color: var(--warning-color, #d9822b); }
-  `;
-__decorate([
-    n({ attribute: false })
-], ShabbatDeviceSettings.prototype, "states", void 0);
-__decorate([
-    n({ attribute: false })
-], ShabbatDeviceSettings.prototype, "devices", void 0);
-__decorate([
-    n({ attribute: false })
-], ShabbatDeviceSettings.prototype, "effectiveDevices", void 0);
-__decorate([
-    n({ attribute: false })
-], ShabbatDeviceSettings.prototype, "settings", void 0);
-__decorate([
-    n({ type: Boolean })
-], ShabbatDeviceSettings.prototype, "disabled", void 0);
-__decorate([
-    n()
-], ShabbatDeviceSettings.prototype, "language", void 0);
-ShabbatDeviceSettings = __decorate([
-    t$1('shabbat-device-settings')
-], ShabbatDeviceSettings);
-
 const EMPTY_FORM = {
-    day: 'erev', time: '', action: 'on', devices: [], settings: {},
-    name: null, icon: null, color: null, enabled: true, script: null,
-    variables: {}, replay_on_restart: false,
+    day: 'erev', time: '', action: '', target: {}, data: {}, condition: [],
+    replay: { enabled: false }, name: null, icon: null, color: null,
+    enabled: true,
 };
 let ShabbatRuleDialog = class ShabbatRuleDialog extends i {
     constructor() {
@@ -1152,7 +883,6 @@ let ShabbatRuleDialog = class ShabbatRuleDialog extends i {
         this.day = 'erev';
         this.profile = 1;
         this.defaults = {};
-        this.states = {};
         this.canWrite = false;
         this.busy = false;
         this.error = null;
@@ -1215,16 +945,50 @@ let ShabbatRuleDialog = class ShabbatRuleDialog extends i {
       </div>
     `;
     }
+    _describeData() {
+        const entries = Object.entries(this._form.data);
+        if (!entries.length)
+            return t(this.language, 'none_set');
+        return entries.map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join(', ');
+    }
+    _describeConditions() {
+        const { condition } = this._form;
+        if (!condition.length)
+            return t(this.language, 'none_set');
+        return condition.map((item) => JSON.stringify(item)).join(' ; ');
+    }
+    _describeReplay() {
+        const { replay } = this._form;
+        if (!replay.enabled)
+            return t(this.language, 'replay_no');
+        const yes = t(this.language, 'replay_yes');
+        return replay.within
+            ? `${yes} (${t(this.language, 'replay_within')} ${replay.within})`
+            : yes;
+    }
+    /**
+     * The fields this dialog can still edit CORRECTLY, plus a read-only
+     * view of the ones it cannot.
+     *
+     * v1's device picker and climate settings form are gone: a rule is now
+     * an arbitrary service call with a Home Assistant target selector and
+     * an opaque data payload, and there is no honest way to render either
+     * with a device multi-select and a temperature slider. Saving a
+     * v1-shaped payload would be worse than not offering the control, and
+     * OMITTING the fields would be worse still - a rule that carries a
+     * condition and a replay window would look like a rule that carries
+     * neither. So they are shown, verbatim, marked as not editable here.
+     *
+     * They are still carried through the form (see `ruleToForm`), so an
+     * edit cannot drop them and a duplicate is a real duplicate.
+     *
+     * Plan 2 builds the real editors.
+     */
     render() {
         const editing = this.rule !== null;
-        const inheritedDevices = this.defaults.devices ?? [];
-        // An empty `devices` on a rule means "inherit the shared defaults" -
-        // see `merge_defaults` in block.py. The picker must still show the
-        // rule's own (empty) selection, or clearing it would look like it
-        // snapped back to the defaults' devices when the pending save
-        // actually sends `[]`. This is only what the settings below are
-        // computed against, never what the picker displays.
-        const effectiveDevices = this._form.devices.length ? this._form.devices : inheritedDevices;
+        const inheritedTarget = this.defaults.target ?? {};
+        const ownTarget = describeTarget(this._form.target);
+        const inherits = ownTarget === '' && Object.keys(inheritedTarget).length > 0;
         return b `
       <div class="sheet" @click=${(event) => {
             if (event.target === event.currentTarget) {
@@ -1237,50 +1001,19 @@ let ShabbatRuleDialog = class ShabbatRuleDialog extends i {
           ${this.canWrite
             ? A
             : b `<div class="note">${t(this.language, 'read_only')}</div>`}
+          ${this.rule?.migration_error
+            ? b `<div class="migration">
+                ${t(this.language, 'migration_error')} ${this.rule.migration_error}
+              </div>`
+            : A}
           ${this.error !== null
             ? b `<div class="error">${this.error}</div>`
             : A}
 
           <div class="form">
             ${this._text('time', t(this.language, 'time'))}
-            <div class="field">
-              <label for="action">${t(this.language, 'action')}</label>
-              <select
-                id="action"
-                class="action"
-                ?disabled=${!this.canWrite}
-                @change=${(event) => this._patch({ action: event.target.value })}
-              >
-                ${['on', 'off', 'custom'].map((option) => b `
-                    <option value=${option} ?selected=${this._form.action === option}>
-                      ${option}
-                    </option>
-                  `)}
-              </select>
-            </div>
+            ${this._text('action', t(this.language, 'action'))}
             ${this._text('name', t(this.language, 'name'))}
-
-            ${this._form.action === 'custom'
-            ? this._text('script', t(this.language, 'script'))
-            : b `
-                  <div>
-                    ${!this._form.devices.length && inheritedDevices.length
-                ? b `<div class="note">
-                          ${t(this.language, 'inherits_devices')} ${inheritedDevices.join(', ')}
-                        </div>`
-                : A}
-                    <shabbat-device-settings
-                      .states=${this.states}
-                      .devices=${this._form.devices}
-                      .effectiveDevices=${effectiveDevices}
-                      .settings=${this._form.settings}
-                      .disabled=${!this.canWrite}
-                      .language=${this.language}
-                      @settings-changed=${(event) => this._patch({ settings: event.detail.settings })}
-                      @devices-changed=${(event) => this._patch({ devices: event.detail.devices })}
-                    ></shabbat-device-settings>
-                  </div>
-                `}
 
             <div class="field">
               <label for="enabled">${t(this.language, 'enabled')}</label>
@@ -1294,6 +1027,26 @@ let ShabbatRuleDialog = class ShabbatRuleDialog extends i {
               />
             </div>
 
+            <div class="readonly">
+              <div class="note">${t(this.language, 'read_only_fields')}</div>
+              <dl>
+                <dt>${t(this.language, 'target')}</dt>
+                <dd class="ro-target">
+                  ${ownTarget !== ''
+            ? ownTarget
+            : inherits
+                ? `${t(this.language, 'inherits_target')} ${describeTarget(inheritedTarget)}`
+                : t(this.language, 'none_set')}
+                </dd>
+                <dt>${t(this.language, 'data')}</dt>
+                <dd class="ro-data">${this._describeData()}</dd>
+                <dt>${t(this.language, 'condition')}</dt>
+                <dd class="ro-condition">${this._describeConditions()}</dd>
+                <dt>${t(this.language, 'replay')}</dt>
+                <dd class="ro-replay">${this._describeReplay()}</dd>
+              </dl>
+            </div>
+
             <button
               class="advanced-toggle"
               @click=${() => { this._advanced = !this._advanced; }}
@@ -1302,20 +1055,9 @@ let ShabbatRuleDialog = class ShabbatRuleDialog extends i {
             </button>
             ${this._advanced
             ? b `
-                  ${this._text('icon', t(this.language, 'icon'))}
-                  ${this._text('color', t(this.language, 'colour'))}
-                  <div class="field">
-                    <label for="replay">${t(this.language, 'replay')}</label>
-                    <input
-                      id="replay"
-                      class="replay"
-                      type="checkbox"
-                      .checked=${this._form.replay_on_restart}
-                      ?disabled=${!this.canWrite}
-                      @change=${(event) => this._patch({
-                replay_on_restart: event.target.checked,
-            })}
-                    />
+                  <div class="advanced">
+                    ${this._text('icon', t(this.language, 'icon'))}
+                    ${this._text('color', t(this.language, 'colour'))}
                   </div>
                 `
             : A}
@@ -1412,6 +1154,28 @@ ShabbatRuleDialog.styles = i$3 `
       font-size: 0.9em;
     }
     .note { color: var(--secondary-text-color, #666); font-size: 0.85em; }
+    .readonly {
+      margin-block: 12px 4px;
+      padding-block: 8px;
+      padding-inline: 10px;
+      border-inline-start: 3px solid var(--divider-color, #e0e0e0);
+      background: var(--secondary-background-color, #f4f4f4);
+      font-size: 0.9em;
+    }
+    .readonly dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+    .readonly dt { color: var(--secondary-text-color, #666); }
+    .readonly dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+    .migration {
+      color: var(--error-color, #d64545);
+      margin-block: 8px;
+      font-size: 0.9em;
+      overflow-wrap: anywhere;
+    }
+    /* The wrapper around the advanced fields is load-bearing under this
+       repo's pinned lit-html + happy-dom: a template whose root holds
+       several top-level expressions renders NONE of them. Same constraint
+       day-group.ts documents. Do not unwrap it. */
+    .advanced { display: contents; }
     .advanced-toggle {
       background: none;
       border: none;
@@ -1435,9 +1199,6 @@ __decorate([
     n({ attribute: false })
 ], ShabbatRuleDialog.prototype, "defaults", void 0);
 __decorate([
-    n({ attribute: false })
-], ShabbatRuleDialog.prototype, "states", void 0);
-__decorate([
     n({ type: Boolean })
 ], ShabbatRuleDialog.prototype, "canWrite", void 0);
 __decorate([
@@ -1459,22 +1220,37 @@ ShabbatRuleDialog = __decorate([
     t$1('shabbat-rule-dialog')
 ], ShabbatRuleDialog);
 
+/**
+ * The shared defaults, shown but not editable.
+ *
+ * v1's editor was a device multi-select plus a climate settings form, and
+ * it wrote `{devices, settings}`. `validate_defaults` (rule_schema.py) now
+ * accepts exactly `{target, data}` - a Home Assistant target selector and
+ * an opaque service payload - so the old form's save was already certain
+ * to be rejected on every press. A save button that cannot succeed is
+ * worse than no save button, and a form that quietly rewrote the defaults
+ * into a v1 shape would be worse still.
+ *
+ * So this shows what the defaults ACTUALLY are and says where to change
+ * them. Plan 2 builds the target/data editors.
+ */
 let ShabbatDefaultsDialog = class ShabbatDefaultsDialog extends i {
     constructor() {
         super(...arguments);
         this.defaults = {};
-        this.states = {};
         this.canWrite = false;
         this.busy = false;
         this.error = null;
         this.language = 'en';
-        this._draft = null;
     }
-    get _current() {
-        return this._draft ?? this.defaults;
+    _describeData() {
+        const entries = Object.entries(this.defaults.data ?? {});
+        if (!entries.length)
+            return t(this.language, 'none_set');
+        return entries.map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join(', ');
     }
     render() {
-        const current = this._current;
+        const target = describeTarget(this.defaults.target ?? {});
         return b `
       <div class="sheet" @click=${(event) => {
             if (event.target === event.currentTarget) {
@@ -1488,48 +1264,18 @@ let ShabbatDefaultsDialog = class ShabbatDefaultsDialog extends i {
             ? b `<div class="error">${this.error}</div>`
             : A}
 
-          <shabbat-device-settings
-            .states=${this.states}
-            .devices=${current.devices ?? []}
-            .settings=${current.settings ?? {}}
-            .disabled=${!this.canWrite}
-            .language=${this.language}
-            @settings-changed=${(event) => {
-            this._draft = {
-                ...current,
-                settings: event.detail.settings,
-            };
-        }}
-            @devices-changed=${(event) => {
-            this._draft = {
-                ...current,
-                devices: event.detail.devices,
-            };
-        }}
-          ></shabbat-device-settings>
+          <dl>
+            <dt>${t(this.language, 'target')}</dt>
+            <dd class="ro-target">${target !== '' ? target : t(this.language, 'none_set')}</dd>
+            <dt>${t(this.language, 'data')}</dt>
+            <dd class="ro-data">${this._describeData()}</dd>
+          </dl>
+          <div class="note">${t(this.language, 'read_only_fields')}</div>
 
           <div class="actions">
             <button @click=${() => this.dispatchEvent(new CustomEvent('dialog-close'))}>
               ${t(this.language, 'cancel')}
             </button>
-            ${this.canWrite
-            ? b `<button
-                  class="save"
-                  ?disabled=${this.busy}
-                  @click=${() => this.dispatchEvent(new CustomEvent('defaults-save', {
-                // Exactly the two keys validate_defaults accepts.
-                // Anything else is rejected outright, not ignored.
-                detail: {
-                    defaults: {
-                        devices: current.devices ?? [],
-                        settings: current.settings ?? {},
-                    },
-                },
-            }))}
-                >
-                  ${t(this.language, 'save')}
-                </button>`
-            : A}
           </div>
         </div>
       </div>
@@ -1556,6 +1302,9 @@ ShabbatDefaultsDialog.styles = i$3 `
     h2 { margin-block: 0 4px; font-size: 1.1em; }
     .note { color: var(--secondary-text-color, #666); font-size: 0.85em; }
     .error { color: var(--error-color, #d64545); margin-block: 8px; font-size: 0.9em; }
+    dl { margin-block: 12px; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+    dt { color: var(--secondary-text-color, #666); }
+    dd { margin: 0; overflow-wrap: anywhere; }
     .actions {
       display: flex;
       gap: 8px;
@@ -1578,9 +1327,6 @@ __decorate([
     n({ attribute: false })
 ], ShabbatDefaultsDialog.prototype, "defaults", void 0);
 __decorate([
-    n({ attribute: false })
-], ShabbatDefaultsDialog.prototype, "states", void 0);
-__decorate([
     n({ type: Boolean })
 ], ShabbatDefaultsDialog.prototype, "canWrite", void 0);
 __decorate([
@@ -1592,15 +1338,12 @@ __decorate([
 __decorate([
     n()
 ], ShabbatDefaultsDialog.prototype, "language", void 0);
-__decorate([
-    r()
-], ShabbatDefaultsDialog.prototype, "_draft", void 0);
 ShabbatDefaultsDialog = __decorate([
     t$1('shabbat-defaults-dialog')
 ], ShabbatDefaultsDialog);
 
 /** Stamped into the Lovelace resource URL so a rebuild busts the cache. */
-const CARD_VERSION = '0.3.0';
+const CARD_VERSION = '0.4.0';
 
 /**
  * The only failure the server states as a fact: `ws_subscribe`
@@ -1720,15 +1463,6 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
             this._creatingDay = form.day;
             this._duplicateSeed = form;
             this._dialogError = null;
-        };
-        this._onDefaultsSave = async (event) => {
-            const { defaults } = event.detail;
-            if (await this._send({
-                type: 'shabbat_scheduler/defaults/update',
-                defaults,
-            })) {
-                this._closeDialogs();
-            }
         };
     }
     setConfig(config) {
@@ -1926,6 +1660,10 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
             changes: formToChanges(form, rule),
         });
     }
+    // NOTE: there is no `_onDefaultsSave`. <shabbat-defaults-dialog> is
+    // read-only until Plan 2 builds a target/data editor, so it emits no
+    // save event - see the comment on that component. A listener for an
+    // event that can never fire reads as a working feature.
     render() {
         // Read once into a local: `_error` is a field, and TypeScript's
         // narrowing of a property access does not survive the intervening
@@ -2004,7 +1742,6 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
               .day=${this._creatingDay ?? this._editing?.day ?? 'erev'}
               .profile=${this._profile}
               .defaults=${this._state.defaults}
-              .states=${this._hass?.states ?? {}}
               .canWrite=${this._canWrite}
               .busy=${this._busy}
               .error=${this._dialogError}
@@ -2018,12 +1755,10 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
         ${this._defaultsOpen
             ? b `<shabbat-defaults-dialog
               .defaults=${this._state.defaults}
-              .states=${this._hass?.states ?? {}}
               .canWrite=${this._canWrite}
               .busy=${this._busy}
               .error=${this._dialogError}
               .language=${this._language}
-              @defaults-save=${this._onDefaultsSave}
               @dialog-close=${this._closeDialogs}
             ></shabbat-defaults-dialog>`
             : A}

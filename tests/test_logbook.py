@@ -28,15 +28,20 @@ async def test_describe_renders_a_named_rule(hass):
         {
             "rule_id": "r1",
             "name": "בוקר שבת",
-            "action": "on",
-            "devices": ["climate.a", "climate.b"],
+            "action": "climate.set_temperature",
+            "target": {"entity_id": ["climate.a", "climate.b"]},
             "dry_run": False,
         },
     )
     result = described[EVENT_RULE_APPLIED](event)
 
     assert "בוקר שבת" in result["message"]
+    # The v2 payload is `action` + `target`, not v1's enum + `devices`.
+    # Both halves must reach the row: naming the rule without saying what
+    # it did is what the logbook is for.
+    assert "climate.set_temperature" in result["message"]
     assert "climate.a" in result["message"]
+    assert "climate.b" in result["message"]
     assert result["name"]
 
 
@@ -49,8 +54,8 @@ async def test_describe_handles_an_unnamed_rule(hass):
         {
             "rule_id": "r1",
             "name": None,
-            "action": "off",
-            "devices": ["climate.a"],
+            "action": "climate.turn_off",
+            "target": {"entity_id": ["climate.a"]},
             "dry_run": False,
         },
     )
@@ -72,8 +77,8 @@ async def test_describe_marks_a_dry_run(hass):
         {
             "rule_id": "r1",
             "name": "בוקר שבת",
-            "action": "on",
-            "devices": ["climate.a"],
+            "action": "climate.turn_on",
+            "target": {"entity_id": ["climate.a"]},
             "dry_run": True,
         },
     )

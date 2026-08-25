@@ -592,7 +592,12 @@ class ShabbatEngine:
                         notification_id=f"shabbat_scheduler_fail_{action}",
                     )
                     result["outcome"] = "failed"
-                    result["error"] = str(err)
+                    # The type-prefixed `reason`, not the bare `str(err)`:
+                    # this dict is what the last_run sensor exposes, and a
+                    # good many Home Assistant exceptions stringify to "".
+                    # `{"outcome": "failed", "error": ""}` is a rule that
+                    # does not say why it did not fire.
+                    result["error"] = reason
                     return result
                 _LOGGER.warning(
                     "%s failed (attempt %s/%s): %s: %s",

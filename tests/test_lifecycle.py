@@ -32,7 +32,7 @@ async def test_adding_a_rule_creates_its_switch(hass, rule_switch_entity_id):
     assert rule_switch_entity_id(entry, "new") is None
 
     await store.async_add(
-        Rule(id="new", profile=1, day="1", time=time(11, 0), action="on")
+        Rule(id="new", profile=1, day="1", time=time(11, 0), action="input_boolean.turn_on")
     )
     await hass.async_block_till_done()
 
@@ -43,7 +43,7 @@ async def test_adding_a_rule_creates_its_switch(hass, rule_switch_entity_id):
 
 async def test_deleting_a_rule_removes_its_switch(hass, rule_switch_entity_id):
     entry = await _setup(hass, [
-        Rule(id="gone", profile=1, day="1", time=time(11, 0), action="on"),
+        Rule(id="gone", profile=1, day="1", time=time(11, 0), action="input_boolean.turn_on"),
     ])
     assert rule_switch_entity_id(entry, "gone") is not None
 
@@ -57,14 +57,14 @@ async def test_deleting_a_rule_removes_its_switch(hass, rule_switch_entity_id):
 async def test_surviving_rule_keeps_its_entity_across_replace_all(
     hass, rule_switch_entity_id
 ):
-    keep = Rule(id="keep", profile=1, day="1", time=time(11, 0), action="on")
+    keep = Rule(id="keep", profile=1, day="1", time=time(11, 0), action="input_boolean.turn_on")
     entry = await _setup(hass, [keep])
     before = rule_switch_entity_id(entry, "keep")
 
     store = hass.data[DOMAIN][entry.entry_id]["store"]
     await store.async_replace_all({}, [
         keep,
-        Rule(id="added", profile=1, day="1", time=time(18, 0), action="off"),
+        Rule(id="added", profile=1, day="1", time=time(18, 0), action="input_boolean.turn_off"),
     ])
     await hass.async_block_till_done()
 
@@ -109,7 +109,8 @@ async def test_renaming_a_rule_reaches_its_switch_without_a_restart(
     a restart - and renaming is the card's primary affordance.
     """
     entry = await _setup(hass, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on",
+        Rule(id="r1", profile=1, day="1", time=time(11, 0),
+             action="input_boolean.turn_on",
              name="בוקר שבת", icon="mdi:candle"),
     ])
     entity_id = rule_switch_entity_id(entry, "r1")
@@ -134,15 +135,16 @@ async def test_an_unnamed_rule_falls_back_to_a_derived_name(
     hass, rule_switch_entity_id
 ):
     entry = await _setup(hass, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on"),
+        Rule(id="r1", profile=1, day="1", time=time(11, 0),
+             action="input_boolean.turn_on"),
     ])
     entity_id = rule_switch_entity_id(entry, "r1")
-    assert hass.states.get(entity_id).attributes["friendly_name"] == "1d 1 11:00 on"
+    assert hass.states.get(entity_id).attributes["friendly_name"] == "1d 1 11:00 input_boolean.turn_on"
 
     store = hass.data[DOMAIN][entry.entry_id]["store"]
     await store.async_update("r1", time=time(20, 0))
     await hass.async_block_till_done()
-    assert hass.states.get(entity_id).attributes["friendly_name"] == "1d 1 20:00 on"
+    assert hass.states.get(entity_id).attributes["friendly_name"] == "1d 1 20:00 input_boolean.turn_on"
 
 
 async def test_a_rule_change_refreshes_the_engine_exactly_once(hass):
@@ -187,7 +189,7 @@ async def test_a_rule_change_refreshes_the_engine_exactly_once(hass):
     engine.async_refresh = _counting_refresh
 
     await store.async_add(
-        Rule(id="one", profile=1, day="1", time=time(11, 0), action="on")
+        Rule(id="one", profile=1, day="1", time=time(11, 0), action="input_boolean.turn_on")
     )
     await hass.async_block_till_done()
 

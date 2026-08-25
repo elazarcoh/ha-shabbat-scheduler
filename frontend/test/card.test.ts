@@ -4,19 +4,20 @@ import { ruleToForm } from '../src/format';
 import type { CardState, RuleData } from '../src/types';
 
 const EMPTY = {
-  day: 'erev', time: '', action: 'on', devices: [], settings: {},
-  name: null, icon: null, color: null, enabled: true, script: null,
-  variables: {}, replay_on_restart: false,
+  day: 'erev', time: '', action: 'climate.turn_on', target: {}, data: {},
+  condition: [], replay: { enabled: false },
+  name: null, icon: null, color: null, enabled: true,
 };
 
 /** Lets pending promise chains (subscribe, unsubscribe, callService) settle. */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const rule = (over: Partial<RuleData> = {}): RuleData => ({
-  id: 'a', profile: 1, day: '1', time: '11:00:00', action: 'on',
-  devices: ['climate.salon'], settings: {}, name: null, icon: null,
-  enabled: true, script: null, variables: {}, replay_on_restart: false,
-  color: null,
+  id: 'a', profile: 1, day: '1', time: '11:00:00',
+  action: 'climate.turn_on',
+  target: { entity_id: ['climate.salon'] },
+  data: {}, condition: [], replay: { enabled: false },
+  name: null, icon: null, enabled: true, color: null,
   ...over,
 });
 
@@ -166,16 +167,11 @@ describe('shabbat-scheduler-card', () => {
     send(
       state({
         rules: [
-          {
-            id: 'a', profile: 1, day: '1', time: '11:00:00', action: 'on',
-            devices: ['climate.salon'], settings: {}, name: null, icon: null,
-            enabled: true, script: null, variables: {}, replay_on_restart: false,
-            color: null,
-          },
+          rule({ id: 'a' }),
         ],
         warnings: [
           {
-            kind: 'conflict', device: 'climate.salon', profile: 1, day: '1',
+            kind: 'conflict', targets: ['climate.salon'], profile: 1, day: '1',
             time: '11:00:00', rule_ids: ['a'],
           },
         ],
@@ -203,7 +199,7 @@ describe('shabbat-scheduler-card', () => {
         rules: [],
         warnings: [
           {
-            kind: 'conflict', device: 'climate.salon', profile: 3, day: '1',
+            kind: 'conflict', targets: ['climate.salon'], profile: 3, day: '1',
             time: '11:00:00', rule_ids: ['not-shown'],
           },
         ],
@@ -229,11 +225,11 @@ describe('shabbat-scheduler-card', () => {
         rules: [
           rule({ id: 'shown', profile: 1, day: '1' }),
           rule({ id: 'other-profile', profile: 3, day: '2', time: '09:00:00',
-                 devices: ['climate.mamad'] }),
+                 target: { entity_id: ['climate.mamad'] } }),
         ],
         warnings: [
           {
-            kind: 'conflict', device: 'climate.mamad', profile: 3, day: '2',
+            kind: 'conflict', targets: ['climate.mamad'], profile: 3, day: '2',
             time: '09:00:00', rule_ids: ['other-profile'],
           },
         ],
@@ -483,12 +479,7 @@ describe('shabbat-scheduler-card', () => {
 });
 
 describe('authoring', () => {
-  const withRules = () =>
-    state({ rules: [
-      { id: 'r1', profile: 1, day: '1', time: '11:00:00', action: 'on',
-        devices: [], settings: {}, name: null, icon: null, enabled: true,
-        script: null, variables: {}, replay_on_restart: false, color: null },
-    ] });
+  const withRules = () => state({ rules: [rule({ id: 'r1', target: {} })] });
 
   it('opens the dialog when a row asks to be opened', async () => {
     const { hass, send } = fakeHass();
@@ -951,10 +942,21 @@ describe('authoring', () => {
 
   // ---- defaults: what every rule inherits ----
 
-  it('opens the defaults dialog from the gear and sends defaults/update on save', async () => {
+  // The defaults dialog is READ-ONLY until Plan 2 builds a target/data
+  // editor - see defaults-dialog.ts. v1's form wrote `{devices, settings}`,
+  // which `validate_defaults` now rejects outright, so its save could only
+  // ever have failed. What still has to work is that the gear opens it and
+  // that it shows the real defaults; what must NOT happen is the card
+  // sending a defaults/update the server would refuse.
+  it('opens the defaults dialog from the gear, showing the real defaults', async () => {
     const { hass, send } = fakeHass();
     const el = await mount(hass);
-    send(state());
+    send(state({
+      defaults: {
+        target: { entity_id: ['climate.salon'] },
+        data: { temperature: 26 },
+      },
+    }));
     await el.updateComplete;
 
     const header = el.shadowRoot!.querySelector('shabbat-block-header')!;
@@ -963,8 +965,24 @@ describe('authoring', () => {
     gear.click();
     await el.updateComplete;
 
-    expect(el.shadowRoot!.querySelector('shabbat-defaults-dialog')).not.toBeNull();
+    const dialog = el.shadowRoot!.querySelector('shabbat-defaults-dialog') as Card;
+    expect(dialog).not.toBeNull();
+    await dialog.updateComplete;
+    expect(dialog.shadowRoot!.textContent).toContain('climate.salon');
+    expect(dialog.shadowRoot!.textContent).toContain('26');
+  });
 
+  it('never sends a defaults/update, because nothing can ask it to yet', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(state());
+    await el.updateComplete;
+    (el.shadowRoot!.querySelector('shabbat-block-header')!
+      .shadowRoot!.querySelector('.gear') as HTMLElement).click();
+    await el.updateComplete;
+
+    // The stale listener this replaces would have fired on this event and
+    // sent a v1-shaped payload the server rejects.
     el.shadowRoot!.querySelector('shabbat-defaults-dialog')!.dispatchEvent(
       new CustomEvent('defaults-save', {
         detail: { defaults: { devices: ['climate.salon'], settings: {} } },
@@ -973,11 +991,7 @@ describe('authoring', () => {
     await flush();
     await el.updateComplete;
 
-    expect(hass.callWS).toHaveBeenCalledWith({
-      type: 'shabbat_scheduler/defaults/update',
-      defaults: { devices: ['climate.salon'], settings: {} },
-    });
-    expect(el.shadowRoot!.querySelector('shabbat-defaults-dialog')).toBeNull();
+    expect(hass.callWS).not.toHaveBeenCalled();
   });
 
   // ---- the block:null dead end this plan's headline fix removes ----

@@ -1,26 +1,27 @@
 import asyncio
 import dataclasses
-import itertools
 from datetime import time
 from unittest.mock import patch
 
 import pytest
-from homeassistant.components.climate import (
-    DATA_COMPONENT as CLIMATE_DATA_COMPONENT,
-)
-from homeassistant.components.climate import (
-    ClimateEntity,
-    ClimateEntityFeature,
-    HVACMode,
-)
 from homeassistant.const import EVENT_CALL_SERVICE
 from homeassistant.core import Context, callback
-from homeassistant.setup import async_setup_component
+from pytest_homeassistant_custom_component.common import async_mock_service
 
 from custom_components.shabbat_scheduler.const import EVENT_RULE_APPLIED
 from custom_components.shabbat_scheduler.engine import ShabbatEngine
-from custom_components.shabbat_scheduler.models import Rule
+from custom_components.shabbat_scheduler.models import Replay, Rule
 from custom_components.shabbat_scheduler.store import RuleStore
+
+# The v2 idiom, used throughout this file: a rule is an `action`
+# ("domain.service") plus a `target` selector, not a v1 `Action` enum plus a
+# `devices` tuple plus a climate-shaped `settings` dict. Outcomes changed
+# with it - `_call` reports "called" / "failed" / "would_call", never v1's
+# "changed" / "ok" / "skipped", because v2 hands the call to
+# `async_call_from_config` instead of comparing the entity's current state
+# against a desired one it understands.
+_ON = "input_boolean.turn_on"
+_OFF = "input_boolean.turn_off"
 
 
 @pytest.fixture
@@ -30,37 +31,44 @@ async def engine(hass, jerusalem, test_booleans):
     return ShabbatEngine(hass, store)
 
 
-def _rule(action="on", devices=("input_boolean.t",), **kwargs):
+def _rule(action=_ON, entities=("input_boolean.t",), **kwargs):
     return Rule(
         id="r", profile=1, day="1", time=time(11, 0),
-        action=action, devices=devices, **kwargs,
+        action=action,
+        target={"entity_id": list(entities)} if entities else {},
+        **kwargs,
     )
 
 
-async def test_apply_turns_on_an_input_boolean(hass, engine):
+async def test_apply_calls_the_rules_action(hass, engine):
     hass.states.async_set("input_boolean.t", "off")
     results = await engine.async_apply_rule(_rule())
     await hass.async_block_till_done()
 
     assert hass.states.get("input_boolean.t").state == "on"
-    assert results[0]["outcome"] == "changed"
+    assert results[0]["outcome"] == "called"
 
 
-async def test_apply_skips_when_already_correct(hass, engine):
-    hass.states.async_set("input_boolean.t", "on")
-    results = await engine.async_apply_rule(_rule())
-    assert results[0]["outcome"] == "ok"
+async def test_a_target_entity_that_does_not_exist_is_still_reported_as_called(
+    hass, engine
+):
+    """A characterisation test, pinning a KNOWN GAP rather than hiding it.
 
+    v1 read each device's state itself, so a typo'd entity id came back
+    `failed`. v2 hands the whole target to `async_call_from_config`, and
+    Home Assistant's own service layer accepts a target naming an entity
+    that does not exist without raising - so the engine has nothing to
+    report but success. A misspelt entity id in a rule therefore looks
+    like a rule that fired.
 
-async def test_unknown_state_forces_apply(hass, engine):
-    hass.states.async_set("input_boolean.t", "unknown")
-    results = await engine.async_apply_rule(_rule())
-    assert results[0]["outcome"] == "changed"
+    This is the quiet-failure shape the project exists to prevent, and it
+    is NOT fixed here (Task 12 carries the API and the card; it does not
+    redesign execution). The test exists so the gap is visible and so
+    that whoever closes it is told by a failing test that they did.
+    """
+    results = await engine.async_apply_rule(_rule(entities=("input_boolean.nope",)))
 
-
-async def test_missing_entity_is_reported_not_raised(hass, engine):
-    results = await engine.async_apply_rule(_rule(devices=("input_boolean.nope",)))
-    assert results[0]["outcome"] == "failed"
+    assert results[0]["outcome"] == "called"
 
 
 async def test_dry_run_makes_no_service_calls(hass, jerusalem, test_booleans):
@@ -74,10 +82,11 @@ async def test_dry_run_makes_no_service_calls(hass, jerusalem, test_booleans):
     await hass.async_block_till_done()
 
     assert hass.states.get("input_boolean.t").state == "off"
-    assert results[0]["outcome"] == "changed"  # reports what WOULD change
+    assert results[0]["outcome"] == "would_call"  # reports what WOULD happen
 
 
-async def test_custom_rule_calls_its_script(hass, engine):
+async def test_a_rule_can_still_call_a_script(hass, engine):
+    """v1's `Action.CUSTOM` + `script` field is now just an ordinary action."""
     calls = []
 
     async def record(call):
@@ -85,18 +94,21 @@ async def test_custom_rule_calls_its_script(hass, engine):
 
     hass.services.async_register("script", "turn_on", record)
     await engine.async_apply_rule(
-        _rule(action="custom", devices=(), script="script.demo")
+        _rule(action="script.turn_on", entities=("script.demo",))
     )
     await hass.async_block_till_done()
 
-    assert calls[0].data["entity_id"] == "script.demo"
+    assert calls[0].data["entity_id"] == ["script.demo"]
 
 
 async def test_last_run_is_recorded(hass, engine):
     hass.states.async_set("input_boolean.t", "off")
     await engine.async_apply_rule(_rule())
     assert engine.last_run
-    assert engine.last_run[0]["entity_id"] == "input_boolean.t"
+    # Keyed on the call, not on an entity: one v2 result covers the whole
+    # target, which may be an area or a label with no single entity in it.
+    assert engine.last_run[0]["action"] == _ON
+    assert engine.last_run[0]["target"] == {"entity_id": ["input_boolean.t"]}
 
 
 async def test_engine_recognises_its_own_context(hass, engine):
@@ -120,180 +132,48 @@ async def test_engine_recognises_its_own_context(hass, engine):
     assert captured, "expected the engine to have called input_boolean.turn_on"
     issued_context = captured[0].context
 
-    assert engine.is_our_context("input_boolean.t", issued_context)
-    assert not engine.is_our_context("input_boolean.t", Context())
+    # No longer keyed per entity - see ShabbatEngine.is_our_context.
+    assert engine.is_our_context(issued_context)
+    assert not engine.is_our_context(Context())
 
 
-# --- Finding 1: idempotent re-apply must not re-issue a landed command -----
+# --- One expanded call failing must not abort the rest of the rule ---------
 
 
-async def test_reapplying_same_rule_with_no_state_change_is_a_noop(hass, engine):
-    """Applying an already-satisfied rule a second time must be a no-op.
-
-    Regression test for the staleness guard stamping `_last_command` AFTER
-    the awaited service call returned: for a synchronous local entity (like
-    input_boolean) the entity's own `last_updated` lands DURING the call,
-    so a post-call stamp is always later than that write - the guard then
-    reports "stale" forever and forces a real service call on every repeat
-    apply, even though nothing changed. This is exactly the "keeps
-    re-asserting" failure mode the whole engine exists to avoid.
+async def test_a_later_expanded_call_still_runs_after_an_earlier_one_fails(
+    hass, engine
+):
+    """v1 made one call per device and proved a sibling device survived a
+    failure. v2 makes ONE call for the whole target, so the surviving form
+    of that property is the climate shim, which is the only thing that
+    still turns one authored action into several calls: if
+    `climate.set_hvac_mode` fails, `climate.set_temperature` must still be
+    attempted rather than the rule aborting half-applied.
     """
-    hass.states.async_set("input_boolean.t", "off")
-    rule = _rule()
+    hvac_attempts = []
 
-    first = await engine.async_apply_rule(rule)
-    await hass.async_block_till_done()
-    assert first[0]["outcome"] == "changed"
-    assert hass.states.get("input_boolean.t").state == "on"
+    async def always_fail(call):
+        hvac_attempts.append(call)
+        raise RuntimeError("unit did not answer")
 
-    seen_service_calls = []
-    hass.bus.async_listen(
-        EVENT_CALL_SERVICE,
-        lambda event: seen_service_calls.append(event.data),
+    hass.services.async_register("climate", "set_hvac_mode", always_fail)
+    temperature = async_mock_service(hass, "climate", "set_temperature")
+
+    rule = Rule(
+        id="r", profile=1, day="1", time=time(11, 0),
+        action="climate.set_temperature",
+        target={"entity_id": ["climate.ac"]},
+        data={"hvac_mode": "cool", "temperature": 22},
     )
-
-    second = await engine.async_apply_rule(rule)
-    await hass.async_block_till_done()
-
-    assert second[0]["outcome"] == "ok"
-    assert not seen_service_calls, (
-        f"expected no service call on the second apply, got {seen_service_calls}"
-    )
-
-
-# --- Finding 2: two rules on one device must not interleave ----------------
-
-
-class _RecordingClimate(ClimateEntity):
-    """A bare climate entity that records the order service calls land in.
-
-    Each setter yields (`await asyncio.sleep(0)`) between recording the call
-    and applying it, giving a missing per-device lock a real opportunity to
-    let a second concurrent rule's calls land in between.
-    """
-
-    _attr_hvac_modes = [HVACMode.OFF, HVACMode.COOL, HVACMode.HEAT]
-    _attr_fan_modes = ["low", "high", "quiet"]
-    _attr_supported_features = (
-        ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.FAN_MODE
-    )
-
-    def __init__(self, call_log: list[tuple[str, object]], temperature_unit) -> None:
-        self.entity_id = "climate.ac"
-        self._attr_temperature_unit = temperature_unit
-        self._call_log = call_log
-        self._attr_hvac_mode = HVACMode.OFF
-        self._attr_target_temperature = 20
-        self._attr_fan_mode = "low"
-
-    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
-        self._call_log.append(("hvac_mode", hvac_mode))
-        await asyncio.sleep(0)
-        self._attr_hvac_mode = hvac_mode
-        self.async_write_ha_state()
-
-    async def async_set_temperature(self, **kwargs) -> None:
-        self._call_log.append(("temperature", kwargs.get("temperature")))
-        await asyncio.sleep(0)
-        self._attr_target_temperature = kwargs.get("temperature")
-        self.async_write_ha_state()
-
-    async def async_set_fan_mode(self, fan_mode: str) -> None:
-        self._call_log.append(("fan_mode", fan_mode))
-        await asyncio.sleep(0)
-        self._attr_fan_mode = fan_mode
-        self.async_write_ha_state()
-
-
-async def test_concurrent_rules_on_same_device_do_not_interleave(hass, engine):
-    """Two rules firing at once on one climate entity must not interleave.
-
-    The spec calls out the exact failure this guards against: the unit left
-    off with a target temperature applied - a state matching neither rule.
-    Each rule below issues three climate calls (hvac_mode, temperature,
-    fan_mode); every value is distinct from the entity's initial state AND
-    from the other rule's values, in both attribute-position and
-    across-rules, so a full, uncontaminated triplet is expected from
-    whichever rule runs first or second.
-    """
-    call_log: list[tuple[str, object]] = []
-    await async_setup_component(hass, "climate", {})
-    component = hass.data[CLIMATE_DATA_COMPONENT]
-    await component.async_add_entities(
-        [_RecordingClimate(call_log, hass.config.units.temperature_unit)]
-    )
-    await hass.async_block_till_done()
-
-    rule_a = _rule(
-        devices=("climate.ac",),
-        settings={"hvac_mode": "cool", "temperature": 22, "fan_mode": "high"},
-    )
-    rule_b = Rule(
-        id="r2", profile=1, day="1", time=time(11, 0), action="on",
-        devices=("climate.ac",),
-        settings={"hvac_mode": "heat", "temperature": 24, "fan_mode": "quiet"},
-    )
-
-    await asyncio.gather(
-        engine.async_apply_rule(rule_a), engine.async_apply_rule(rule_b)
-    )
-    await hass.async_block_till_done()
-
-    assert len(call_log) == 6, call_log
-
-    owner_by_value = {
-        "cool": "A", "heat": "B",
-        22: "A", 24: "B",
-        "high": "A", "quiet": "B",
-    }
-    labels = [owner_by_value[value] for _attr, value in call_log]
-    runs = [label for label, _ in itertools.groupby(labels)]
-    assert len(runs) == 2, f"calls interleaved: {labels}"
-
-    # The final state must be wholly one rule's configuration, never a mix
-    # (e.g. rule B's hvac_mode with rule A's temperature).
-    final = hass.states.get("climate.ac")
-    final_owner = owner_by_value[final.attributes["fan_mode"]]
-    if final_owner == "A":
-        assert final.state == "cool"
-        assert final.attributes["temperature"] == 22
-    else:
-        assert final.state == "heat"
-        assert final.attributes["temperature"] == 24
-
-
-# --- Finding 3: one device failing must not block its siblings -------------
-
-
-async def test_sibling_device_still_applied_after_a_failure(hass, engine):
-    """One device's service call raising must not abort the rest of the rule."""
-    seen_entity_ids = []
-
-    async def flaky_turn_on(call):
-        seen_entity_ids.append(call.data["entity_id"])
-        if call.data["entity_id"] == "input_boolean.t":
-            raise RuntimeError("simulated failure for input_boolean.t")
-
-    hass.services.async_register("input_boolean", "turn_on", flaky_turn_on)
-    hass.states.async_set("input_boolean.t", "off")
-    hass.states.async_set("input_boolean.salon", "off")
-
-    # Task 10 added retry-on-failure: input_boolean.t now fails all
-    # RETRY_ATTEMPTS attempts before the rule moves on. Patch sleep so the
-    # retry delays between those attempts don't slow the test down.
     with patch("custom_components.shabbat_scheduler.engine.asyncio.sleep"):
-        results = await engine.async_apply_rule(
-            _rule(devices=("input_boolean.t", "input_boolean.salon"))
-        )
+        results = await engine.async_apply_rule(rule)
     await hass.async_block_till_done()
 
-    # Both devices were reached - the failure on the first (retried
-    # RETRY_ATTEMPTS times) did not abort processing of the second.
-    assert seen_entity_ids == ["input_boolean.t"] * 3 + ["input_boolean.salon"]
-
-    by_entity = {r["entity_id"]: r["outcome"] for r in results}
-    assert by_entity["input_boolean.t"] == "failed"
-    assert by_entity["input_boolean.salon"] == "changed"
+    assert len(hvac_attempts) == 3          # retried, then given up on
+    assert len(temperature) == 1            # ...and the next call still ran
+    by_action = {r["action"]: r["outcome"] for r in results}
+    assert by_action["climate.set_hvac_mode"] == "failed"
+    assert by_action["climate.set_temperature"] == "called"
 
 
 # --- Task 10: retry on failure ----------------------------------------------
@@ -311,8 +191,11 @@ async def test_failed_call_is_retried_then_notified(hass, engine):
 
     hass.services.async_register("switch", "turn_on", always_fail)
 
-    rule = _rule(devices=("switch.t",))
-    # Patch sleep so the test does not actually wait 60 seconds.
+    rule = _rule(action="switch.turn_on", entities=("switch.t",))
+    # Patch sleep so the test does not actually wait 60 seconds. It is not
+    # merely slow if left alone: any test that also freezes time freezes
+    # `time.monotonic()`, which IS the event loop's clock, so this sleep
+    # would never return at all. See the `timeout` setting in pyproject.toml.
     with patch("custom_components.shabbat_scheduler.engine.asyncio.sleep"):
         results = await engine.async_apply_rule(rule)
 
@@ -336,10 +219,12 @@ async def test_retry_succeeds_on_second_attempt(hass, engine):
     hass.services.async_register("switch", "turn_on", fail_once)
 
     with patch("custom_components.shabbat_scheduler.engine.asyncio.sleep"):
-        results = await engine.async_apply_rule(_rule(devices=("switch.t",)))
+        results = await engine.async_apply_rule(
+            _rule(action="switch.turn_on", entities=("switch.t",))
+        )
 
     assert len(attempts) == 2
-    assert results[0]["outcome"] == "changed"
+    assert results[0]["outcome"] == "called"
 
 
 from datetime import timedelta
@@ -379,7 +264,7 @@ async def test_no_matching_profile_notifies(hass, engine):
     # The master must be on, otherwise refresh returns before the check.
     await engine.store.async_set_enabled(True)
     await engine.store.async_add(
-        Rule(id="r", profile=3, day="1", time=time(11, 0), action="on")
+        Rule(id="r", profile=3, day="1", time=time(11, 0), action=_ON)
     )
     await engine.async_refresh()
 
@@ -399,7 +284,7 @@ async def test_disabled_master_schedules_nothing(hass, engine):
     _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
     await engine.store.async_add(
         Rule(id="r", profile=1, day="1", time=time(11, 0),
-             action="on", devices=("input_boolean.t",))
+             action=_ON, target={"entity_id": ["input_boolean.t"]})
     )
     await engine.async_refresh()  # master defaults OFF
     assert engine.upcoming() == []
@@ -430,7 +315,7 @@ async def test_enabled_master_lists_upcoming_rules(hass, engine, freezer):
     await engine.store.async_set_enabled(True)
     await engine.store.async_add(
         Rule(id="r", profile=1, day="1", time=time(11, 0),
-             action="on", devices=("input_boolean.t",))
+             action=_ON, target={"entity_id": ["input_boolean.t"]})
     )
     await engine.async_refresh()
     assert [item.rule.id for item in engine.upcoming()] == ["r"]
@@ -451,7 +336,7 @@ async def test_implausible_zmanim_notifies_and_schedules_nothing(hass, engine):
     await engine.store.async_set_enabled(True)
     await engine.store.async_add(
         Rule(id="r", profile=1, day="1", time=time(11, 0),
-             action="on", devices=("input_boolean.t",))
+             action=_ON, target={"entity_id": ["input_boolean.t"]})
     )
     await engine.async_refresh()
 
@@ -476,15 +361,24 @@ from freezegun import freeze_time
 # `_block` is already populated by the time catch-up runs; these tests add
 # that same call to match. `async_refresh()` is called outside `freeze_time`
 # since block computation only reads the zmanim sensors, never the clock.
+#
+# v2 NOTE for this whole section: catch-up is now OPT-IN per rule
+# (`replay.enabled`) rather than a desired-state comparison the engine
+# derives for itself, so every rule below that is expected to replay says
+# so. "custom rule" in the names below means what v1 called
+# `Action.CUSTOM` + a `script` field, which in v2 is just an ordinary
+# `script.turn_on` action - the property each test pins is unchanged.
 async def test_catch_up_applies_the_last_passed_rule(hass, engine):
     _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
     await engine.store.async_set_enabled(True)
     hass.states.async_set("input_boolean.t", "off")
     await engine.store.async_replace_all({}, [
         Rule(id="on", profile=1, day="1", time=time(11, 0),
-             action="on", devices=("input_boolean.t",)),
+             action=_ON, target={"entity_id": ["input_boolean.t"]},
+             replay=Replay(enabled=True)),
         Rule(id="off", profile=1, day="1", time=time(18, 0),
-             action="off", devices=("input_boolean.t",)),
+             action=_OFF, target={"entity_id": ["input_boolean.t"]},
+             replay=Replay(enabled=True)),
     ])
     await engine.async_refresh()
 
@@ -494,7 +388,7 @@ async def test_catch_up_applies_the_last_passed_rule(hass, engine):
     await hass.async_block_till_done()
 
     assert hass.states.get("input_boolean.t").state == "on"
-    assert [r["outcome"] for r in results] == ["changed"]
+    assert [r["outcome"] for r in results] == ["called"]
 
 
 async def test_catch_up_before_any_rule_does_nothing(hass, engine):
@@ -503,7 +397,7 @@ async def test_catch_up_before_any_rule_does_nothing(hass, engine):
     hass.states.async_set("input_boolean.t", "off")
     await engine.store.async_replace_all({}, [
         Rule(id="on", profile=1, day="1", time=time(11, 0),
-             action="on", devices=("input_boolean.t",)),
+             action=_ON, target={"entity_id": ["input_boolean.t"]}),
     ])
     await engine.async_refresh()
 
@@ -522,7 +416,8 @@ async def test_catch_up_skips_custom_rules_by_default(hass, engine):
     hass.services.async_register("script", "turn_on", record)
     await engine.store.async_replace_all({}, [
         Rule(id="c", profile=1, day="1", time=time(11, 0),
-             action="custom", script="script.demo"),
+             action="script.turn_on",
+             target={"entity_id": ["script.demo"]}),
     ])
     await engine.async_refresh()
 
@@ -546,8 +441,9 @@ async def test_catch_up_replays_a_passed_replay_on_restart_custom_rule(hass, eng
     hass.services.async_register("script", "turn_on", record)
     await engine.store.async_replace_all({}, [
         Rule(id="c", profile=1, day="1", time=time(11, 0),
-             action="custom", script="script.demo",
-             replay_on_restart=True),
+             action="script.turn_on",
+             target={"entity_id": ["script.demo"]},
+             replay=Replay(enabled=True)),
     ])
     await engine.async_refresh()
 
@@ -561,7 +457,7 @@ async def test_catch_up_replays_a_passed_replay_on_restart_custom_rule(hass, eng
 async def test_catch_up_does_not_replay_a_custom_rule_that_has_not_passed(hass, engine):
     # Regression test for the bug the coordinator's round-1 review caught:
     # the original implementation looped over the unfiltered rule list and
-    # replayed every `replay_on_restart` custom rule unconditionally,
+    # replayed every opted-in rule unconditionally,
     # firing scripts scheduled for later the same day immediately on
     # restart. Confirmed to fail against the pre-fix code (calls == 1).
     _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
@@ -574,8 +470,9 @@ async def test_catch_up_does_not_replay_a_custom_rule_that_has_not_passed(hass, 
     hass.services.async_register("script", "turn_on", record)
     await engine.store.async_replace_all({}, [
         Rule(id="c", profile=1, day="1", time=time(18, 0),
-             action="custom", script="script.demo",
-             replay_on_restart=True),
+             action="script.turn_on",
+             target={"entity_id": ["script.demo"]},
+             replay=Replay(enabled=True)),
     ])
     await engine.async_refresh()
 
@@ -597,8 +494,9 @@ async def test_catch_up_does_not_replay_a_disabled_custom_rule(hass, engine):
     hass.services.async_register("script", "turn_on", record)
     await engine.store.async_replace_all({}, [
         Rule(id="c", profile=1, day="1", time=time(11, 0),
-             action="custom", script="script.demo",
-             replay_on_restart=True, enabled=False),
+             action="script.turn_on",
+             target={"entity_id": ["script.demo"]},
+             replay=Replay(enabled=True), enabled=False),
     ])
     await engine.async_refresh()
 
@@ -608,15 +506,33 @@ async def test_catch_up_does_not_replay_a_disabled_custom_rule(hass, engine):
     assert calls == []
 
 
-async def test_catch_up_declines_to_act_on_a_conflicting_pair(hass, engine):
+async def test_catch_up_on_a_conflicting_pair_applies_both_in_order(hass, engine):
+    """DELIBERATE v2 CHANGE, pinned here rather than left to be discovered.
+
+    v1's catch-up asked `block.desired_state_at` what state each device
+    should be in, and when two rules at the same moment gave contradictory
+    answers it DECLINED to act - `results == []`, the device untouched.
+    `desired_state_at` is gone (Task 8; test_replay.py asserts its
+    absence), because an opaque service call has no queryable desired
+    state to compare. So catch-up no longer arbitrates: it replays every
+    opted-in passed rule in time order, and for a same-moment pair the
+    LAST one applied wins.
+
+    That is not a silent loss - `find_conflicts` still reports this pair
+    as a conflict over the websocket, which is where the user is told.
+    But the engine no longer refuses on their behalf, and this test says
+    so out loud so nobody reads v1's docstring and believes otherwise.
+    """
     _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
     await engine.store.async_set_enabled(True)
     hass.states.async_set("input_boolean.t", "off")
     await engine.store.async_replace_all({}, [
         Rule(id="on", profile=1, day="1", time=time(11, 0),
-             action="on", devices=("input_boolean.t",)),
+             action=_ON, target={"entity_id": ["input_boolean.t"]},
+             replay=Replay(enabled=True)),
         Rule(id="off-same-time", profile=1, day="1", time=time(11, 0),
-             action="off", devices=("input_boolean.t",)),
+             action=_OFF, target={"entity_id": ["input_boolean.t"]},
+             replay=Replay(enabled=True)),
     ])
     await engine.async_refresh()
 
@@ -624,7 +540,8 @@ async def test_catch_up_declines_to_act_on_a_conflicting_pair(hass, engine):
         results = await engine.async_catch_up()
     await hass.async_block_till_done()
 
-    assert results == []
+    assert [r["outcome"] for r in results] == ["called", "called"]
+    # Both ran; the schedule's own order decided the outcome, not the engine.
     assert hass.states.get("input_boolean.t").state == "off"
 
 
@@ -655,7 +572,7 @@ async def test_rolled_forward_zmanim_keep_the_current_blocks_tail(
     hass.states.async_set("input_boolean.t", "on")
     await engine.store.async_replace_all({}, [
         Rule(id="late-off", profile=1, day="1", time=time(23, 0),
-             action="off", devices=("input_boolean.t",)),
+             action=_OFF, target={"entity_id": ["input_boolean.t"]}),
     ])
     await engine.async_refresh()
     assert [item.rule.id for item in engine.upcoming()] == ["late-off"]
@@ -686,7 +603,7 @@ async def test_next_block_is_adopted_once_the_tail_has_passed(
     await engine.store.async_set_enabled(True)
     await engine.store.async_replace_all({}, [
         Rule(id="late-off", profile=1, day="1", time=time(23, 0),
-             action="off", devices=("input_boolean.t",)),
+             action=_OFF, target={"entity_id": ["input_boolean.t"]}),
     ])
     await engine.async_refresh()
     assert engine.current_block.erev_date == date(2026, 8, 14)
@@ -724,9 +641,9 @@ async def test_the_hold_releases_itself_and_arms_the_next_block(
     hass.states.async_set("input_boolean.t", "on")
     await engine.store.async_replace_all({}, [
         Rule(id="morning-on", profile=1, day="1", time=time(9, 0),
-             action="on", devices=("input_boolean.t",)),
+             action=_ON, target={"entity_id": ["input_boolean.t"]}),
         Rule(id="late-off", profile=1, day="1", time=time(23, 0),
-             action="off", devices=("input_boolean.t",)),
+             action=_OFF, target={"entity_id": ["input_boolean.t"]}),
     ])
     await engine.async_refresh()
     assert engine.current_block.erev_date == date(2026, 8, 14)
@@ -792,7 +709,7 @@ async def test_a_restart_inside_the_hold_still_fires_the_pending_tail(
     await store.async_set_enabled(True)
     await store.async_replace_all({}, [
         Rule(id="late-off", profile=1, day="1", time=time(23, 0),
-             action="off", devices=("input_boolean.t",)),
+             action=_OFF, target={"entity_id": ["input_boolean.t"]}),
     ])
     engine = ShabbatEngine(hass, store)
     hass.states.async_set("input_boolean.t", "on")
@@ -841,7 +758,7 @@ async def test_a_restart_after_the_tail_adopts_the_next_block(
     await store.async_set_enabled(True)
     await store.async_replace_all({}, [
         Rule(id="late-off", profile=1, day="1", time=time(23, 0),
-             action="off", devices=("input_boolean.t",)),
+             action=_OFF, target={"entity_id": ["input_boolean.t"]}),
     ])
     engine = ShabbatEngine(hass, store)
     await engine.async_refresh()
@@ -881,7 +798,7 @@ async def test_concurrent_refreshes_do_not_double_up_timers(
     hass.states.async_set("input_boolean.t", "on")
     await engine.store.async_replace_all({}, [
         Rule(id="off", profile=1, day="1", time=time(11, 0),
-             action="off", devices=("input_boolean.t",)),
+             action=_OFF, target={"entity_id": ["input_boolean.t"]}),
     ])
 
     fired = []
@@ -975,32 +892,54 @@ async def test_zmanim_notification_is_dismissed_once_readable(hass, engine):
 # --- Final review I2/I3: nothing may be dropped in silence ----------------
 
 
-async def test_unsupported_domain_reports_skipped_not_ok(hass, engine, caplog):
-    """A cover./media_player. rule used to report success and do nothing."""
-    hass.states.async_set("cover.a", "open")
+async def test_an_unsupported_domain_is_no_longer_a_thing(hass, engine):
+    """v1's `cover.` test, inverted: the limitation it guarded is GONE.
+
+    v1 could only drive four domains and reported `skipped` for anything
+    else; the risk was that it reported OK instead. v2 hands every action
+    to `async_call_from_config`, so a cover rule is an ordinary rule and
+    must actually make the call - there is no allow-list left to fall off.
+    """
+    calls = async_mock_service(hass, "cover", "close_cover")
     results = await engine.async_apply_rule(
-        _rule(action="off", devices=("cover.a",))
+        _rule(action="cover.close_cover", entities=("cover.a",))
     )
+    await hass.async_block_till_done()
 
-    assert [item["outcome"] for item in results] == ["skipped"]
-    assert "cover" in caplog.text
-    assert "cover.a" in caplog.text
+    assert [item["outcome"] for item in results] == ["called"]
+    assert len(calls) == 1
 
 
-async def test_unsupported_fan_mode_is_logged_with_entity_and_mode(
+async def test_a_value_home_assistant_rejects_is_reported_failed_not_called(
     hass, engine, caplog
 ):
+    """The successor to v1's unsupported-fan-mode test.
+
+    v1 knew climate's `fan_modes` attribute itself and reported `skipped`
+    for a mode the unit did not have. v2 knows nothing about climate, so
+    the guarantee has to come from Home Assistant's own service
+    validation - and the thing that must not happen is unchanged: a value
+    the unit cannot accept must never come back as if the rule fired.
+    """
     hass.states.async_set(
         "climate.ac", "cool",
-        {"fan_modes": ["auto", "high"], "fan_mode": "auto"},
-    )
-    results = await engine.async_apply_rule(
-        _rule(devices=("climate.ac",), settings={"fan_mode": "quiet"})
+        {"fan_modes": ["auto", "high"], "fan_mode": "auto",
+         "supported_features": 8},
     )
 
-    assert [item["outcome"] for item in results] == ["skipped"]
-    assert results[0]["attribute"] == "fan_mode"
-    assert "climate.ac" in caplog.text
+    async def reject(_call):
+        raise ValueError("Fan mode quiet is not valid")
+
+    hass.services.async_register("climate", "set_fan_mode", reject)
+
+    with patch("custom_components.shabbat_scheduler.engine.asyncio.sleep"):
+        results = await engine.async_apply_rule(
+            _rule(action="climate.set_fan_mode", entities=("climate.ac",),
+                  data={"fan_mode": "quiet"})
+        )
+
+    assert [item["outcome"] for item in results] == ["failed"]
+    assert "quiet" in results[0]["error"]
     assert "quiet" in caplog.text
 
 
@@ -1022,10 +961,17 @@ async def test_failure_records_the_exception_and_a_reason(hass, engine, caplog):
     hass.services.async_register("switch", "turn_on", always_fail)
 
     with patch("custom_components.shabbat_scheduler.engine.asyncio.sleep"):
-        results = await engine.async_apply_rule(_rule(devices=("switch.t",)))
+        results = await engine.async_apply_rule(
+            _rule(action="switch.turn_on", entities=("switch.t",))
+        )
 
     assert results[0]["outcome"] == "failed"
-    assert "cloud auth expired" in results[0]["reason"]
+    # v1 called this key `reason`; v2's `_call` calls it `error`. It still
+    # carries the TYPE as well as the message - an HA exception that
+    # stringifies to "" would otherwise leave a `failed` result saying
+    # nothing at all about why.
+    assert "cloud auth expired" in results[0]["error"]
+    assert "RuntimeError" in results[0]["error"]
 
     message = next(iter(hass.data["persistent_notification"].values()))["message"]
     assert "cloud auth expired" in message
@@ -1042,8 +988,8 @@ async def test_all_disabled_rules_notify_like_a_missing_profile(hass, engine):
     _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
     await engine.store.async_set_enabled(True)
     await engine.store.async_replace_all({}, [
-        Rule(id="r", profile=1, day="1", time=time(11, 0), action="on",
-             devices=("input_boolean.t",), enabled=False),
+        Rule(id="r", profile=1, day="1", time=time(11, 0), action=_ON,
+             target={"entity_id": ["input_boolean.t"]}, enabled=False),
     ])
     await engine.async_refresh()
 
@@ -1073,21 +1019,30 @@ async def test_event_is_self_describing_and_fires_before_the_calls(hass, engine)
 
     hass.bus.async_listen(EVENT_CALL_SERVICE, _call)
 
-    rule = _rule(action="on", devices=("input_boolean.t",))
+    rule = _rule()
     rule = dataclasses.replace(rule, name="בוקר שבת")
     await engine.async_apply_rule(rule)
     await hass.async_block_till_done()
 
     assert events[0].data["rule_id"] == rule.id
     assert events[0].data["name"] == "בוקר שבת"
-    assert events[0].data["action"] == "on"
-    assert events[0].data["devices"] == ["input_boolean.t"]
+    # v2 payload: the action and its target, not v1's enum + `devices`.
+    assert events[0].data["action"] == _ON
+    assert events[0].data["target"] == {"entity_id": ["input_boolean.t"]}
     assert order[0] == "event"  # must precede the calls, or attribution breaks
 
 
 async def test_all_calls_of_one_rule_share_the_events_context(hass, engine):
-    hass.states.async_set("input_boolean.t", "off")
-    hass.states.async_set("input_boolean.salon", "off")
+    """A rule that expands to SEVERAL calls must stamp them all identically.
+
+    v1 got several calls by having several `devices`; v2 makes one call per
+    target, so the surviving multi-call path is the climate shim, which
+    turns one authored `climate.set_temperature` into set_hvac_mode +
+    set_temperature. Both must carry the event's context or Home
+    Assistant attributes half the rule's changes to nothing.
+    """
+    hvac = async_mock_service(hass, "climate", "set_hvac_mode")
+    temperature = async_mock_service(hass, "climate", "set_temperature")
     contexts: list[str] = []
     event_context: list[str] = []
 
@@ -1104,10 +1059,17 @@ async def test_all_calls_of_one_rule_share_the_events_context(hass, engine):
     hass.bus.async_listen(EVENT_CALL_SERVICE, _call)
 
     await engine.async_apply_rule(
-        _rule(action="on", devices=("input_boolean.t", "input_boolean.salon"))
+        Rule(
+            id="r", profile=1, day="1", time=time(11, 0),
+            action="climate.set_temperature",
+            target={"entity_id": ["climate.ac"]},
+            data={"hvac_mode": "cool", "temperature": 22},
+        )
     )
     await hass.async_block_till_done()
 
+    assert len(hvac) == 1 and len(temperature) == 1  # genuinely two calls
+    assert len(contexts) == 2
     assert len(set(contexts)) == 1
     assert contexts[0] == event_context[0]
 
@@ -1127,12 +1089,12 @@ async def test_concurrent_rules_get_distinct_contexts(hass, engine):
     await asyncio.gather(
         engine.async_apply_rule(
             dataclasses.replace(
-                _rule(action="on", devices=("input_boolean.t",)), id="one"
+                _rule(entities=("input_boolean.t",)), id="one"
             )
         ),
         engine.async_apply_rule(
             dataclasses.replace(
-                _rule(action="off", devices=("input_boolean.salon",)), id="two"
+                _rule(action=_OFF, entities=("input_boolean.salon",)), id="two"
             )
         ),
     )

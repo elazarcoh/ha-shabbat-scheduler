@@ -166,15 +166,24 @@ class RuleSwitch(SwitchEntity):
         rule = self._current() or self._last_known
         return rule.name or (
             f"{rule.profile}d {rule.day} {rule.time.strftime('%H:%M')} "
-            f"{rule.action.value}"
+            f"{rule.action}"
         )
 
     @property
     def icon(self) -> str:
+        """One icon for every rule, unless the author picked one.
+
+        v1 chose between a plugged and an unplugged icon from its
+        three-value `Action` enum. v2's action is an arbitrary
+        "domain.service", so there is no on/off to read - and guessing
+        from the service name ("does it end in _off?") would be wrong for
+        exactly the actions that are not switches. A neutral icon that is
+        always right beats a plug icon that lies about `notify.mobile_app`
+        or `climate.set_temperature`; the rule's own `icon` field is how
+        an author says better.
+        """
         rule = self._current() or self._last_known
-        return rule.icon or (
-            "mdi:power-plug" if rule.action.value == "on" else "mdi:power-plug-off"
-        )
+        return rule.icon or "mdi:calendar-clock"
 
     @property
     def is_on(self) -> bool:
@@ -190,8 +199,9 @@ class RuleSwitch(SwitchEntity):
             "profile": rule.profile,
             "day": rule.day,
             "time": rule.time.isoformat(),
-            "action": rule.action.value,
-            "devices": list(rule.devices),
+            "action": rule.action,
+            "target": dict(rule.target),
+            "data": dict(rule.data),
         }
 
     async def async_turn_on(self, **kwargs) -> None:

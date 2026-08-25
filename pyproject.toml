@@ -9,6 +9,17 @@ dependencies = ["pyyaml"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+# A hang, not a failure, is this suite's characteristic breakage. Any test
+# using the `freezer` fixture freezes `time.monotonic()`, which IS the
+# asyncio event loop's clock - so an `await asyncio.sleep(n)` reached under
+# a frozen clock never returns, and neither does `asyncio.wait_for`, whose
+# own timeout is measured on that same frozen clock. The engine's retry
+# (RETRY_ATTEMPTS x RETRY_DELAY_SECONDS) is exactly such a sleep, so one
+# failing service call in a frozen test hangs the whole run forever rather
+# than failing it. SIGALRM is measured on real time and is not foolable
+# this way, so this turns that hang back into an ordinary test failure.
+timeout = 60
+timeout_method = "signal"
 
 [dependency-groups]
 dev = [

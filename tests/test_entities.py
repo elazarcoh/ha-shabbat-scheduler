@@ -5,7 +5,7 @@ from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.shabbat_scheduler.const import DOMAIN
-from custom_components.shabbat_scheduler.models import Rule
+from custom_components.shabbat_scheduler.models import Replay, Rule
 from custom_components.shabbat_scheduler.store import RuleStore
 
 
@@ -78,7 +78,7 @@ async def test_master_switch_turns_on_and_persists(hass):
 async def test_one_switch_per_rule(hass, rule_switch_entity_id):
     entry = await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action="on", name="בוקר שבת"),
+             action="input_boolean.turn_on", name="בוקר שבת"),
     ])
     entity_id = rule_switch_entity_id(entry, "r1")
     assert entity_id is not None
@@ -90,7 +90,8 @@ async def test_one_switch_per_rule(hass, rule_switch_entity_id):
 
 async def test_rule_switch_toggle_persists(hass, rule_switch_entity_id):
     entry = await _setup(hass, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on"),
+        Rule(id="r1", profile=1, day="1", time=time(11, 0),
+             action="input_boolean.turn_on"),
     ])
     entity_id = rule_switch_entity_id(entry, "r1")
     assert entity_id is not None
@@ -126,7 +127,8 @@ async def test_next_action_sensor_unknown_when_master_off(hass):
         "sensor.jewish_calendar_upcoming_havdalah", "2026-08-15T17:01:00+00:00"
     )
     await _setup(hass, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="on"),
+        Rule(id="r1", profile=1, day="1", time=time(11, 0),
+             action="input_boolean.turn_on"),
     ])
     assert hass.states.get("sensor.shabbat_scheduler_next_action").state == "unknown"
 
@@ -146,7 +148,8 @@ async def test_last_run_sensor_reports_timestamp_after_a_run(hass, test_booleans
     await engine.async_apply_rule(
         Rule(
             id="r1", profile=1, day="1", time=time(11, 0),
-            action="on", devices=("input_boolean.t",),
+            action="input_boolean.turn_on",
+            target={"entity_id": ["input_boolean.t"]},
         )
     )
     await hass.async_block_till_done()
@@ -157,32 +160,44 @@ async def test_last_run_sensor_reports_timestamp_after_a_run(hass, test_booleans
 
 
 async def test_last_run_sensor_distinguishes_empty_run_from_never_ran(hass):
-    """A rule that genuinely ran but produced zero results (e.g. a CUSTOM
-    rule with no script configured) must still be distinguishable from a
-    sensor that has never run at all - that is the whole point of last_run.
+    """A run that genuinely happened but produced zero results must still be
+    distinguishable from a sensor that has never run at all - that is the
+    whole point of last_run.
 
     Comparing against the never-ran baseline (rather than just asserting
     != "unknown") matters: under the pre-fix len()-based implementation,
     the never-ran state is "0" - not "unknown" - and an empty-results run
     is also "0", so the two are silently identical. Only a direct
     before/after comparison exposes that ambiguity.
+
+    v2 note: the empty-results path used to be a CUSTOM rule with no
+    script configured. `expand_action` now always yields at least one call
+    for any action, so `async_apply_rule` can no longer return []. The
+    surviving zero-results run is a catch-up with nothing opted in to
+    replay - which still stamps `last_run`/`last_run_at` and still fires
+    EVENT_RULE_COMPLETED, so the ambiguity being guarded is unchanged.
     """
     entry = await _setup(hass)
     never_ran_state = hass.states.get("sensor.shabbat_scheduler_last_run").state
 
     engine = hass.data[DOMAIN][entry.entry_id]["engine"]
-    results = await engine.async_apply_rule(
-        Rule(
-            id="r1", profile=1, day="1", time=time(11, 0),
-            action="custom", devices=(),
-        )
-    )
+    _zmanim(hass)
+    await engine.store.async_set_enabled(True)
+    await engine.store.async_replace_all({}, [
+        Rule(id="r1", profile=1, day="1", time=time(11, 0),
+             action="input_boolean.turn_on",
+             target={"entity_id": ["input_boolean.t"]}),
+    ])
+    await engine.async_refresh()
+    results = await engine.async_catch_up()
+
     assert results == []  # confirms this is the ambiguous empty-results path
     await hass.async_block_till_done()
 
     state = hass.states.get("sensor.shabbat_scheduler_last_run")
     assert state.state != never_ran_state
     assert state.attributes["result_count"] == 0
+    await engine.async_shutdown()
 
 
 # --- Final review C2: restart catch-up must not be a one-shot inline in ----
@@ -224,7 +239,10 @@ async def test_catch_up_runs_when_zmanim_arrive_after_setup(
     freezer.move_to("2026-08-15T08:30:00+00:00")  # 11:30 Asia/Jerusalem
     entry = await _entry_with(hass, [
         Rule(id="on", profile=1, day="1", time=time(11, 0),
-             action="on", devices=("input_boolean.t",)),
+             action="input_boolean.turn_on",
+             target={"entity_id": ["input_boolean.t"]},
+             # v2: catch-up is opt-in per rule.
+             replay=Replay(enabled=True)),
     ])
     hass.states.async_set("input_boolean.t", "off")
 
@@ -255,7 +273,10 @@ async def test_catch_up_runs_at_most_once_per_setup(
     _zmanim(hass)
     entry = await _entry_with(hass, [
         Rule(id="on", profile=1, day="1", time=time(11, 0),
-             action="on", devices=("input_boolean.t",)),
+             action="input_boolean.turn_on",
+             target={"entity_id": ["input_boolean.t"]},
+             # v2: catch-up is opt-in per rule.
+             replay=Replay(enabled=True)),
     ])
     hass.states.async_set("input_boolean.t", "off")
 
@@ -292,7 +313,8 @@ async def test_setup_completes_while_an_unavailable_device_is_retried(
 
     entry = await _entry_with(hass, [
         Rule(id="on", profile=1, day="1", time=time(11, 0),
-             action="on", devices=("fan.ac",)),
+             action="fan.turn_on", target={"entity_id": ["fan.ac"]},
+             replay=Replay(enabled=True)),
     ])
 
     assert await hass.config_entries.async_setup(entry.entry_id)

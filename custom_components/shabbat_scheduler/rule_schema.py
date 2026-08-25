@@ -24,9 +24,25 @@ _DEFAULTS_FIELDS = {"target", "data"}
 
 _V1_FIELDS = {"devices", "settings", "script", "variables", "replay_on_restart"}
 
+# Server-owned, never client-settable, but present in every rule the API
+# hands out (see store.rule_to_dict): the v1 -> v2 migration writes them so
+# the card can say WHICH rule it could not convert, which is the whole
+# point of recording them. Rejecting them on the way back in - which is
+# what happened until now - means a client that reads a rule, edits one
+# field and PUTs it back is refused with "unknown field(s)", for a field it
+# never chose to send. They are dropped instead of stored: a client still
+# cannot set them, so the guarantee the ledger asked for is intact, but a
+# read-modify-write no longer fails.
+_READ_ONLY_FIELDS = {"migration_error", "migration_source"}
+
 
 class RuleValidationError(ValueError):
     """A rule as supplied cannot be built."""
+
+
+def _strip_read_only(data: dict) -> dict:
+    """Drop the server-owned fields a client may echo back. See above."""
+    return {key: value for key, value in data.items() if key not in _READ_ONLY_FIELDS}
 
 
 def _check_unknown_fields(data: dict, allowed: set[str] = _FIELDS) -> None:
@@ -196,13 +212,16 @@ def changes_from_api(data: dict) -> dict:
     """Validate a partial update into kwargs for dataclasses.replace."""
     if "id" in data:
         raise RuleValidationError("id cannot be changed")
-    _check_unknown_fields(data)
-    return {field: _coerce(field, value) for field, value in data.items()}
+    payload = _strip_read_only(data)
+    _check_unknown_fields(payload)
+    return {field: _coerce(field, value) for field, value in payload.items()}
 
 
 def rule_from_api(data: dict, rule_id: str) -> Rule:
     """Build a validated Rule. Any client-supplied id is ignored."""
-    payload = {key: value for key, value in data.items() if key != "id"}
+    payload = _strip_read_only(
+        {key: value for key, value in data.items() if key != "id"}
+    )
     _check_unknown_fields(payload)
 
     for required in ("profile", "day", "time", "action"):

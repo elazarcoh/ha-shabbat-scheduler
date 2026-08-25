@@ -57,10 +57,15 @@ async def test_full_one_day_block_drives_test_booleans(
     store = RuleStore(hass)
     await store.async_load()
     await store.async_replace_all(
-        {"devices": ["input_boolean.salon"]},
+        # The defaults carry the target; each rule supplies only its action.
+        # That is the shape the README documents as the common case, and the
+        # one `merge_defaults` exists for.
+        {"target": {"entity_id": ["input_boolean.salon"]}},
         [
-            Rule(id="on", profile=1, day="1", time=time(11, 0), action="on"),
-            Rule(id="off", profile=1, day="1", time=time(18, 0), action="off"),
+            Rule(id="on", profile=1, day="1", time=time(11, 0),
+                 action="input_boolean.turn_on"),
+            Rule(id="off", profile=1, day="1", time=time(18, 0),
+                 action="input_boolean.turn_off"),
         ],
     )
     await store.async_set_enabled(True)
@@ -102,8 +107,9 @@ async def test_manual_change_is_not_reverted(hass, jerusalem, test_booleans, fre
     store = RuleStore(hass)
     await store.async_load()
     await store.async_replace_all(
-        {"devices": ["input_boolean.salon"]},
-        [Rule(id="on", profile=1, day="1", time=time(11, 0), action="on")],
+        {"target": {"entity_id": ["input_boolean.salon"]}},
+        [Rule(id="on", profile=1, day="1", time=time(11, 0),
+              action="input_boolean.turn_on")],
     )
     await store.async_set_enabled(True)
 
@@ -148,9 +154,9 @@ async def test_a_restart_between_havdalah_and_the_tail_still_fires_it(
     store = RuleStore(hass)
     await store.async_load()
     await store.async_replace_all(
-        {"devices": ["input_boolean.salon"]},
+        {"target": {"entity_id": ["input_boolean.salon"]}},
         [Rule(id="late-off", profile=1, day="1", time=time(23, 0),
-              action="off")],
+              action="input_boolean.turn_off")],
     )
     await store.async_set_enabled(True)
 
@@ -214,8 +220,8 @@ async def test_a_card_can_drive_the_whole_loop(
                 "profile": 1,
                 "day": "1",
                 "time": "11:00:00",
-                "action": "on",
-                "devices": ["input_boolean.salon"],
+                "action": "input_boolean.turn_on",
+                "target": {"entity_id": ["input_boolean.salon"]},
                 "name": "בוקר שבת",
             },
         }

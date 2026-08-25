@@ -1,6 +1,6 @@
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
-import { actionColour, formatWarning, ruleBrief, warningsForRule } from './format';
+import { formatWarning, ruleBrief, ruleColour, warningsForRule } from './format';
 import { t } from './strings';
 import type { Defaults, RuleData, WarningData } from './types';
 
@@ -86,7 +86,7 @@ export class ShabbatRuleRow extends LitElement {
           }
         }}
       >
-        <span class="dot" style="background:${actionColour(this.rule.action)}"></span>
+        <span class="dot" style="background:${ruleColour(this.rule)}"></span>
         <span class="time">${this.rule.time.slice(0, 5)}</span>
         <div class="body">
           ${title ? html`<div class="title">${title}</div>` : nothing}

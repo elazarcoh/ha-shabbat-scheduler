@@ -1,19 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import {
-  actionColour,
   buildGroups,
+  describeTarget,
   formatWarning,
   isPreview,
   ruleBrief,
+  ruleColour,
   unattachedWarnings,
   warningsForRule,
 } from '../src/format';
 import type { CardState, RuleData, WarningData } from '../src/types';
 
 const rule = (over: Partial<RuleData>): RuleData => ({
-  id: 'r', profile: 1, day: '1', time: '11:00:00', action: 'on',
-  devices: [], settings: {}, name: null, icon: null, enabled: true,
-  script: null, variables: {}, replay_on_restart: false, color: null,
+  id: 'r', profile: 1, day: '1', time: '11:00:00',
+  action: 'climate.turn_on', target: {}, data: {}, condition: [],
+  replay: { enabled: false }, name: null, icon: null, enabled: true,
+  color: null,
   ...over,
 });
 
@@ -132,54 +134,105 @@ describe('isPreview', () => {
 });
 
 describe('ruleBrief', () => {
-  it('falls back to the defaults devices when the rule has none', () => {
-    const brief = ruleBrief(rule({ devices: [] }), { devices: ['climate.salon'] });
+  it('names the action, which is the whole description now', () => {
+    const brief = ruleBrief(rule({ action: 'climate.set_temperature' }), {});
+    expect(brief).toContain('climate.set_temperature');
+  });
+
+  it('falls back to the defaults target when the rule has none', () => {
+    const brief = ruleBrief(
+      rule({ target: {} }),
+      { target: { entity_id: ['climate.salon'] } },
+    );
     expect(brief).toContain('climate.salon');
   });
 
-  it('prefers the rule devices over the defaults', () => {
-    const brief = ruleBrief(rule({ devices: ['climate.kids'] }), {
-      devices: ['climate.salon'],
-    });
+  it('prefers the rule target over the defaults', () => {
+    const brief = ruleBrief(
+      rule({ target: { entity_id: ['climate.kids'] } }),
+      { target: { entity_id: ['climate.salon'] } },
+    );
     expect(brief).toContain('climate.kids');
     expect(brief).not.toContain('climate.salon');
   });
 
-  it('merges settings over the defaults settings', () => {
+  it('merges data over the defaults data', () => {
     const brief = ruleBrief(
-      rule({ devices: ['climate.a'], settings: { temperature: 24 } }),
-      { settings: { temperature: 26, fan_mode: 'quiet' } },
+      rule({
+        action: 'climate.set_temperature',
+        target: { entity_id: ['climate.a'] },
+        data: { temperature: 24 },
+      }),
+      { data: { temperature: 26, fan_mode: 'quiet' } },
     );
     expect(brief).toContain('24');
     expect(brief).toContain('quiet');
     expect(brief).not.toContain('26');
   });
 
-  it('names the script for a custom action', () => {
+  it('describes a script rule, which v1 had a special case for', () => {
     const brief = ruleBrief(
-      rule({ action: 'custom', script: 'script.boiler' }), {},
+      rule({ action: 'script.turn_on', target: { entity_id: ['script.boiler'] } }),
+      {},
     );
     expect(brief).toContain('script.boiler');
   });
 });
 
-describe('actionColour', () => {
-  it('gives on, off and custom three distinguishable colours', () => {
-    const colours = new Set(['on', 'off', 'custom'].map(actionColour));
-    expect(colours.size).toBe(3);
+describe('describeTarget', () => {
+  it('names every entity in an entity_id list', () => {
+    expect(describeTarget({ entity_id: ['climate.a', 'climate.b'] }))
+      .toBe('climate.a, climate.b');
   });
 
-  it('does not throw on an action it has never seen', () => {
-    expect(typeof actionColour('something-new')).toBe('string');
+  it('accepts a bare string as well as a list', () => {
+    expect(describeTarget({ entity_id: 'climate.a' })).toBe('climate.a');
+  });
+
+  it('names an area target as its area, never as guessed entities', () => {
+    // The card cannot resolve an area to its entities; only the server
+    // can. Showing the area id is the honest answer.
+    expect(describeTarget({ area_id: ['salon'] })).toBe('salon');
+  });
+
+  it('names every selector key a target carries, not just the first', () => {
+    const text = describeTarget({
+      entity_id: ['climate.a'],
+      area_id: ['salon'],
+      label_id: 'shabbat',
+    });
+    expect(text).toContain('climate.a');
+    expect(text).toContain('salon');
+    expect(text).toContain('shabbat');
+  });
+
+  it('is empty for an empty target', () => {
+    expect(describeTarget({})).toBe('');
+  });
+});
+
+describe('ruleColour', () => {
+  it("uses the rule's own colour when it has one", () => {
+    expect(ruleColour(rule({ color: '#123456' }))).toBe('#123456');
+  });
+
+  it('gives a rule with no colour a neutral one rather than guessing', () => {
+    // v1 coloured the dot from its on/off/custom enum. A v2 action is an
+    // arbitrary service, so two different services must NOT get two
+    // different colours invented for them.
+    const on = ruleColour(rule({ action: 'switch.turn_on' }));
+    const set = ruleColour(rule({ action: 'climate.set_temperature' }));
+    expect(on).toBe(set);
+    expect(typeof on).toBe('string');
   });
 });
 
 describe('warning attachment', () => {
-  // Shaped exactly like block.conflict_warnings emits (block.py:135-154):
-  // no `message`, but device/profile/day/time and non-empty rule_ids.
+  // Shaped exactly like block.conflict_warnings emits: no `message`, but
+  // targets (a LIST) / profile / day / time and non-empty rule_ids.
   const conflict: WarningData = {
     kind: 'conflict',
-    device: 'climate.salon',
+    targets: ['climate.salon'],
     profile: 1,
     day: '1',
     time: '11:00:00',
@@ -213,7 +266,7 @@ describe('warning attachment', () => {
   it('surfaces a conflict in the banner when none of the rules it names are displayed', () => {
     const hiddenProfileConflict: WarningData = {
       kind: 'conflict',
-      device: 'climate.salon',
+      targets: ['climate.salon'],
       profile: 3,
       day: '1',
       time: '11:00:00',
@@ -226,24 +279,25 @@ describe('warning attachment', () => {
 });
 
 describe('formatWarning', () => {
-  // The real shape _conflict_warnings sends - no `message`, ever.
+  // The real shape _conflict_warnings sends - no `message`, ever, and
+  // `targets` is a LIST.
   const conflict: WarningData = {
     kind: 'conflict',
-    device: 'climate.salon',
+    targets: ['climate.salon'],
     profile: 1,
     day: '1',
     time: '11:00:00',
     rule_ids: ['rule-a', 'rule-b'],
   };
 
-  it('names the device and the time in English', () => {
+  it('names the target and the time in English', () => {
     const text = formatWarning(conflict, 'en');
     expect(text).toContain('climate.salon');
     expect(text).toContain('11:00:00');
     expect(text).not.toContain('undefined');
   });
 
-  it('names the device and the time in Hebrew', () => {
+  it('names the target and the time in Hebrew', () => {
     const text = formatWarning(conflict, 'he');
     expect(text).toContain('climate.salon');
     expect(text).toContain('11:00:00');
@@ -253,16 +307,45 @@ describe('formatWarning', () => {
   it('gives English and Hebrew visibly different text', () => {
     expect(formatWarning(conflict, 'en')).not.toBe(formatWarning(conflict, 'he'));
   });
-});
 
-import { deviceOptions } from '../src/format';
-import type { HassEntity } from '../src/types';
+  // REGRESSION TEST for a live break: the backend renamed this key from
+  // `device` (one string) to `targets` (a sorted list), because a
+  // conflict is the INTERSECTION of two rules' resolved targets and an
+  // area can expand to several entities. The card kept testing
+  // `warning.device !== undefined`, which is now never true, so every
+  // conflict warning silently rendered as an empty string - a
+  // conflicting schedule displayed as clean, on every install, with the
+  // conflict correctly detected and sitting unread in the payload.
+  it('renders a conflict that names SEVERAL entities', () => {
+    const text = formatWarning(
+      { ...conflict, targets: ['climate.a', 'climate.b'] },
+      'en',
+    );
+    expect(text).toContain('climate.a');
+    expect(text).toContain('climate.b');
+    expect(text).not.toBe('');
+  });
+
+  it('never renders a conflict as an empty string', () => {
+    expect(formatWarning(conflict, 'en')).not.toBe('');
+  });
+
+  it('falls back to `message` for a warning it cannot describe', () => {
+    expect(formatWarning({ kind: 'no_block', message: 'no block' }, 'en'))
+      .toBe('no block');
+  });
+});
 
 import { formToChanges, formToCreate, ruleToForm } from '../src/format';
 
 const base = rule({
-  id: 'r1', profile: 1, day: '1', time: '11:00:00', action: 'on',
-  devices: ['climate.salon'], settings: { temperature: 26 }, name: 'Morning',
+  id: 'r1', profile: 1, day: '1', time: '11:00:00',
+  action: 'climate.set_temperature',
+  target: { entity_id: ['climate.salon'] },
+  data: { temperature: 26 },
+  condition: [{ condition: 'state', entity_id: 'binary_sensor.gate', state: 'on' }],
+  replay: { enabled: true, within: '02:00:00' },
+  name: 'Morning',
 });
 
 describe('ruleToForm / formToCreate / formToChanges', () => {
@@ -275,16 +358,24 @@ describe('ruleToForm / formToCreate / formToChanges', () => {
     expect(formToChanges(form, base)).toEqual({ time: '12:00:00' });
   });
 
-  it('detects a changed device list, not just a changed reference', () => {
-    const same = { ...ruleToForm(base), devices: ['climate.salon'] };
+  it('detects a changed target, not just a changed reference', () => {
+    const same = { ...ruleToForm(base), target: { entity_id: ['climate.salon'] } };
     expect(formToChanges(same, base)).toEqual({});
-    const different = { ...ruleToForm(base), devices: ['climate.kids'] };
-    expect(formToChanges(different, base)).toEqual({ devices: ['climate.kids'] });
+    const different = { ...ruleToForm(base), target: { entity_id: ['climate.kids'] } };
+    expect(formToChanges(different, base))
+      .toEqual({ target: { entity_id: ['climate.kids'] } });
   });
 
-  it('detects a changed setting value', () => {
-    const form = { ...ruleToForm(base), settings: { temperature: 24 } };
-    expect(formToChanges(form, base)).toEqual({ settings: { temperature: 24 } });
+  it('detects a changed data value', () => {
+    const form = { ...ruleToForm(base), data: { temperature: 24 } };
+    expect(formToChanges(form, base)).toEqual({ data: { temperature: 24 } });
+  });
+
+  // The dialog does not EDIT these, but the form carries them so that an
+  // ordinary edit cannot drop them and a duplicate is a real duplicate.
+  it('carries condition and replay through an untouched edit', () => {
+    const form = { ...ruleToForm(base), name: 'renamed' };
+    expect(formToChanges(form, base)).toEqual({ name: 'renamed' });
   });
 
   it('sends a cleared name as null rather than omitting it', () => {
@@ -296,8 +387,14 @@ describe('ruleToForm / formToCreate / formToChanges', () => {
     const payload = formToCreate(ruleToForm(base), 3);
     expect(payload.profile).toBe(3);
     expect(payload.day).toBe('1');
-    expect(payload.action).toBe('on');
-    expect(payload.devices).toEqual(['climate.salon']);
+    expect(payload.action).toBe('climate.set_temperature');
+    expect(payload.target).toEqual({ entity_id: ['climate.salon'] });
+    // A duplicate goes through formToCreate too, so the payload it
+    // cannot edit must still travel with it - otherwise "Duplicate"
+    // quietly produces a rule that does something different.
+    expect(payload.data).toEqual({ temperature: 26 });
+    expect(payload.condition).toEqual(base.condition);
+    expect(payload.replay).toEqual({ enabled: true, within: '02:00:00' });
     // A create must never carry an id - the server generates it.
     expect(payload.id).toBeUndefined();
   });
@@ -306,144 +403,5 @@ describe('ruleToForm / formToCreate / formToChanges', () => {
     const payload = formToCreate({ ...ruleToForm(base), enabled: false }, 1);
     expect(payload.enabled).toBe(false);
     expect(typeof payload.enabled).toBe('boolean');
-  });
-});
-
-// The attributes of the units this system drives.
-//
-// `min_temp` and `target_temp_step` are deliberately DIFFERENT between the
-// two. Both units really do report 16 / 0.5, but a fixture where the two
-// devices agree cannot tell `Math.max` from `Math.min`: with both at 16,
-// swapping "narrowest" for "widest" on the minimum changed nothing and the
-// whole suite stayed green, exactly as it did for the "already sorted"
-// fixture this branch fixed once before. Only `max_temp` (31 vs 32)
-// discriminated. Splitting the minimums and the steps is what makes
-// "the narrowest range every device accepts" an assertion rather than a
-// coincidence - and 18 / 1.0 are ordinary values for a unit of this kind.
-const SALON: HassEntity = {
-  state: 'off',
-  attributes: {
-    hvac_modes: ['off', 'heat_cool', 'cool', 'fan_only', 'dry', 'heat'],
-    fan_modes: ['auto', 'quiet', 'low', 'medlow', 'medium', 'medhigh', 'high', 'strong'],
-    min_temp: 16.0, max_temp: 31.0, target_temp_step: 0.5,
-  },
-};
-const KIDS: HassEntity = {
-  state: 'off',
-  attributes: {
-    hvac_modes: ['off', 'auto', 'cool', 'heat', 'dry', 'fan_only'],
-    fan_modes: ['auto', 'low', 'medium', 'high', 'turbo', 'silent'],
-    min_temp: 18, max_temp: 32, target_temp_step: 1.0,
-  },
-};
-const BOOLEAN: HassEntity = { state: 'off', attributes: {} };
-
-describe('deviceOptions', () => {
-  it('offers exactly what a single device declares', () => {
-    const o = deviceOptions({ 'climate.salon': SALON }, ['climate.salon']);
-    expect(o.fanModes).toContain('quiet');
-    expect(o.fanModes).not.toContain('silent');
-    expect(o.minTemp).toBe(16);
-    expect(o.maxTemp).toBe(31);
-    expect(o.tempStep).toBe(0.5);
-    expect(o.climate).toBe(true);
-    expect(o.intersected).toBe(false);
-  });
-
-  it('offers exactly what the OTHER single device declares', () => {
-    // The pair above and this one differ in every bound, so a "narrowest"
-    // that had quietly become "widest" cannot hide behind one of them.
-    const o = deviceOptions({ 'climate.kids': KIDS }, ['climate.kids']);
-    expect(o.minTemp).toBe(18);
-    expect(o.maxTemp).toBe(32);
-    expect(o.tempStep).toBe(1.0);
-  });
-
-  it('intersects when devices disagree, dropping what only one offers', () => {
-    const o = deviceOptions(
-      { 'climate.salon': SALON, 'climate.kids': KIDS },
-      ['climate.salon', 'climate.kids'],
-    );
-    expect(o.fanModes).toEqual(['auto', 'low', 'medium', 'high']);
-    expect(o.fanModes).not.toContain('quiet');
-    expect(o.fanModes).not.toContain('silent');
-    expect(o.intersected).toBe(true);
-  });
-
-  it('narrows the temperature range to what every device accepts', () => {
-    const o = deviceOptions(
-      { 'climate.salon': SALON, 'climate.kids': KIDS },
-      ['climate.salon', 'climate.kids'],
-    );
-    // The narrowest range EVERY device accepts: the kids' floor and the
-    // salon's ceiling. Sending 16 to the kids' unit, or 32 to the salon's,
-    // is a value the device rejects - discovered at 11:00 on Shabbat.
-    expect(o.minTemp).toBe(18); // the kids' floor, not the salon's 16
-    expect(o.maxTemp).toBe(31); // the salon's ceiling, not the kids' 32
-    // Likewise the coarsest step: 16.5 is not a temperature both accept.
-    expect(o.tempStep).toBe(1.0);
-  });
-
-  it('reports a device it cannot read rather than pretending it offers nothing', () => {
-    const o = deviceOptions({ 'climate.salon': SALON }, ['climate.salon', 'climate.gone']);
-    expect(o.unreadable).toEqual(['climate.gone']);
-    // The readable device still contributes - an absent one must not
-    // intersect every option away to nothing.
-    expect(o.fanModes).toContain('quiet');
-  });
-
-  it('treats an unavailable entity as unreadable', () => {
-    const o = deviceOptions(
-      { 'climate.salon': { state: 'unavailable', attributes: {} } },
-      ['climate.salon'],
-    );
-    expect(o.unreadable).toEqual(['climate.salon']);
-    expect(o.climate).toBe(false);
-  });
-
-  it('says a non-climate device has no settings', () => {
-    const o = deviceOptions({ 'input_boolean.t': BOOLEAN }, ['input_boolean.t']);
-    expect(o.climate).toBe(false);
-    expect(o.fanModes).toEqual([]);
-    expect(o.unreadable).toEqual([]);
-  });
-
-  it('returns empty options for no devices at all', () => {
-    const o = deviceOptions({}, []);
-    expect(o.climate).toBe(false);
-    expect(o.intersected).toBe(false);
-  });
-});
-
-import { selectableDevices } from '../src/format';
-
-describe('selectableDevices', () => {
-  // Deliberately not alphabetical: 'switch.boiler' is inserted before
-  // 'climate.salon' and 'input_boolean.t' so an unsorted result would
-  // genuinely differ from a sorted one. With the old (alphabetical)
-  // insertion order, `Object.keys` already came out sorted, so both
-  // tests below passed whether or not `selectableDevices` sorted
-  // anything - that was the bug this fixture fixes.
-  const states = {
-    'switch.boiler': { state: 'off', attributes: {} },
-    'sensor.temperature': { state: '21', attributes: {} },
-    'climate.salon': SALON,
-    'light.kitchen': { state: 'off', attributes: {} },
-    'input_boolean.t': BOOLEAN,
-  };
-
-  it('offers only the domains this integration can drive', () => {
-    expect(selectableDevices(states)).toEqual([
-      'climate.salon', 'input_boolean.t', 'switch.boiler',
-    ]);
-  });
-
-  it('is sorted, so the list does not reshuffle between renders', () => {
-    const ids = selectableDevices(states);
-    expect(ids).toEqual([...ids].sort());
-  });
-
-  it('copes with no entities at all', () => {
-    expect(selectableDevices({})).toEqual([]);
   });
 });

@@ -28,7 +28,7 @@ describe('shabbat-warnings', () => {
     const el = await render(
       [
         {
-          kind: 'conflict', device: 'climate.salon', profile: 1, day: '1',
+          kind: 'conflict', targets: ['climate.salon'], profile: 1, day: '1',
           time: '11:00:00', rule_ids: ['a'],
         },
       ],
@@ -45,7 +45,7 @@ describe('shabbat-warnings', () => {
     const el = await render(
       [
         {
-          kind: 'conflict', device: 'climate.salon', profile: 3, day: '1',
+          kind: 'conflict', targets: ['climate.salon'], profile: 3, day: '1',
           time: '11:00:00', rule_ids: ['not-shown'],
         },
       ],
@@ -54,5 +54,29 @@ describe('shabbat-warnings', () => {
     const text = el.shadowRoot!.textContent!;
     expect(text).toContain('climate.salon');
     expect(text).toContain('11:00:00');
+  });
+
+  // REGRESSION TEST for a live break. The backend renamed the conflict
+  // payload's key from `device` (one string) to `targets` (a list, because
+  // a conflict is the intersection of two rules' RESOLVED targets and an
+  // area expands to several entities). The card kept reading `device`, so
+  // every conflict banner rendered as an empty <span>: a conflicting
+  // schedule displayed as clean while the backend had detected the
+  // conflict correctly and put it in the payload.
+  it('renders a conflict naming several entities, not an empty banner', async () => {
+    const el = await render(
+      [
+        {
+          kind: 'conflict', targets: ['climate.a', 'climate.b'], profile: 1,
+          day: '1', time: '11:00:00', rule_ids: ['not-shown'],
+        },
+      ],
+      [],
+    );
+    const banner = el.shadowRoot!.querySelector('.banner');
+    expect(banner).not.toBeNull();
+    expect(banner!.textContent!.trim()).not.toBe('');
+    expect(banner!.textContent).toContain('climate.a');
+    expect(banner!.textContent).toContain('climate.b');
   });
 });

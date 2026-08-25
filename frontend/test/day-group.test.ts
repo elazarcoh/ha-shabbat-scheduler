@@ -32,12 +32,14 @@ describe('shabbat-day-group', () => {
     const el = await render({
       group: group({
         rules: [
-          { id: 'a', profile: 1, day: '1', time: '11:00:00', action: 'on',
-            devices: [], settings: {}, name: null, icon: null, enabled: true,
-            script: null, variables: {}, replay_on_restart: false, color: null },
-          { id: 'b', profile: 1, day: '1', time: '18:00:00', action: 'off',
-            devices: [], settings: {}, name: null, icon: null, enabled: true,
-            script: null, variables: {}, replay_on_restart: false, color: null },
+          { id: 'a', profile: 1, day: '1', time: '11:00:00',
+            action: 'climate.turn_on', target: {}, data: {}, condition: [],
+            replay: { enabled: false }, name: null, icon: null,
+            enabled: true, color: null },
+          { id: 'b', profile: 1, day: '1', time: '18:00:00',
+            action: 'climate.turn_off', target: {}, data: {}, condition: [],
+            replay: { enabled: false }, name: null, icon: null,
+            enabled: true, color: null },
         ],
       }),
     });

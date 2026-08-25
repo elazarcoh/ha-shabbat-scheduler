@@ -372,15 +372,10 @@ export class ShabbatSchedulerCard extends LitElement {
     this._dialogError = null;
   };
 
-  private _onDefaultsSave = async (event: Event) => {
-    const { defaults } = (event as CustomEvent).detail;
-    if (await this._send({
-      type: 'shabbat_scheduler/defaults/update',
-      defaults,
-    })) {
-      this._closeDialogs();
-    }
-  };
+  // NOTE: there is no `_onDefaultsSave`. <shabbat-defaults-dialog> is
+  // read-only until Plan 2 builds a target/data editor, so it emits no
+  // save event - see the comment on that component. A listener for an
+  // event that can never fire reads as a working feature.
 
   override render() {
     // Read once into a local: `_error` is a field, and TypeScript's
@@ -466,7 +461,6 @@ export class ShabbatSchedulerCard extends LitElement {
               .day=${this._creatingDay ?? this._editing?.day ?? 'erev'}
               .profile=${this._profile}
               .defaults=${this._state.defaults}
-              .states=${this._hass?.states ?? {}}
               .canWrite=${this._canWrite}
               .busy=${this._busy}
               .error=${this._dialogError}
@@ -480,12 +474,10 @@ export class ShabbatSchedulerCard extends LitElement {
         ${this._defaultsOpen
           ? html`<shabbat-defaults-dialog
               .defaults=${this._state.defaults}
-              .states=${this._hass?.states ?? {}}
               .canWrite=${this._canWrite}
               .busy=${this._busy}
               .error=${this._dialogError}
               .language=${this._language}
-              @defaults-save=${this._onDefaultsSave}
               @dialog-close=${this._closeDialogs}
             ></shabbat-defaults-dialog>`
           : nothing}

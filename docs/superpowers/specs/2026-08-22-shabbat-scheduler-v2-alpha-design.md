@@ -261,6 +261,27 @@ logic (`_targetChanged`, `_entityPicked`) but the UI depends on
 `ha-target-picker`, which is *not* pre-registered outside the automation
 editor. Do not wait for it to appear.
 
+> **CORRECTED BY PLAN 2 — the paragraph above is what was believed, and it is
+> false in this card.** It was measured honestly: with `ha-service-control`
+> alone in a bare shadow root, `ha-target-picker` really is undefined and the
+> row really does not appear. What the measurement missed is that HA's target
+> row is itself an `<ha-selector>` carrying a `{target: …}` selector, and
+> `ha-selector` *dynamically imports whatever it is handed* — the very property
+> the next paragraph relies on. So the moment this card renders its own
+> `ha-selector{target:{}}` in the same dialog, `ha-target-picker` becomes
+> defined and HA's row loads its own picker. The two findings were never
+> independent: **acting on the second one is what falsifies the first.**
+> Re-verified in real Chromium against 2026.8.2 / frontend 20260729.7,
+> including with the card's own target editor removed entirely — HA's row
+> still self-loads. The consequence for Plan 2 was the reverse of "do not wait
+> for it": two target pickers per dialog, one of them silently discarded, so
+> the card now has to *suppress* HA's row by hand (matched on `'target' in
+> selector`, plus a `MutationObserver`, with the count reflected onto
+> `data-target-rows-suppressed`). `ha-service-control` exposes no `hideTarget`
+> in this version. See `frontend/src/service-editor.ts` for the mechanism and
+> `docs/known-behaviours.md` for the trade-off. Anything Plan 3 builds on
+> `ha-service-control` must assume the target row **is** rendered.
+
 **`<ha-selector>` is the reliable way in.** It is always pre-registered, and it
 dynamically imports whatever sub-selector it is handed — given `{target: {}}`
 it rendered a working picker *and* caused `ha-target-picker` to become defined,

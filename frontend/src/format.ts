@@ -295,20 +295,30 @@ export function formatOutcome(outcome: LastOutcome, language?: string): string {
  * the failure mode this integration exists to surface, so it must not be
  * drawn as quietly as a rule that simply worked.
  *
- * `skipped_no_replay` counts as bad even though nothing went wrong and the
- * rule behaved exactly as configured. What the reader needs to know is
- * that the rule DID NOT RUN, and this is the one outcome they are most
- * likely to be hunting for - replay is off by default, so it is what a
- * whole schedule reads after an ordinary restart. Drawing it as quietly as
- * "Fired" would put the answer on the wall in the colour of "nothing to
- * see here".
+ * `skipped_no_replay` is deliberately NOT bad, and this was argued both
+ * ways. It says the rule did not run, which the reader needs - but the
+ * label and detail already say that, and marking it bad makes the further
+ * claim that something is WRONG. Nothing is: replay is off by default, by
+ * the owner's explicit decision that nothing unexpected should ever fire
+ * after a restart, so this is the rule behaving exactly as chosen.
+ *
+ * The reason it must stay quiet is precisely the reason it was tempting to
+ * flag: it is the most common outcome there is. Every already-passed rule
+ * carries it after any mid-block restart, so marking it bad paints the
+ * whole earlier half of an ordinary schedule amber, every time. A reader
+ * who sees amber on a normal week learns to ignore amber - and then misses
+ * `failed` and `blocked`, which are the two that need them. Spending the
+ * alarm colour on the default path is how you make the alarm useless.
+ *
+ * `skipped_stale` stays bad, and the difference is real: there the user
+ * ASKED for a replay and asked for a window, and the window was missed.
+ * That is a request that went unmet, not a setting behaving as set.
  */
 export function outcomeIsBad(outcome: LastOutcome): boolean {
   return (
     outcome.outcome === 'failed' ||
     outcome.outcome === 'blocked' ||
     outcome.outcome === 'skipped_stale' ||
-    outcome.outcome === 'skipped_no_replay' ||
     (outcome.unknown_targets ?? []).length > 0 ||
     outcome.no_live_targets === true ||
     !(outcome.outcome in OUTCOME_LABELS)

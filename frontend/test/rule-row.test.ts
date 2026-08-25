@@ -172,18 +172,30 @@ describe('shabbat-rule-row', () => {
     for (const line of lines) expect(line).not.toBe('');
   });
 
-  it('marks the four non-firing outcomes as bad and a plain success as not', async () => {
+  it('spends the bad colour on faults, not on the default path', async () => {
     const classFor = async (outcome: string) => {
       const el = await render({ rule: rule({ last_outcome: {
         outcome, at: '2026-08-25T18:00:00+00:00', detail: null,
       } }) });
       return [...el.shadowRoot!.querySelector('.last-outcome')!.classList];
     };
-    for (const bad of ['failed', 'blocked', 'skipped_stale', 'skipped_no_replay']) {
+    for (const bad of ['failed', 'blocked', 'skipped_stale']) {
       expect(await classFor(bad), bad).toContain('bad');
     }
     expect(await classFor('called')).not.toContain('bad');
     expect(await classFor('would_call')).not.toContain('bad');
+    // `skipped_no_replay` is the one non-firing outcome that is NOT bad,
+    // and the boundary is the point of this test. Replay is off by default
+    // - the owner's explicit choice that nothing unexpected fires after a
+    // restart - so every already-passed rule carries this after any
+    // mid-block restart. Marking it bad paints the whole earlier half of an
+    // ordinary schedule amber, every time, and a reader who sees amber on a
+    // normal week learns to ignore amber. Then they miss the two above.
+    //
+    // `skipped_stale` stays bad because there the user ASKED for a replay
+    // and gave a window, and the window was missed: a request unmet rather
+    // than a setting behaving as set.
+    expect(await classFor('skipped_no_replay')).not.toContain('bad');
   });
 
   /**
@@ -222,9 +234,11 @@ describe('shabbat-rule-row', () => {
       // The server's own words too, the same ones the logbook row carries.
       expect(text, language).toContain('replay is switched off for this rule');
       expect(text, language).not.toContain('undefined');
-      // Not drawn as quietly as a rule that simply worked: the answer to
-      // "why didn't my rules run?" must not be in the colour of "fine".
-      expect([...line.classList], language).toContain('bad');
+      // It SAYS why, in words - and is deliberately not painted as a
+      // fault. See the boundary test above: this is the default path after
+      // any restart, so spending the alarm colour here would spend it on a
+      // normal week and teach the reader to ignore it.
+      expect([...line.classList], language).not.toContain('bad');
       // ...and not misreported as the OTHER kind of skip.
       expect(text.toLowerCase(), language).not.toContain('stale');
     }

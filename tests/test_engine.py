@@ -1,14 +1,19 @@
 import asyncio
 import dataclasses
+import logging
 from datetime import time
 from unittest.mock import patch
 
 import pytest
 from homeassistant.const import EVENT_CALL_SERVICE
 from homeassistant.core import Context, callback
+from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import async_mock_service
 
-from custom_components.shabbat_scheduler.const import EVENT_RULE_APPLIED
+from custom_components.shabbat_scheduler.const import (
+    EVENT_RULE_APPLIED,
+    UNKNOWN_ENTITY_PREFIX,
+)
 from custom_components.shabbat_scheduler.engine import ShabbatEngine
 from custom_components.shabbat_scheduler.models import Replay, Rule
 from custom_components.shabbat_scheduler.store import RuleStore
@@ -163,6 +168,137 @@ async def test_a_rule_with_no_target_is_unaffected(hass, engine):
     assert "unknown_targets" not in result
     assert result["outcome"] == "called"
     assert len(calls) == 1
+
+
+async def test_a_group_member_without_a_state_is_not_a_misspelling(hass, engine):
+    """A group the USER typed expands to members the user did not type.
+
+    `async_extract_referenced_entity_ids` runs with `expand_group` on, so
+    `selected.referenced` is the POST-EXPANSION set: the group's members
+    are in it, and the group id the user actually typed is not. Drawing
+    the unknown set from there reported a merely-unavailable member as a
+    misspelling and downgraded the whole rule to "failed" - even though
+    the live member fired. Round-1 review finding.
+
+    This is the same false-positive class the `indirectly_referenced`
+    exclusion prevents, arriving through a path that exclusion misses.
+    """
+    await async_setup_component(
+        hass,
+        "group",
+        {
+            "group": {
+                "g": {
+                    "entities": [
+                        "input_boolean.member_a",
+                        "input_boolean.member_b",
+                    ]
+                }
+            }
+        },
+    )
+    # One live member, one that exists to the group but has no state -
+    # unloaded or unavailable, an entirely ordinary condition.
+    hass.states.async_set("input_boolean.member_a", "off")
+    await hass.async_block_till_done()
+    assert hass.states.get("input_boolean.member_b") is None
+
+    calls = async_mock_service(hass, "input_boolean", "turn_on")
+    rule = dataclasses.replace(
+        _rule(action=_ON, entities=()), target={"entity_id": ["group.g"]}
+    )
+    [result] = await engine.async_apply_rule(rule)
+    await hass.async_block_till_done()
+
+    assert result["outcome"] == "called"
+    assert "unknown_targets" not in result
+    assert len(calls) == 1
+
+
+async def test_a_typo_beside_a_working_area_still_reports_called(
+    hass, engine, area_registry, entity_registry
+):
+    """Every TYPED id is unknown, yet the rule did something.
+
+    A mixed target's real work can come entirely from a selector that
+    names no entity id. Counting only typed ids made this a total miss
+    and reported "failed" while the area's entity fired. Round-1 review
+    finding.
+    """
+    area = area_registry.async_create("Salon")
+    entry = entity_registry.async_get_or_create(
+        "input_boolean", "demo", "lives-in-the-area",
+        suggested_object_id="in_the_area",
+    )
+    entity_registry.async_update_entity(entry.entity_id, area_id=area.id)
+    hass.states.async_set(entry.entity_id, "off")
+
+    calls = async_mock_service(hass, "input_boolean", "turn_on")
+    rule = dataclasses.replace(
+        _rule(action=_ON, entities=()),
+        target={"entity_id": ["input_boolean.nope"], "area_id": [area.id]},
+    )
+    [result] = await engine.async_apply_rule(rule)
+    await hass.async_block_till_done()
+
+    # The typo is still reported - it just is not fatal.
+    assert result["outcome"] == "called"
+    assert result["unknown_targets"] == ["input_boolean.nope"]
+    assert len(calls) == 1
+
+
+async def test_an_existing_group_with_no_live_member_is_not_called_a_typo(
+    hass, engine
+):
+    """Nothing resolved, but nothing was MISSPELT either.
+
+    The downgrade needs a typo as well as an empty resolution. Without
+    that, this rule would report "failed" with an empty list of ids to
+    blame - "no such entity: " - which says nothing at all.
+    """
+    await async_setup_component(
+        hass,
+        "group",
+        {"group": {"g": {"entities": ["input_boolean.gone"]}}},
+    )
+    await hass.async_block_till_done()
+    async_mock_service(hass, "input_boolean", "turn_on")
+
+    rule = dataclasses.replace(
+        _rule(action=_ON, entities=()), target={"entity_id": ["group.g"]}
+    )
+    [result] = await engine.async_apply_rule(rule)
+
+    assert result["outcome"] == "called"
+    assert "unknown_targets" not in result
+    assert "error" not in result
+
+
+async def test_a_target_home_assistant_cannot_even_parse_does_not_raise(
+    hass, engine, caplog
+):
+    """The `except` in `_inspect_target` is reachable, and this reaches it.
+
+    `TargetSelection` puts each selector's values in a `set`, so an
+    unhashable one - a dict where a list belongs, which a hand-edited
+    YAML import can produce - raises TypeError before any resolution
+    happens. That must not pre-empt the call: HA's own validator gives a
+    far better diagnosis of this rule a few lines later than anything the
+    unknown-target check could add.
+    """
+    rule = dataclasses.replace(
+        _rule(action=_ON, entities=()), target={"entity_id": {"nope": 1}}
+    )
+    with caplog.at_level(logging.DEBUG, logger="custom_components.shabbat_scheduler.engine"):
+        with patch("custom_components.shabbat_scheduler.engine.asyncio.sleep"):
+            [result] = await engine.async_apply_rule(rule)
+
+    # Swallowed, logged, and left to Home Assistant to complain about.
+    assert "could not resolve target" in caplog.text
+    assert "unknown_targets" not in result
+    # It still reached the service layer, and failed there on HA's terms.
+    assert result["outcome"] == "failed"
+    assert UNKNOWN_ENTITY_PREFIX not in result["error"]
 
 
 async def test_a_bare_string_entity_id_is_one_id_not_eighteen_characters(

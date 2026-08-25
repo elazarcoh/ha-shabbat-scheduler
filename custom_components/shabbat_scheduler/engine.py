@@ -8,7 +8,11 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta
 
 from homeassistant.components import persistent_notification
-from homeassistant.const import ATTR_ENTITY_ID
+from homeassistant.const import (
+    ATTR_ENTITY_ID,
+    ENTITY_MATCH_ALL,
+    ENTITY_MATCH_NONE,
+)
 from homeassistant.core import Context, CoreState, HomeAssistant
 from homeassistant.helpers import condition
 from homeassistant.helpers import config_validation as cv
@@ -80,24 +84,38 @@ def _condition_label(index: int, total: int, item) -> str:
     return f"condition {index} of {total} ({kind}{where})"
 
 
+# Neither of these is an entity id: `all` means every entity and `none`
+# means no target at all. `states.get("all")` is None, so without excluding
+# them a wildcard target would be reported as a misspelt entity called
+# "all" - a loud complaint about a rule that is perfectly fine, and the
+# fastest way to teach the user to ignore these warnings.
+_WILDCARD_ENTITY_IDS = frozenset({ENTITY_MATCH_ALL, ENTITY_MATCH_NONE})
+
+
 def _named_entity_ids(target: dict) -> set[str]:
-    """The entity ids this target spells out, deduplicated.
+    """The entity ids the USER TYPED into this target, deduplicated.
 
-    `entity_id` may be a bare string or a list - Home Assistant accepts
+    This is the only set the unknown-entity check may draw from. Anything
+    that arrives by expansion - a group's members, an area's or a label's
+    entities - was produced by Home Assistant from its own registries, so
+    "it does not exist" is not a thing that can be said about it, and
+    saying it anyway reports a misspelling the user never made.
+
+    `entity_id` may be a bare string or a list; Home Assistant accepts
     both, and a migrated v1 rule or an imported YAML rule can carry
-    either - so both are normalised here. Iterating a bare string without
-    normalising it would yield its CHARACTERS, and the count is the
-    denominator for "was EVERY named entity unknown?".
-
-    Deliberately NOT the resolved target: comparing a resolved count
-    against a resolved count would make that question circular.
+    either. Iterating a bare string without normalising it would yield its
+    CHARACTERS.
     """
     raw = target.get(ATTR_ENTITY_ID)
     if raw is None:
         return set()
     if isinstance(raw, str):
         raw = [raw]
-    return {entity_id for entity_id in raw if isinstance(entity_id, str)}
+    return {
+        entity_id for entity_id in raw
+        if isinstance(entity_id, str)
+        and entity_id not in _WILDCARD_ENTITY_IDS
+    }
 
 
 class ShabbatEngine:
@@ -627,40 +645,69 @@ class ShabbatEngine:
         """
         return context.id in self._our_contexts
 
-    def _unknown_targets(self, target: dict) -> list[str]:
-        """Entity ids this target NAMES that do not exist.
+    def _inspect_target(self, target: dict) -> tuple[list[str], bool]:
+        """(typed ids that do not exist, whether NOTHING real was targeted).
 
-        Only explicitly named ids. `async_extract_referenced_entity_ids`
-        also returns `indirectly_referenced` - entities reached through an
-        area, device, floor or label - but those come out of the
-        registries, so they exist by construction, and an entity that is
-        merely unloaded or unavailable has no state either. Checking them
-        would invent typos the user never made.
+        TWO SEPARATE QUESTIONS, kept apart deliberately. Conflating them
+        is what produced both halves of Gap B's first fix being wrong in
+        the opposite direction - reporting `failed` for a rule that had
+        actually worked. A false failure is not a quiet failure, but it is
+        still a lie, and a spurious failure notification on Shabbat could
+        push someone into intervening by hand when nothing was wrong.
 
-        Home Assistant's service layer accepts a target naming a
-        nonexistent entity without raising, so without this a typo'd rule
-        reports "called" and looks exactly like a rule that fired.
+        1. WHAT TO REPORT AS UNKNOWN: only ids the user typed. Drawn from
+           `_named_entity_ids`, never from `selected.referenced`, because
+           `referenced` is the POST-GROUP-EXPANSION set: with
+           `expand_group` on, a `group.g` the user typed is replaced by
+           its members, so one merely-unavailable member would be
+           reported as a misspelling nobody made. `indirectly_referenced`
+           (area, device, floor, label) is excluded for the same reason,
+           which is HA's own stated intent - its comment on that field
+           reads "Should not trigger a warning when they don't exist."
 
-        `entity_id: all` and `entity_id: none` need no guarding here: they
-        are wildcards, not entity ids, and HA's own `expand_entity_ids`
-        (which `expand_group`, on by default, runs first) drops both
-        before they reach `referenced`. Re-checking them here would be
-        unreachable code; the behaviour is pinned by a test instead, so
-        this stays honest if that ever changes upstream.
+        2. WHEN NOTHING CAN HAVE HAPPENED: whether the target resolved to
+           any entity that exists at all, across BOTH `referenced` and
+           `indirectly_referenced`. The full resolved set is right here
+           and the typed set is not: a target of
+           `{entity_id: [typo], area_id: [real]}` has every TYPED id
+           unknown while the area's entities fire perfectly well, so
+           counting only typed ids would call that a total failure.
+
+        The caller also requires a typo before downgrading, so an
+        existing group whose every member happens to be unavailable stays
+        "called" - that is an unavailability, not a misspelling, and there
+        would be no ids to put in the error message anyway.
         """
         if not target:
-            return []
+            return [], False
+        # The whole body, not just the resolve: a malformed target can
+        # equally throw in `_named_entity_ids` or in `TargetSelection`,
+        # and neither is a reason to abandon a call HA might well accept.
         try:
+            typed = _named_entity_ids(target)
             selected = target_helper.async_extract_referenced_entity_ids(
                 self.hass, target_helper.TargetSelection(target),
             )
+            unknown = sorted(
+                entity_id for entity_id in typed
+                if self.hass.states.get(entity_id) is None
+            )
+            resolved = selected.referenced | selected.indirectly_referenced
+            nothing_real = not any(
+                self.hass.states.get(entity_id) is not None
+                for entity_id in resolved
+            )
         except Exception:  # noqa: BLE001 - a bad target must not stop the call
+            # Reached by a target HA cannot even parse, e.g. an unhashable
+            # `{"entity_id": {...}}` from a hand-edited YAML import. Such a
+            # rule will fail in `async_call_from_config` a few lines later,
+            # with HA's own message - which is a far better diagnosis than
+            # anything this method could add, so it must not pre-empt it by
+            # raising from here. Covered by
+            # `test_a_target_home_assistant_cannot_even_parse_does_not_raise`.
             _LOGGER.debug("could not resolve target %s", target, exc_info=True)
-            return []
-        return sorted(
-            entity_id for entity_id in selected.referenced
-            if self.hass.states.get(entity_id) is None
-        )
+            return [], False
+        return unknown, nothing_real
 
     async def _call(
         self, rule: Rule, action: str, target: dict, data: dict, context: Context
@@ -678,7 +725,7 @@ class ShabbatEngine:
         # where you want to be told about a misspelt entity id, and a dry
         # run that reported "would_call" for a target that cannot resolve
         # would be the same quiet failure one step earlier.
-        unknown = self._unknown_targets(target)
+        unknown, nothing_real = self._inspect_target(target)
         if unknown:
             result["unknown_targets"] = unknown
             _LOGGER.warning(
@@ -743,13 +790,23 @@ class ShabbatEngine:
                 )
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
             else:
-                # Every named entity was unknown, so nothing can have
-                # happened. Reporting "called" here is the quiet failure
-                # this integration exists to prevent. A PARTIAL miss is
-                # still "called": the call genuinely helped the entities
-                # that do exist, and `unknown_targets` reports the typo.
-                named = _named_entity_ids(target)
-                if unknown and named and len(unknown) >= len(named):
+                # Downgraded only when there is a typo AND the target
+                # resolved to nothing that exists, so the call cannot have
+                # done anything. Reporting "called" there is the quiet
+                # failure this integration exists to prevent.
+                #
+                # BOTH conditions are load-bearing, and each guards a lie
+                # in the opposite direction:
+                #  - without `unknown`, an existing group whose members
+                #    all happen to be unavailable would be called a
+                #    failure, with an empty list of ids to blame for it;
+                #  - without `nothing_real`, a target that mixes a typo
+                #    with a working area would be called a failure while
+                #    the area's entities fired perfectly well.
+                # A partial miss therefore stays "called": the call did
+                # genuinely help the entities that exist, and
+                # `unknown_targets` still reports the typo.
+                if unknown and nothing_real:
                     result["outcome"] = "failed"
                     result["error"] = UNKNOWN_ENTITY_PREFIX + ", ".join(unknown)
                 else:

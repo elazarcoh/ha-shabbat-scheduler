@@ -241,6 +241,15 @@ export class ShabbatRuleDialog extends LitElement {
               />
             </div>
 
+            <!-- \`data: … ?? {}\` below is on purpose, and it must NOT
+                 become "preserve the old data" the way the defaults
+                 dialog's handler does. HA omits \`data\` from the event on
+                 every service change; for a RULE the action is part of the
+                 rule, so data shaped for the service the author just
+                 navigated away from does not belong to the new one, and
+                 clearing it is Home Assistant's own semantics. See
+                 \`service-editor.ts\`'s \`_onChange\` for why the two cases
+                 are distinguishable at all. -->
             <shabbat-service-editor
               .hass=${this.hass}
               .action=${this._form.action}
@@ -248,7 +257,7 @@ export class ShabbatRuleDialog extends LitElement {
               .disabled=${!this.canWrite}
               @service-changed=${(event: CustomEvent) =>
                 this._patch({
-                  action: event.detail.action, data: event.detail.data,
+                  action: event.detail.action, data: event.detail.data ?? {},
                 })}
             ></shabbat-service-editor>
 

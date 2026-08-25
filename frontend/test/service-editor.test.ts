@@ -65,16 +65,97 @@ describe('shabbat-service-editor', () => {
     expect(seen).toEqual([{ action: 'switch.turn_on', data: {} }]);
   });
 
-  it('normalises a missing action or data rather than emitting undefined', async () => {
+  it('normalises a missing action to the empty string, never undefined', async () => {
     const el = await render();
     const seen: any[] = [];
     el.addEventListener('service-changed', (e: Event) => {
       seen.push((e as CustomEvent).detail);
     });
     control(el).dispatchEvent(new CustomEvent('value-changed', {
-      detail: { value: {} },
+      detail: { value: { data: { temperature: 24 } } },
     }));
-    expect(seen).toEqual([{ action: '', data: {} }]);
+    expect(seen).toStrictEqual([{ action: '', data: { temperature: 24 } }]);
+  });
+
+  /**
+   * The mechanism of the blocker this suite could not see.
+   *
+   * `ha-service-control._serviceChanged` fires `{action, target}` with no
+   * `data` key at all - read off HA 2026.8.2's shipped bundle - so this is
+   * not a defensive corner, it is EVERY service change. Flattening it to
+   * `{}` here is what silently wiped `defaults.data`, because the defaults
+   * dialog could not then tell "HA said nothing about data" from "the user
+   * emptied it".
+   *
+   * Asserts key ABSENCE explicitly, not by comparing whole objects:
+   * Vitest's `toEqual` treats an omitted key as equal to `undefined`, so a
+   * version of this that emitted `data: undefined` would pass a `toEqual`
+   * against `{action: 'x'}`. This suite has been caught by that once
+   * already.
+   */
+  it('omits data entirely when ha-service-control sends none', async () => {
+    const el = await render();
+    const seen: any[] = [];
+    el.addEventListener('service-changed', (e: Event) => {
+      seen.push((e as CustomEvent).detail);
+    });
+    control(el).dispatchEvent(new CustomEvent('value-changed', {
+      // Byte-for-byte the shape HA emits on a service pick.
+      detail: { value: {
+        action: 'climate.set_temperature',
+        target: { entity_id: ['climate.salon'] },
+      } },
+    }));
+    expect(seen).toHaveLength(1);
+    expect('data' in seen[0]).toBe(false);
+    expect(seen[0]).toStrictEqual({ action: 'climate.set_temperature' });
+  });
+
+  /**
+   * The other half, and the reason "omitted" has to be its own signal: an
+   * explicitly empty `data` is a real edit (the user cleared every field)
+   * and MUST come through, or nothing could ever empty a payload. Driven
+   * in the direction where absent and empty differ, since a fix that
+   * omitted the key in both cases would satisfy the test above alone.
+   */
+  it('emits an explicitly empty data as an empty object', async () => {
+    const el = await render();
+    const seen: any[] = [];
+    el.addEventListener('service-changed', (e: Event) => {
+      seen.push((e as CustomEvent).detail);
+    });
+    control(el).dispatchEvent(new CustomEvent('value-changed', {
+      detail: { value: { action: 'switch.turn_on', data: {} } },
+    }));
+    expect('data' in seen[0]).toBe(true);
+    expect(seen[0]).toStrictEqual({ action: 'switch.turn_on', data: {} });
+  });
+
+  /**
+   * The branch the ledger recorded as "not reachable from what
+   * ha-service-control actually emits" - a claim that turned out to be
+   * wrong about the ABSENT case and is now covered for both. A `data` that
+   * is not a container cannot mean "the user wants an empty payload", so
+   * it is reported the same way silence is, and the stored value survives.
+   * Guessing "empty" from garbage destroys data just as thoroughly as
+   * guessing it from silence.
+   */
+  it('treats a non-object data as nothing said, not as empty', async () => {
+    const el = await render();
+    const seen: any[] = [];
+    el.addEventListener('service-changed', (e: Event) => {
+      seen.push((e as CustomEvent).detail);
+    });
+    for (const data of ['not_a_dict', 42, null]) {
+      control(el).dispatchEvent(new CustomEvent('value-changed', {
+        detail: { value: { action: 'switch.turn_on', data } },
+      }));
+    }
+    expect(seen).toHaveLength(3);
+    for (const detail of seen) {
+      expect('data' in detail).toBe(false);
+      expect(detail).toStrictEqual({ action: 'switch.turn_on' });
+    }
   });
 
   it('disables the control when the user cannot write', async () => {

@@ -244,6 +244,7 @@ const OUTCOME_LABELS: Record<string, StringKey> = {
   failed: 'outcome_failed',
   blocked: 'outcome_blocked',
   skipped_stale: 'outcome_skipped_stale',
+  skipped_no_replay: 'outcome_skipped_no_replay',
 };
 
 /**
@@ -287,18 +288,27 @@ export function formatOutcome(outcome: LastOutcome, language?: string): string {
 /**
  * True when this verdict is something to worry about.
  *
- * The three non-firing outcomes, plus either target diagnostic on an
+ * The four non-firing outcomes, plus either target diagnostic on an
  * outcome that otherwise reads as success. That second half is the point:
  * `called` with a misspelt entity, or `called` having reached nothing, is
  * a rule that reported success and changed less than it claimed - which is
  * the failure mode this integration exists to surface, so it must not be
  * drawn as quietly as a rule that simply worked.
+ *
+ * `skipped_no_replay` counts as bad even though nothing went wrong and the
+ * rule behaved exactly as configured. What the reader needs to know is
+ * that the rule DID NOT RUN, and this is the one outcome they are most
+ * likely to be hunting for - replay is off by default, so it is what a
+ * whole schedule reads after an ordinary restart. Drawing it as quietly as
+ * "Fired" would put the answer on the wall in the colour of "nothing to
+ * see here".
  */
 export function outcomeIsBad(outcome: LastOutcome): boolean {
   return (
     outcome.outcome === 'failed' ||
     outcome.outcome === 'blocked' ||
     outcome.outcome === 'skipped_stale' ||
+    outcome.outcome === 'skipped_no_replay' ||
     (outcome.unknown_targets ?? []).length > 0 ||
     outcome.no_live_targets === true ||
     !(outcome.outcome in OUTCOME_LABELS)

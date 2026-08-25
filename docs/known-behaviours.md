@@ -778,6 +778,34 @@ story for a value the server has no use for. **What to do:** re-pick the
 service the data belongs to; the stored `data` reappears under it, editable,
 exactly as saved.
 
+**That last sentence was false when it was first written, and the way it was
+false is worth keeping on the page.** Re-picking the service was the one
+documented remedy, and it was also the action that destroyed the value.
+`ha-service-control._serviceChanged` fires `{action, target}` with **no
+`data` key at all** — read off 2026.8.2's own shipped bundle, not inferred —
+`service-editor.ts` turned that absent value into `{}`, the dialog assigned
+it to `_draft.data`, and Save persisted the empty payload. So a user who
+followed this document to check a default they had set instead deleted it,
+from every rule that inherited it, with nothing said anywhere. A document
+asserting a falsehood about user data is worse than no document.
+
+What changed: `service-editor.ts` now **omits** `data` from its event when
+Home Assistant sent none, instead of flattening that to `{}`, and the
+defaults dialog leaves `_draft.data` untouched when the key is absent. The
+rule dialog deliberately keeps the old behaviour — there the action is part
+of the rule, so data shaped for the service you navigated away from should
+go, which is Home Assistant's own semantics. A service pick in the defaults
+dialog is a change of *view*, not of value: `_action` is a lens onto a
+schema, and the shared defaults have no action to change.
+
+The blank picker on reopen still stands — it is a consequence of `Defaults`
+having no `action` field, which is the deliberate design above, not of the
+bug. What is gone is the cost: re-picking the service is now genuinely
+non-destructive, so the remedy above is safe to follow and `defaults.data`
+survives whatever you pick, whether you save or cancel. Clearing the fields
+in Home Assistant's own form (which emits a real, explicitly empty `data`)
+is still how you empty a default.
+
 ## The card's payload fixture is generated, and regenerating it is one command
 
 `frontend/test/fixtures/state-payload.json` is **not hand-written**. It is a
@@ -832,8 +860,15 @@ the rules, and `_state_payload` attaches each rule's own entry as
 `{outcome, at, detail, unknown_targets?, no_live_targets?}`, and it has **two
 axes on purpose**:
 
-- `outcome` — `called` | `would_call` | `failed` | `blocked` | `skipped_stale`.
-  Did the call happen, and if not, why not.
+- `outcome` — `called` | `would_call` | `failed` | `blocked` | `skipped_stale`
+  | `skipped_no_replay`. Did the call happen, and if not, why not.
+  `skipped_no_replay` is the **default** path, not a corner of it: a rule
+  that came due while Home Assistant was down and whose author never
+  switched `replay.enabled` on. It used to be a bare `continue` in
+  `engine.async_catch_up` — no outcome, no event, no logbook row — and the
+  catch-up summary then read "no rule was due for replay" about a restart
+  where several were. It is now reported exactly as `skipped_stale` is, and
+  counted in that summary, so the summary cannot make that claim again.
 - `unknown_targets` / `no_live_targets` — did it *reach* anything. A different
   question, and one whose answer can be "no" while the call genuinely was made.
   `called` **plus** `no_live_targets` is a real, common combination (an

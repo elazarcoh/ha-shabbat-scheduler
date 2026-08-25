@@ -125,13 +125,19 @@ const STRINGS = {
         // What happened the last time a rule came due. The wording deliberately
         // mirrors logbook.py's rows: the person reading the card and the person
         // reading the logbook must not be told two different things about the
-        // same rule. "Did not run" appears in each of the three non-firing
+        // same rule. "Did not run" appears in each of the four non-firing
         // outcomes and in neither of the two firing ones.
         outcome_called: 'Fired',
         outcome_would_call: 'Would have fired [dry run]',
         outcome_failed: 'Did not run — failed',
         outcome_blocked: 'Did not run — blocked',
         outcome_skipped_stale: 'Did not run — skipped as stale',
+        // The default path, and the reason this string exists: replay is off
+        // unless the rule's author switched it on, so this is what a whole
+        // schedule reads after an ordinary restart. The server sends its own
+        // `detail` alongside it ("replay is switched off for this rule"), the
+        // same words the logbook row carries.
+        outcome_skipped_no_replay: 'Did not run — was due after a restart, replay is off',
         // A verdict from a server one version ahead of this card. Saying this
         // beats rendering an empty line that looks like nothing happened.
         outcome_unknown: 'Finished with no reported outcome',
@@ -192,6 +198,7 @@ const STRINGS = {
         outcome_failed: 'לא רץ — נכשל',
         outcome_blocked: 'לא רץ — נחסם',
         outcome_skipped_stale: 'לא רץ — דולג כמיושן',
+        outcome_skipped_no_replay: 'לא רץ — היה אמור לרוץ לאחר אתחול, הפעלה חוזרת כבויה',
         outcome_unknown: 'הסתיים ללא תוצאה מדווחת',
         outcome_no_such_entity: 'אין ישות כזו: ',
         outcome_reached_nothing: 'לא הגיע לאף ישות קיימת',
@@ -414,6 +421,7 @@ const OUTCOME_LABELS = {
     failed: 'outcome_failed',
     blocked: 'outcome_blocked',
     skipped_stale: 'outcome_skipped_stale',
+    skipped_no_replay: 'outcome_skipped_no_replay',
 };
 /**
  * A rule's own verdict as one line of prose.
@@ -455,17 +463,26 @@ function formatOutcome(outcome, language) {
 /**
  * True when this verdict is something to worry about.
  *
- * The three non-firing outcomes, plus either target diagnostic on an
+ * The four non-firing outcomes, plus either target diagnostic on an
  * outcome that otherwise reads as success. That second half is the point:
  * `called` with a misspelt entity, or `called` having reached nothing, is
  * a rule that reported success and changed less than it claimed - which is
  * the failure mode this integration exists to surface, so it must not be
  * drawn as quietly as a rule that simply worked.
+ *
+ * `skipped_no_replay` counts as bad even though nothing went wrong and the
+ * rule behaved exactly as configured. What the reader needs to know is
+ * that the rule DID NOT RUN, and this is the one outcome they are most
+ * likely to be hunting for - replay is off by default, so it is what a
+ * whole schedule reads after an ordinary restart. Drawing it as quietly as
+ * "Fired" would put the answer on the wall in the colour of "nothing to
+ * see here".
  */
 function outcomeIsBad(outcome) {
     return (outcome.outcome === 'failed' ||
         outcome.outcome === 'blocked' ||
         outcome.outcome === 'skipped_stale' ||
+        outcome.outcome === 'skipped_no_replay' ||
         (outcome.unknown_targets ?? []).length > 0 ||
         outcome.no_live_targets === true ||
         !(outcome.outcome in OUTCOME_LABELS));
@@ -5150,22 +5167,41 @@ let ShabbatServiceEditor = class ShabbatServiceEditor extends i$1 {
         this.data = {};
         this.disabled = false;
         /**
-         * Kept even though the row it defends against is now hidden. Hiding the
-         * UI is what stops a user losing a target; dropping the value is what
-         * makes "this element never speaks for the target" true regardless.
-         * If the suppression ever stops matching, this is what still prevents
-         * HA's row from overwriting the target editor's value.
+         * The target drop is kept even though the row it defends against is now
+         * hidden. Hiding the UI is what stops a user losing a target; dropping
+         * the value is what makes "this element never speaks for the target"
+         * true regardless. If the suppression ever stops matching, this is what
+         * still prevents HA's row from overwriting the target editor's value.
+         *
+         * `data` IS OMITTED FROM THE DETAIL WHEN HA SENT NO USABLE `data`, and
+         * that is load-bearing rather than tidy. Read off 2026.8.2's own bundle,
+         * `ha-service-control._serviceChanged` fires `{action, target}` with NO
+         * `data` KEY AT ALL - so the absent-`data` branch is not a defensive
+         * corner, it is what happens on EVERY service change. This element
+         * cannot know what that should mean, because it depends on which dialog
+         * it is in: for a rule the action is part of the rule, so data shaped
+         * for the old service must go (HA's own semantics, and correct); for the
+         * shared defaults there is no action at all and the picker is only a
+         * lens onto a schema, so the same event must not destroy the stored
+         * value. So the two cases are reported apart - key absent means "HA said
+         * nothing about data", `data: {}` means "HA said data is empty" - and
+         * each dialog decides. Collapsing both to `{}` here is exactly the bug
+         * that silently wiped `defaults.data` on every service pick.
+         *
+         * Absent, null and a non-object (a string, a number) are all reported as
+         * "said nothing": none of them is a user asking for an empty payload,
+         * and guessing "empty" from garbage destroys data just as thoroughly as
+         * guessing it from silence.
          */
         this._onChange = (event) => {
             const value = (event.detail?.value ?? {});
-            this.dispatchEvent(new CustomEvent('service-changed', {
-                detail: {
-                    action: typeof value.action === 'string' ? value.action : '',
-                    data: (typeof value.data === 'object' && value.data !== null
-                        ? value.data
-                        : {}),
-                },
-            }));
+            const detail = {
+                action: typeof value.action === 'string' ? value.action : '',
+            };
+            if (typeof value.data === 'object' && value.data !== null) {
+                detail.data = value.data;
+            }
+            this.dispatchEvent(new CustomEvent('service-changed', { detail }));
         };
         this._observer = null;
     }
@@ -5491,13 +5527,22 @@ let ShabbatRuleDialog = class ShabbatRuleDialog extends i$1 {
               />
             </div>
 
+            <!-- \`data: … ?? {}\` below is on purpose, and it must NOT
+                 become "preserve the old data" the way the defaults
+                 dialog's handler does. HA omits \`data\` from the event on
+                 every service change; for a RULE the action is part of the
+                 rule, so data shaped for the service the author just
+                 navigated away from does not belong to the new one, and
+                 clearing it is Home Assistant's own semantics. See
+                 \`service-editor.ts\`'s \`_onChange\` for why the two cases
+                 are distinguishable at all. -->
             <shabbat-service-editor
               .hass=${this.hass}
               .action=${this._form.action}
               .data=${this._form.data}
               .disabled=${!this.canWrite}
               @service-changed=${(event) => this._patch({
-            action: event.detail.action, data: event.detail.data,
+            action: event.detail.action, data: event.detail.data ?? {},
         })}
             ></shabbat-service-editor>
 
@@ -5741,6 +5786,43 @@ let ShabbatDefaultsDialog = class ShabbatDefaultsDialog extends i$1 {
          */
         this._action = '';
         this._seeded = false;
+        /**
+         * A service change here is a change of VIEW, never of value.
+         *
+         * `_action` is a throwaway (see its declaration): the shared defaults
+         * carry no action, so picking a service in this dialog says nothing
+         * about what is stored - it only chooses whose schema the `data` form is
+         * rendered through. Which makes it a lens, and a lens must not destroy
+         * what it is pointed at.
+         *
+         * That is precisely what used to happen, silently, on the ONLY path a
+         * user has to see their stored defaults at all. HA's
+         * `ha-service-control` fires `{action, target}` with no `data` key on
+         * every service change; this handler assigned that absent value straight
+         * into `_draft.data`, Save persisted `{}`, and the stored payload was
+         * gone from every rule that inherited it. `docs/known-behaviours.md`
+         * used to recommend exactly that action as the way to get the data back.
+         *
+         * So: an OMITTED `data` leaves `_draft.data` alone; an explicitly empty
+         * `data: {}` is a real edit and is taken. `service-editor.ts` keeps the
+         * two apart by key presence rather than by value - it cannot make this
+         * decision itself, because the rule dialog needs the opposite answer
+         * for the same event.
+         *
+         * `'data' in detail`, not `detail.data !== undefined`: the whole
+         * distinction is key presence, and reading a value would make the two
+         * cases indistinguishable again.
+         */
+        this._onServiceChanged = (event) => {
+            const detail = event.detail;
+            this._action = typeof detail.action === 'string' ? detail.action : '';
+            if ('data' in detail) {
+                this._draft = {
+                    ...this._draft,
+                    data: detail.data,
+                };
+            }
+        };
     }
     willUpdate() {
         // Seed the draft once for this dialog's whole lifetime. `card.ts`
@@ -5804,10 +5886,7 @@ let ShabbatDefaultsDialog = class ShabbatDefaultsDialog extends i$1 {
                 .action=${this._action}
                 .data=${this._draft.data ?? {}}
                 .disabled=${!this.canWrite}
-                @service-changed=${(event) => {
-            this._action = event.detail.action;
-            this._draft = { ...this._draft, data: event.detail.data };
-        }}
+                @service-changed=${this._onServiceChanged}
               ></shabbat-service-editor>
             </div>
           </div>

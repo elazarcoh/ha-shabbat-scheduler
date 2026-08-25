@@ -37,7 +37,33 @@ NO_LIVE_TARGETS_NOTE = "reached no entity that exists"
 # verdict, and two independently-spelled precedence orders would eventually
 # disagree about the same rule - the card saying it fired while the logbook
 # says it did not.
-OUTCOME_PRECEDENCE = ("failed", "blocked", "skipped_stale", "would_call", "called")
+# `skipped_no_replay` sits with `skipped_stale` rather than at the end: both
+# say "did not run", and every non-firing outcome must outrank every firing
+# one so a rule can never fold into a row reading "fired". Neither skip is
+# written by `_call`, so the two can never actually meet in one rule's
+# results - the position is about the invariant, not about a real contest.
+OUTCOME_PRECEDENCE = (
+    "failed",
+    "blocked",
+    "skipped_stale",
+    "skipped_no_replay",
+    "would_call",
+    "called",
+)
+
+# The one wording for "this rule came due after a restart and its author
+# never opted it into replay". Shared by the engine (which puts it in the
+# skip result's `reason` and in the durable outcome's `detail`) and the
+# logbook, for the same reason as the two notes above: the card row and the
+# logbook row are two renderings of ONE verdict.
+#
+# Replay is off BY DEFAULT and deliberately, so this is not an edge case: it
+# is what happens to every ordinary rule after every ordinary restart, and
+# "why didn't my rules run?" is the question it exists to answer. It used to
+# be answered with a bare `continue` - no result, no event, no outcome, no
+# logbook row - and the catch-up summary then reported "no rule was due for
+# replay" about a restart where several were.
+NO_REPLAY_NOTE = "replay is switched off for this rule"
 
 CONF_CANDLE_SENSOR = "candle_sensor"
 CONF_HAVDALAH_SENSOR = "havdalah_sensor"

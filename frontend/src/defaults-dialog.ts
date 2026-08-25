@@ -108,6 +108,44 @@ export class ShabbatDefaultsDialog extends LitElement {
     }
   }
 
+  /**
+   * A service change here is a change of VIEW, never of value.
+   *
+   * `_action` is a throwaway (see its declaration): the shared defaults
+   * carry no action, so picking a service in this dialog says nothing
+   * about what is stored - it only chooses whose schema the `data` form is
+   * rendered through. Which makes it a lens, and a lens must not destroy
+   * what it is pointed at.
+   *
+   * That is precisely what used to happen, silently, on the ONLY path a
+   * user has to see their stored defaults at all. HA's
+   * `ha-service-control` fires `{action, target}` with no `data` key on
+   * every service change; this handler assigned that absent value straight
+   * into `_draft.data`, Save persisted `{}`, and the stored payload was
+   * gone from every rule that inherited it. `docs/known-behaviours.md`
+   * used to recommend exactly that action as the way to get the data back.
+   *
+   * So: an OMITTED `data` leaves `_draft.data` alone; an explicitly empty
+   * `data: {}` is a real edit and is taken. `service-editor.ts` keeps the
+   * two apart by key presence rather than by value - it cannot make this
+   * decision itself, because the rule dialog needs the opposite answer
+   * for the same event.
+   *
+   * `'data' in detail`, not `detail.data !== undefined`: the whole
+   * distinction is key presence, and reading a value would make the two
+   * cases indistinguishable again.
+   */
+  private _onServiceChanged = (event: CustomEvent) => {
+    const detail = event.detail as { action?: unknown; data?: unknown };
+    this._action = typeof detail.action === 'string' ? detail.action : '';
+    if ('data' in detail) {
+      this._draft = {
+        ...this._draft,
+        data: detail.data as Record<string, unknown>,
+      };
+    }
+  };
+
   private _onSave() {
     this.dispatchEvent(new CustomEvent('dialog-save', {
       detail: {
@@ -153,10 +191,7 @@ export class ShabbatDefaultsDialog extends LitElement {
                 .action=${this._action}
                 .data=${this._draft.data ?? {}}
                 .disabled=${!this.canWrite}
-                @service-changed=${(event: CustomEvent) => {
-                  this._action = event.detail.action;
-                  this._draft = { ...this._draft, data: event.detail.data };
-                }}
+                @service-changed=${this._onServiceChanged}
               ></shabbat-service-editor>
             </div>
           </div>

@@ -52,13 +52,19 @@ const STRINGS = {
     // What happened the last time a rule came due. The wording deliberately
     // mirrors logbook.py's rows: the person reading the card and the person
     // reading the logbook must not be told two different things about the
-    // same rule. "Did not run" appears in each of the three non-firing
+    // same rule. "Did not run" appears in each of the four non-firing
     // outcomes and in neither of the two firing ones.
     outcome_called: 'Fired',
     outcome_would_call: 'Would have fired [dry run]',
     outcome_failed: 'Did not run — failed',
     outcome_blocked: 'Did not run — blocked',
     outcome_skipped_stale: 'Did not run — skipped as stale',
+    // The default path, and the reason this string exists: replay is off
+    // unless the rule's author switched it on, so this is what a whole
+    // schedule reads after an ordinary restart. The server sends its own
+    // `detail` alongside it ("replay is switched off for this rule"), the
+    // same words the logbook row carries.
+    outcome_skipped_no_replay: 'Did not run — was due after a restart, replay is off',
     // A verdict from a server one version ahead of this card. Saying this
     // beats rendering an empty line that looks like nothing happened.
     outcome_unknown: 'Finished with no reported outcome',
@@ -119,6 +125,7 @@ const STRINGS = {
     outcome_failed: 'לא רץ — נכשל',
     outcome_blocked: 'לא רץ — נחסם',
     outcome_skipped_stale: 'לא רץ — דולג כמיושן',
+    outcome_skipped_no_replay: 'לא רץ — היה אמור לרוץ לאחר אתחול, הפעלה חוזרת כבויה',
     outcome_unknown: 'הסתיים ללא תוצאה מדווחת',
     outcome_no_such_entity: 'אין ישות כזו: ',
     outcome_reached_nothing: 'לא הגיע לאף ישות קיימת',

@@ -326,6 +326,38 @@ describe('shabbat-rule-dialog', () => {
     expect(saved[0].data).toEqual({});
   });
 
+  /**
+   * The OPPOSITE of the defaults dialog, deliberately, and the reason
+   * `service-editor` reports "HA said nothing about data" separately from
+   * "data is empty" instead of deciding for itself.
+   *
+   * Here the action is part of the rule. HA omits `data` from the event on
+   * every service change, and data shaped for the service the author just
+   * navigated away from does not belong to the one they picked - so it
+   * goes. That is Home Assistant's own behaviour and it is right here. The
+   * defaults dialog needs the other answer, because its `_action` is a
+   * throwaway lens rather than a stored value.
+   *
+   * `toStrictEqual({})`, not `toEqual`: the thing to rule out is `data`
+   * arriving as `undefined`, which `toEqual({})` accepts, and which would
+   * reach `formToChanges` and go over the socket as a null.
+   */
+  it('clears the data when a service pick sends none, unlike the defaults dialog', async () => {
+    const el = await render();      // seeded with data { temperature: 26 }
+    const saved: any[] = [];
+    el.addEventListener('dialog-save', (e: Event) => {
+      saved.push((e as CustomEvent).detail.form);
+    });
+    editors(el).service.dispatchEvent(new CustomEvent('service-changed', {
+      // The shape `service-editor` emits for a real HA service change.
+      detail: { action: 'switch.turn_on' },
+    }));
+    await el.updateComplete;
+    (el.shadowRoot!.querySelector('button.save') as HTMLElement).click();
+    expect(saved[0].action).toBe('switch.turn_on');
+    expect(saved[0].data).toStrictEqual({});
+  });
+
   it('saves a target changed through the target editor', async () => {
     const el = await render();
     const saved: any[] = [];

@@ -247,11 +247,24 @@ async def test_the_committed_frontend_fixture_matches_a_real_payload(
         "how late it was and the window it blew - if this drifted, the clock "
         "above is no longer frozen or the engine stopped recording"
     )
-    assert by_id["day1-mamad-on"]["last_outcome"] is None, (
-        "a rule that never came due must carry an explicit null, so the card "
-        "reads one field for every rule rather than a key that may be absent"
+    assert by_id["day1-mamad-on"]["last_outcome"] == {
+        "outcome": "skipped_no_replay",
+        "at": "2026-08-15T14:00:00+00:00",
+        "detail": "replay is switched off for this rule",
+    }, (
+        "the DEFAULT path, and the reason it is in this fixture: replay is off "
+        "unless the author switched it on, so this is what an ordinary rule "
+        "reads after an ordinary restart. It used to be a bare `continue` - no "
+        "outcome at all - so the card had nothing to render for the single "
+        "most likely question after a Shabbat restart"
     )
-    assert "last_outcome" in by_id["day1-mamad-on"], (
+    assert by_id["p3-day2-on"]["last_outcome"] is None, (
+        "a rule that never came due must carry an explicit null, so the card "
+        "reads one field for every rule rather than a key that may be absent. "
+        "This one is in profile 3 while the block is 1 day long, so it is "
+        "never resolved and so never reported on at all"
+    )
+    assert "last_outcome" in by_id["p3-day2-on"], (
         "present-and-null, not absent: `in`, because an absent key and a null "
         "one are the same to a dict comparison and not the same to the card"
     )

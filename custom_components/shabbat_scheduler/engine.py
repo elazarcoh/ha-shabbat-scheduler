@@ -34,6 +34,7 @@ from .const import (
     EVENT_RULE_APPLIED,
     EVENT_RULE_COMPLETED,
     NO_LIVE_TARGETS_NOTE,
+    NO_REPLAY_NOTE,
     OUTCOME_PRECEDENCE,
     RETRY_ATTEMPTS,
     RETRY_DELAY_SECONDS,
@@ -154,7 +155,8 @@ def build_outcome(
 
     THE SHAPE, and why it has more than one axis. `outcome` answers "did
     the call happen, and if not why not" - one of `called`, `would_call`,
-    `failed`, `blocked`, `skipped_stale`. The two optional keys answer a
+    `failed`, `blocked`, `skipped_stale`, `skipped_no_replay`. The two
+    optional keys answer a
     DIFFERENT question: "did it reach anything?". They are not outcomes and
     must not be flattened into one, because a call can genuinely have been
     made (`called`) and still have reached nothing real, and calling that
@@ -737,8 +739,12 @@ class ShabbatEngine:
         evaluated through the normal `async_apply_rule` path - still
         guards it.
 
-        A rule that does not fire must say why: a rule replayed too late
-        is reported as `skipped_stale` rather than silently dropped.
+        A rule that does not fire must say why, and BOTH ways of not
+        firing here say it: a rule replayed too late is reported as
+        `skipped_stale`, and a rule that came due with replay switched off
+        as `skipped_no_replay`. Both get a durable per-rule outcome, their
+        own `EVENT_RULE_COMPLETED` and a count in the summary row, so the
+        summary can never claim nothing was due when something was.
 
         At most once per block: application through
         `async_call_from_config` has no "already in that state" check to
@@ -755,7 +761,35 @@ class ShabbatEngine:
             if item.when > now:
                 continue                      # future: armed, not replayed
             if not item.rule.replay.enabled:
-                continue                      # the author did not opt in
+                # The author did not opt in. Reported exactly the way the
+                # stale skip below is - own result, own durable outcome, own
+                # logbook row, own count in the summary - and for a stronger
+                # reason: replay is OFF BY DEFAULT, so this is the DEFAULT
+                # path after every ordinary restart, not a corner of it.
+                # It used to be a bare `continue`, which meant the single
+                # most likely question after a Shabbat restart ("why didn't
+                # the lights come on?") was answered by silence on the card,
+                # silence in the logbook, and a summary row actively
+                # claiming no rule had been due.
+                #
+                # Reporting only. Nothing here calls anything, and nothing
+                # here can make a rule more likely to fire: the `continue`
+                # that ends this branch is the same `continue` that was
+                # there before.
+                skipped = {
+                    "rule_id": item.rule.id,
+                    "outcome": "skipped_no_replay",
+                    "reason": NO_REPLAY_NOTE,
+                }
+                results.append(skipped)
+                await self._async_record_outcome(
+                    item.rule,
+                    build_outcome(
+                        "skipped_no_replay", dt_util.utcnow(), skipped["reason"]
+                    ),
+                )
+                self._fire_completed(item.rule, [skipped])
+                continue
             within = item.rule.replay.within
             if within is not None and now - item.when > within:
                 skipped = {

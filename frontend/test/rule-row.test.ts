@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import '../src/rule-row';
+import { t } from '../src/strings';
 import type { RuleData } from '../src/types';
 
 const rule = (over: Partial<RuleData>): RuleData => ({
@@ -150,7 +151,7 @@ describe('shabbat-rule-row', () => {
   });
 
   /**
-   * Each of the three non-firing outcomes must be DISTINGUISHABLE from a
+   * Each of the four non-firing outcomes must be DISTINGUISHABLE from a
    * rule that ran. A single "last outcome" line that read the same for
    * "fired" and "blocked" would satisfy every assertion above while
    * telling the reader nothing - the exact failure the empty-conflict bug
@@ -164,24 +165,71 @@ describe('shabbat-rule-row', () => {
       return el.shadowRoot!.querySelector('.last-outcome')!.textContent!.trim();
     };
     const lines = await Promise.all(
-      ['called', 'would_call', 'failed', 'blocked', 'skipped_stale'].map(lineFor),
+      ['called', 'would_call', 'failed', 'blocked', 'skipped_stale',
+       'skipped_no_replay'].map(lineFor),
     );
-    expect(new Set(lines).size).toBe(5);
+    expect(new Set(lines).size).toBe(6);
     for (const line of lines) expect(line).not.toBe('');
   });
 
-  it('marks the three non-firing outcomes as bad and a plain success as not', async () => {
+  it('marks the four non-firing outcomes as bad and a plain success as not', async () => {
     const classFor = async (outcome: string) => {
       const el = await render({ rule: rule({ last_outcome: {
         outcome, at: '2026-08-25T18:00:00+00:00', detail: null,
       } }) });
       return [...el.shadowRoot!.querySelector('.last-outcome')!.classList];
     };
-    for (const bad of ['failed', 'blocked', 'skipped_stale']) {
+    for (const bad of ['failed', 'blocked', 'skipped_stale', 'skipped_no_replay']) {
       expect(await classFor(bad), bad).toContain('bad');
     }
     expect(await classFor('called')).not.toContain('bad');
     expect(await classFor('would_call')).not.toContain('bad');
+  });
+
+  /**
+   * The fourth non-firing reason, and the one a reader is most likely to
+   * be hunting for: replay is off by default, so this is what a whole
+   * schedule reads after an ordinary restart. It used to render nothing at
+   * all, because the engine recorded nothing at all.
+   *
+   * Checked in both languages: `tsc` enforces that the KEY exists in `he`,
+   * not that the row actually renders a translation of it.
+   *
+   * Asserting the LABEL, not only the server's `detail`. A first version of
+   * this test checked only that the detail appeared and the row was marked
+   * bad - and it stayed green with the `OUTCOME_LABELS` entry deleted,
+   * because `formatOutcome` then falls back to `outcome_unknown` and
+   * appends the detail regardless. So it agreed with the fix and would have
+   * agreed just as readily with a row reading "Finished with no reported
+   * outcome" about a rule whose reason is precisely known. Caught by
+   * reverting the entry, which is why the fallback is now ruled out by name.
+   */
+  it('says a rule was due after a restart but had replay switched off', async () => {
+    const lines: string[] = [];
+    for (const language of ['en', 'he']) {
+      const el = await render({ language, rule: rule({ last_outcome: {
+        outcome: 'skipped_no_replay', at: '2026-08-25T18:00:00+00:00',
+        detail: 'replay is switched off for this rule',
+      } }) });
+      const line = el.shadowRoot!.querySelector('.last-outcome')!;
+      const text = line.textContent!;
+      lines.push(text);
+      // This outcome's OWN label, in this language...
+      expect(text, language).toContain(t(language, 'outcome_skipped_no_replay'));
+      // ...and not the "a newer server sent something I don't know" fallback,
+      // which is what a missing OUTCOME_LABELS entry silently degrades to.
+      expect(text, language).not.toContain(t(language, 'outcome_unknown'));
+      // The server's own words too, the same ones the logbook row carries.
+      expect(text, language).toContain('replay is switched off for this rule');
+      expect(text, language).not.toContain('undefined');
+      // Not drawn as quietly as a rule that simply worked: the answer to
+      // "why didn't my rules run?" must not be in the colour of "fine".
+      expect([...line.classList], language).toContain('bad');
+      // ...and not misreported as the OTHER kind of skip.
+      expect(text.toLowerCase(), language).not.toContain('stale');
+    }
+    // `he` is a real translation, not a copy of `en` that satisfies `tsc`.
+    expect(lines[0]).not.toBe(lines[1]);
   });
 
   /**

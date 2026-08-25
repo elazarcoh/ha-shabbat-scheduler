@@ -173,6 +173,115 @@ async def test_a_stale_skip_fires_its_own_event_and_reaches_the_logbook(hass, en
     assert "on11" in row
 
 
+async def test_a_rule_due_with_replay_off_is_reported_not_silently_skipped(
+    hass, engine, test_booleans
+):
+    """The constraint violated on its DEFAULT path.
+
+    Replay is off unless the author switched it on - the project owner's
+    explicit decision - so this branch is what happens after every
+    ordinary restart, and "why didn't my rules run?" is the question it
+    exists to answer. It used to be a bare `continue`: no result, no
+    event, no durable outcome, no logbook row. The near-identical
+    `skipped_stale` branch one line below got all four, so this asserts
+    all four here too.
+
+    Reporting only. `calls` must stay empty: nothing about saying why a
+    rule did not fire may make it fire.
+    """
+    calls = async_mock_service(hass, "input_boolean", "turn_on")
+    events = async_capture_events(hass, EVENT_RULE_COMPLETED)
+    described = {}
+    async_describe_events(hass, lambda d, e, f: described.__setitem__(e, f))
+
+    await _prepare(engine, hass, [
+        # Constructed explicitly rather than relying on `Replay()`'s
+        # default, so this test cannot be silently re-aimed if that
+        # default ever changes.
+        _rule("on11", time(11, 0), "input_boolean.t", Replay(enabled=False)),
+    ])
+
+    with freeze_time(_local("14:00")):
+        results = await engine.async_catch_up()
+    await hass.async_block_till_done()
+
+    # 1. It fired nothing. That is the constraint, not a side note.
+    assert calls == []
+
+    # 2. A result exists, so the pass summary cannot claim nothing was due.
+    assert [r["outcome"] for r in results] == ["skipped_no_replay"]
+
+    # 3. A durable per-rule outcome, which is what the card reads.
+    outcome = engine.store.last_outcome("on11")
+    assert outcome is not None
+    assert outcome["outcome"] == "skipped_no_replay"
+    assert outcome["detail"] == "replay is switched off for this rule"
+
+    # 4. Its own event, and a logbook row naming the rule and the reason.
+    per_rule = [e for e in events if e.data.get("rule_id") == "on11"]
+    assert len(per_rule) == 1
+    assert per_rule[0].data["results"][0]["outcome"] == "skipped_no_replay"
+    row = described[EVENT_RULE_COMPLETED](per_rule[0])["message"]
+    assert "did not run" in row.lower()
+    assert "replay is switched off" in row
+    assert "on11" in row
+
+
+async def test_the_catch_up_summary_cannot_claim_nothing_was_due(hass, engine):
+    """The false statement the bare `continue` produced.
+
+    Two rules were due and neither had opted in, and the summary row read
+    "no rule was due for replay". Driven through the engine rather than
+    through a hand-built payload, because the defect was that the engine
+    produced an EMPTY results list - a logbook test alone could not have
+    caught it.
+    """
+    events = async_capture_events(hass, EVENT_RULE_COMPLETED)
+    described = {}
+    async_describe_events(hass, lambda d, e, f: described.__setitem__(e, f))
+
+    await _prepare(engine, hass, [
+        _rule("on09", time(9, 0), "input_boolean.t", Replay(enabled=False)),
+        _rule("on11", time(11, 0), "input_boolean.salon", Replay(enabled=False)),
+    ])
+
+    with freeze_time(_local("14:00")):
+        await engine.async_catch_up()
+    await hass.async_block_till_done()
+
+    summary = [e for e in events if e.data.get("catch_up")]
+    assert len(summary) == 1
+    message = described[EVENT_RULE_COMPLETED](summary[0])["message"]
+    assert "no rule was due for replay" not in message
+    assert "2 due but replay is off" in message
+
+
+async def test_a_future_rule_with_replay_off_reports_nothing_at_all(
+    hass, engine, test_booleans
+):
+    """Only PAST-DUE rules are reported, and the guard order is why.
+
+    A rule still in the future is armed, not skipped - saying "did not
+    run" about a rule that is going to run in four hours is a lie in the
+    other direction, and a card full of them after a restart would train
+    the reader to ignore the one line that matters. This pins the future
+    check staying AHEAD of the replay check.
+    """
+    events = async_capture_events(hass, EVENT_RULE_COMPLETED)
+    await _prepare(engine, hass, [
+        _rule("on18", time(18, 0), "input_boolean.t", Replay(enabled=False)),
+    ])
+
+    with freeze_time(_local("14:00")):
+        results = await engine.async_catch_up()
+    await hass.async_block_till_done()
+
+    assert results == []
+    assert [e for e in events if e.data.get("rule_id") == "on18"] == []
+    assert engine.store.last_outcome("on18") is None
+    assert engine.upcoming()
+
+
 async def test_a_rule_inside_its_window_is_replayed(hass, engine, test_booleans):
     calls = async_mock_service(hass, "input_boolean", "turn_on")
     await _prepare(engine, hass, [

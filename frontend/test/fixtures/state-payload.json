@@ -70,7 +70,11 @@
       "enabled": true,
       "icon": null,
       "id": "day1-mamad-on",
-      "last_outcome": null,
+      "last_outcome": {
+        "at": "2026-08-15T14:00:00+00:00",
+        "detail": "replay is switched off for this rule",
+        "outcome": "skipped_no_replay"
+      },
       "migration_error": null,
       "migration_source": null,
       "name": null,
@@ -94,7 +98,11 @@
       "enabled": true,
       "icon": null,
       "id": "day1-mamad-off",
-      "last_outcome": null,
+      "last_outcome": {
+        "at": "2026-08-15T14:00:00+00:00",
+        "detail": "replay is switched off for this rule",
+        "outcome": "skipped_no_replay"
+      },
       "migration_error": null,
       "migration_source": null,
       "name": null,

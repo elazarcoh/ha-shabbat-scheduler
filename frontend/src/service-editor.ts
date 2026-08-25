@@ -101,22 +101,41 @@ export class ShabbatServiceEditor extends LitElement {
   }
 
   /**
-   * Kept even though the row it defends against is now hidden. Hiding the
-   * UI is what stops a user losing a target; dropping the value is what
-   * makes "this element never speaks for the target" true regardless.
-   * If the suppression ever stops matching, this is what still prevents
-   * HA's row from overwriting the target editor's value.
+   * The target drop is kept even though the row it defends against is now
+   * hidden. Hiding the UI is what stops a user losing a target; dropping
+   * the value is what makes "this element never speaks for the target"
+   * true regardless. If the suppression ever stops matching, this is what
+   * still prevents HA's row from overwriting the target editor's value.
+   *
+   * `data` IS OMITTED FROM THE DETAIL WHEN HA SENT NO USABLE `data`, and
+   * that is load-bearing rather than tidy. Read off 2026.8.2's own bundle,
+   * `ha-service-control._serviceChanged` fires `{action, target}` with NO
+   * `data` KEY AT ALL - so the absent-`data` branch is not a defensive
+   * corner, it is what happens on EVERY service change. This element
+   * cannot know what that should mean, because it depends on which dialog
+   * it is in: for a rule the action is part of the rule, so data shaped
+   * for the old service must go (HA's own semantics, and correct); for the
+   * shared defaults there is no action at all and the picker is only a
+   * lens onto a schema, so the same event must not destroy the stored
+   * value. So the two cases are reported apart - key absent means "HA said
+   * nothing about data", `data: {}` means "HA said data is empty" - and
+   * each dialog decides. Collapsing both to `{}` here is exactly the bug
+   * that silently wiped `defaults.data` on every service pick.
+   *
+   * Absent, null and a non-object (a string, a number) are all reported as
+   * "said nothing": none of them is a user asking for an empty payload,
+   * and guessing "empty" from garbage destroys data just as thoroughly as
+   * guessing it from silence.
    */
   private _onChange = (event: CustomEvent) => {
     const value = (event.detail?.value ?? {}) as Record<string, unknown>;
-    this.dispatchEvent(new CustomEvent('service-changed', {
-      detail: {
-        action: typeof value.action === 'string' ? value.action : '',
-        data: (typeof value.data === 'object' && value.data !== null
-          ? value.data
-          : {}) as Record<string, unknown>,
-      },
-    }));
+    const detail: { action: string; data?: Record<string, unknown> } = {
+      action: typeof value.action === 'string' ? value.action : '',
+    };
+    if (typeof value.data === 'object' && value.data !== null) {
+      detail.data = value.data as Record<string, unknown>;
+    }
+    this.dispatchEvent(new CustomEvent('service-changed', { detail }));
   };
 
   private _observer: MutationObserver | null = null;

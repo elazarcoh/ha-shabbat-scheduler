@@ -41,6 +41,7 @@ from .const import (
     EVENT_RULE_APPLIED,
     EVENT_RULE_COMPLETED,
     NO_LIVE_TARGETS_NOTE,
+    NO_REPLAY_NOTE,
     OUTCOME_PRECEDENCE,
     UNKNOWN_ENTITY_PREFIX,
 )
@@ -54,6 +55,15 @@ _ICON_FIRED = "mdi:candle"
 _ICON_BLOCKED = "mdi:cancel"
 _ICON_FAILED = "mdi:alert-circle"
 _ICON_STALE = "mdi:clock-alert-outline"
+# Its own icon rather than sharing the stale one: after a restart these two
+# rows sit side by side and mean different things - "too late to be worth
+# repeating" versus "nobody ever asked for it to be repeated" - and the
+# whole point of one icon per outcome is telling them apart without reading.
+# Confirmed present in the shipped icon set (`/static/mdi/iconList.json` on
+# 2026.8.2) rather than guessed at: an icon name that does not exist renders
+# as a blank space, which is a silent loss of exactly the at-a-glance
+# distinction this line is for.
+_ICON_NO_REPLAY = "mdi:restart-off"
 _ICON_DRY_RUN = "mdi:test-tube"
 _ICON_CATCH_UP = "mdi:restart"
 
@@ -195,8 +205,21 @@ def _note_diagnostics(message: str, results: list[dict]) -> str:
 
 
 def _catch_up_message(results: list[dict]) -> str:
+    """The one summary row for a whole catch-up pass.
+
+    `no_replay` is counted here, not only per rule, because this row used
+    to be able to LIE. A past-due rule with replay switched off produced no
+    result at all, so `results` was empty and this said "no rule was due
+    for replay" about a restart where several were - and replay being off
+    is the default, so that was the ordinary case rather than a rare one.
+    Counting it is what makes the sentence unfalsifiable: something due is
+    now always something reported.
+    """
     replayed = sum(1 for item in results if item.get("outcome") == "called")
     skipped = sum(1 for item in results if item.get("outcome") == "skipped_stale")
+    no_replay = sum(
+        1 for item in results if item.get("outcome") == "skipped_no_replay"
+    )
     blocked = sum(1 for item in results if item.get("outcome") == "blocked")
     failed = sum(1 for item in results if item.get("outcome") == "failed")
     would = sum(1 for item in results if item.get("outcome") == "would_call")
@@ -210,6 +233,7 @@ def _catch_up_message(results: list[dict]) -> str:
             (blocked, "blocked"),
             (failed, "failed"),
             (skipped, "skipped as stale"),
+            (no_replay, "due but replay is off"),
         )
         if count
     ]
@@ -245,11 +269,12 @@ def async_describe_events(
     def async_describe_rule_completed(event: Event) -> dict:
         """What actually happened. The row that has to be honest.
 
-        Four distinguishable shapes, because the promise is that a rule
+        Five distinguishable shapes, because the promise is that a rule
         which does not fire says WHY: fired, blocked (naming the
         condition), failed (naming the error), skipped as stale (saying
-        how late). "did not run" appears in each of the three non-firing
-        rows and in none of the firing ones, so it is greppable.
+        how late), and due-but-replay-is-off. "did not run" appears in each
+        of the four non-firing rows and in none of the firing ones, so it
+        is greppable.
         """
         data = event.data
         results = _results(data)
@@ -294,6 +319,18 @@ def async_describe_events(
             if reason:
                 message = f"{message}: {reason}"
             return {"name": _NAME, "message": message, "icon": _ICON_STALE}
+
+        if outcome == "skipped_no_replay":
+            # The row this whole outcome exists for. Same "did not run —"
+            # shape as its three siblings so the promise stays greppable,
+            # and it names the rule, because after a restart the question
+            # is about a particular rule and not about the pass.
+            reason = _detail(results, "skipped_no_replay", "reason") or NO_REPLAY_NOTE
+            return {
+                "name": _NAME,
+                "message": f"rule '{rule}' did not run — was due, but {reason}",
+                "icon": _ICON_NO_REPLAY,
+            }
 
         if outcome == "would_call":
             message = f"rule '{rule}' would have fired [dry run]"

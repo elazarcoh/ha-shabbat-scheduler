@@ -172,10 +172,19 @@ async def test_last_run_sensor_distinguishes_empty_run_from_never_ran(hass):
 
     v2 note: the empty-results path used to be a CUSTOM rule with no
     script configured. `expand_action` now always yields at least one call
-    for any action, so `async_apply_rule` can no longer return []. The
-    surviving zero-results run is a catch-up with nothing opted in to
-    replay - which still stamps `last_run`/`last_run_at` and still fires
-    EVENT_RULE_COMPLETED, so the ambiguity being guarded is unchanged.
+    for any action, so `async_apply_rule` can no longer return [].
+
+    It was then re-aimed at a catch-up with nothing opted in to replay -
+    and the final fix wave closed that path too, because a past-due rule
+    with replay off now reports `skipped_no_replay` rather than being
+    silently skipped. Note the direction of travel: every time the engine
+    gets more honest, one more way of producing zero results disappears.
+    That is the engine improving, not this test decaying, so it is re-aimed
+    rather than weakened - the ambiguity it guards (a run that happened and
+    found nothing, versus a sensor that has never run) is unchanged, and
+    the remaining way to reach it is a catch-up over a rule set with
+    nothing in it, which still stamps `last_run`/`last_run_at` and still
+    fires EVENT_RULE_COMPLETED.
     """
     entry = await _setup(hass)
     never_ran_state = hass.states.get("sensor.shabbat_scheduler_last_run").state
@@ -183,11 +192,7 @@ async def test_last_run_sensor_distinguishes_empty_run_from_never_ran(hass):
     engine = hass.data[DOMAIN][entry.entry_id]["engine"]
     _zmanim(hass)
     await engine.store.async_set_enabled(True)
-    await engine.store.async_replace_all({}, [
-        Rule(id="r1", profile=1, day="1", time=time(11, 0),
-             action="input_boolean.turn_on",
-             target={"entity_id": ["input_boolean.t"]}),
-    ])
+    await engine.store.async_replace_all({}, [])
     await engine.async_refresh()
     results = await engine.async_catch_up()
 

@@ -271,6 +271,133 @@ def test_a_stale_skip_says_how_late_it_was(hass):
     assert "did not run" in message.lower()
 
 
+def test_a_rule_due_with_replay_off_gets_its_own_row(hass):
+    """The default path, and it used to render no row at all.
+
+    Replay is off unless the author switched it on, so this is what
+    happens to an ordinary rule after an ordinary restart. It has to be
+    distinguishable from a stale skip - "too late to be worth repeating"
+    and "nobody ever asked for it to be repeated" are different answers to
+    the same question - and it has to name the rule, because the question
+    is asked about one rule and not about the pass.
+    """
+    described = _describers(hass)
+    describe = described[EVENT_RULE_COMPLETED]
+
+    no_replay = describe(
+        _completed(
+            results=[
+                {
+                    "rule_id": "r1",
+                    "outcome": "skipped_no_replay",
+                    "reason": "replay is switched off for this rule",
+                }
+            ]
+        )
+    )
+    stale = describe(
+        _completed(
+            results=[
+                {
+                    "rule_id": "r1",
+                    "outcome": "skipped_stale",
+                    "reason": "12:00:00 late, window 2:00:00",
+                }
+            ]
+        )
+    )
+
+    message = no_replay["message"]
+    assert "did not run" in message.lower()
+    assert "replay is switched off" in message
+    assert "AC on" in message
+    # Not a stale skip, in either half of the row.
+    assert "stale" not in message.lower()
+    assert message != stale["message"]
+    assert no_replay["icon"] != stale["icon"]
+
+
+def test_a_replay_off_row_never_claims_the_rule_ran(hass):
+    described = _describers(hass)
+    message = described[EVENT_RULE_COMPLETED](
+        _completed(
+            results=[
+                {
+                    "rule_id": "r1",
+                    "outcome": "skipped_no_replay",
+                    "reason": "replay is switched off for this rule",
+                }
+            ]
+        )
+    )["message"].lower()
+    for claim in ("fired", "applied", "succeeded", "replayed"):
+        assert claim not in message
+
+
+def test_a_replay_off_row_survives_a_result_with_no_reason(hass):
+    """An event from an older version carries no `reason`.
+
+    The row must still say why the rule did not run rather than trailing
+    off, since that sentence is the entire purpose of the outcome.
+    """
+    described = _describers(hass)
+    message = described[EVENT_RULE_COMPLETED](
+        _completed(results=[{"rule_id": "r1", "outcome": "skipped_no_replay"}])
+    )["message"]
+    assert "did not run" in message.lower()
+    assert "replay is switched off" in message
+    assert "None" not in message
+
+
+def test_the_catch_up_summary_counts_the_rules_that_had_replay_off(hass):
+    """The summary used to be able to LIE, and this is the lie.
+
+    A past-due rule with replay off produced no result, so `results` was
+    empty and the summary read "no rule was due for replay" about a
+    restart where several were. Replay being off is the DEFAULT, so that
+    was the ordinary case rather than a rare one.
+    """
+    described = _describers(hass)
+    message = described[EVENT_RULE_COMPLETED](
+        Event(
+            EVENT_RULE_COMPLETED,
+            {
+                "rule_id": None,
+                "catch_up": True,
+                "results": [
+                    {"rule_id": "a", "outcome": "skipped_no_replay", "reason": "off"},
+                    {"rule_id": "b", "outcome": "skipped_no_replay", "reason": "off"},
+                ],
+            },
+        )
+    )["message"]
+    assert "catch-up" in message.lower()
+    assert "2" in message
+    assert "replay is off" in message
+    # The sentence that must now be impossible whenever something was due.
+    assert "no rule was due for replay" not in message
+
+
+def test_the_catch_up_summary_separates_replay_off_from_stale(hass):
+    described = _describers(hass)
+    message = described[EVENT_RULE_COMPLETED](
+        Event(
+            EVENT_RULE_COMPLETED,
+            {
+                "rule_id": None,
+                "catch_up": True,
+                "results": [
+                    {"rule_id": "a", "outcome": "skipped_no_replay", "reason": "off"},
+                    {"rule_id": "b", "outcome": "skipped_stale", "reason": "late"},
+                    {"rule_id": "c", "outcome": "skipped_stale", "reason": "late"},
+                ],
+            },
+        )
+    )["message"]
+    assert "1 due but replay is off" in message
+    assert "2 skipped as stale" in message
+
+
 def test_a_partly_failed_rule_reports_the_failure_not_the_success(hass):
     """The climate shim makes several calls from one action.
 

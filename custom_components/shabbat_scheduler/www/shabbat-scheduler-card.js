@@ -876,6 +876,12 @@ const EMPTY_FORM = {
 let ShabbatRuleDialog = class ShabbatRuleDialog extends i {
     constructor() {
         super(...arguments);
+        /**
+         * Passed straight to the Home Assistant elements the editors embed.
+         * Reassigned on every state change in the whole system, so nothing may
+         * key form-seeding off it - see `willUpdate`.
+         */
+        this.hass = null;
         /** null means create. */
         this.rule = null;
         /** Pre-filled values for a create. This is what duplication uses. */
@@ -1185,6 +1191,9 @@ ShabbatRuleDialog.styles = i$3 `
   `;
 __decorate([
     n({ attribute: false })
+], ShabbatRuleDialog.prototype, "hass", void 0);
+__decorate([
+    n({ attribute: false })
 ], ShabbatRuleDialog.prototype, "rule", void 0);
 __decorate([
     n({ attribute: false })
@@ -1237,6 +1246,12 @@ ShabbatRuleDialog = __decorate([
 let ShabbatDefaultsDialog = class ShabbatDefaultsDialog extends i {
     constructor() {
         super(...arguments);
+        /**
+         * Passed straight to the Home Assistant elements the editors embed.
+         * Reassigned on every state change in the whole system, so nothing may
+         * key form-seeding off it.
+         */
+        this.hass = null;
         this.defaults = {};
         this.canWrite = false;
         this.busy = false;
@@ -1323,6 +1338,9 @@ ShabbatDefaultsDialog.styles = i$3 `
     }
     button[disabled] { opacity: 0.5; cursor: not-allowed; }
   `;
+__decorate([
+    n({ attribute: false })
+], ShabbatDefaultsDialog.prototype, "hass", void 0);
 __decorate([
     n({ attribute: false })
 ], ShabbatDefaultsDialog.prototype, "defaults", void 0);
@@ -1737,6 +1755,7 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
           `)}
         ${this._editing !== null || this._creatingDay !== null
             ? b `<shabbat-rule-dialog
+              .hass=${this._hass}
               .rule=${this._editing}
               .seed=${this._duplicateSeed}
               .day=${this._creatingDay ?? this._editing?.day ?? 'erev'}
@@ -1754,6 +1773,7 @@ let ShabbatSchedulerCard = class ShabbatSchedulerCard extends i {
             : A}
         ${this._defaultsOpen
             ? b `<shabbat-defaults-dialog
+              .hass=${this._hass}
               .defaults=${this._state.defaults}
               .canWrite=${this._canWrite}
               .busy=${this._busy}

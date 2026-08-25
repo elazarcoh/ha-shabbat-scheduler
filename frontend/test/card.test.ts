@@ -1082,4 +1082,37 @@ describe('authoring', () => {
 
     expect(el._selectedProfile).toBe(3);
   });
+
+  // ---- hass must reach the HA elements the dialogs embed ----
+
+  it('passes hass down to the rule dialog, so HA elements can render', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(state());
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-day-group')!.dispatchEvent(
+      new CustomEvent('rule-add', {
+        detail: { day: 'erev' }, bubbles: true, composed: true,
+      }),
+    );
+    await el.updateComplete;
+
+    const dialog = el.shadowRoot!.querySelector('shabbat-rule-dialog') as any;
+    expect(dialog).not.toBeNull();
+    expect(dialog.hass).toBe(el.hass);
+  });
+
+  it('passes hass down to the defaults dialog', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(state());
+    await el.updateComplete;
+    el._defaultsOpen = true;
+    await el.updateComplete;
+
+    const dialog = el.shadowRoot!.querySelector('shabbat-defaults-dialog') as any;
+    expect(dialog).not.toBeNull();
+    expect(dialog.hass).toBe(el.hass);
+  });
 });

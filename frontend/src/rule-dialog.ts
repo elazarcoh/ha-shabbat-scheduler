@@ -2,7 +2,7 @@ import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { describeTarget, ruleToForm } from './format';
 import { t } from './strings';
-import type { Defaults, RuleData, RuleFormState } from './types';
+import type { Defaults, Hass, RuleData, RuleFormState } from './types';
 
 const EMPTY_FORM: RuleFormState = {
   day: 'erev', time: '', action: '', target: {}, data: {}, condition: [],
@@ -12,6 +12,12 @@ const EMPTY_FORM: RuleFormState = {
 
 @customElement('shabbat-rule-dialog')
 export class ShabbatRuleDialog extends LitElement {
+  /**
+   * Passed straight to the Home Assistant elements the editors embed.
+   * Reassigned on every state change in the whole system, so nothing may
+   * key form-seeding off it - see `willUpdate`.
+   */
+  @property({ attribute: false }) hass: Hass | null = null;
   /** null means create. */
   @property({ attribute: false }) rule: RuleData | null = null;
   /** Pre-filled values for a create. This is what duplication uses. */

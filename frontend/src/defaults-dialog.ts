@@ -2,7 +2,7 @@ import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { describeTarget } from './format';
 import { t } from './strings';
-import type { Defaults } from './types';
+import type { Defaults, Hass } from './types';
 
 /**
  * The shared defaults, shown but not editable.
@@ -20,6 +20,12 @@ import type { Defaults } from './types';
  */
 @customElement('shabbat-defaults-dialog')
 export class ShabbatDefaultsDialog extends LitElement {
+  /**
+   * Passed straight to the Home Assistant elements the editors embed.
+   * Reassigned on every state change in the whole system, so nothing may
+   * key form-seeding off it.
+   */
+  @property({ attribute: false }) hass: Hass | null = null;
   @property({ attribute: false }) defaults: Defaults = {};
   @property({ type: Boolean }) canWrite = false;
   @property({ type: Boolean }) busy = false;

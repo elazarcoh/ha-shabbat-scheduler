@@ -456,6 +456,7 @@ export class ShabbatSchedulerCard extends LitElement {
         )}
         ${this._editing !== null || this._creatingDay !== null
           ? html`<shabbat-rule-dialog
+              .hass=${this._hass}
               .rule=${this._editing}
               .seed=${this._duplicateSeed}
               .day=${this._creatingDay ?? this._editing?.day ?? 'erev'}
@@ -473,6 +474,7 @@ export class ShabbatSchedulerCard extends LitElement {
           : nothing}
         ${this._defaultsOpen
           ? html`<shabbat-defaults-dialog
+              .hass=${this._hass}
               .defaults=${this._state.defaults}
               .canWrite=${this._canWrite}
               .busy=${this._busy}

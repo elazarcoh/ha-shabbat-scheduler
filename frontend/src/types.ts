@@ -126,3 +126,22 @@ export interface HassEntity {
   state: string;
   attributes: Record<string, unknown>;
 }
+
+/**
+ * As much of Home Assistant's `hass` object as this card reads, plus the
+ * fields the HA elements we embed require to be present. It is passed
+ * straight through to `<ha-service-control>` and `<ha-selector>`, which
+ * read far more of it than this - so this is a *lower bound*, not a
+ * description, and it must never be used to construct a hass object.
+ */
+export interface Hass {
+  states: Record<string, HassEntity>;
+  locale?: { language?: string };
+  user?: { is_admin?: boolean };
+  connection: unknown;
+  callWS: (message: Record<string, unknown>) => Promise<unknown>;
+  callService: (
+    domain: string, service: string, data?: Record<string, unknown>,
+  ) => Promise<unknown>;
+  [key: string]: unknown;
+}

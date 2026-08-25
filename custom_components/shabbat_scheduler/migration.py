@@ -7,13 +7,30 @@ The governing rule: a rule that cannot be converted is KEPT, DISABLED and
 REPORTED. An upgrade that silently drops someone's schedule is the worst
 outcome this code could produce - they would find out on Shabbat, when
 nothing can be fixed.
+
+The second governing rule, which cost eight rounds of fixes to learn:
+`migrate_v1` MUST BE TOTAL. It is the one function in this codebase that
+must never raise. Anything it raises escapes `_MigratingStore.
+_async_migrate_func` -> `Store.async_load` -> `RuleStore.async_load` ->
+`async_setup_entry`, which fails with `ConfigEntryState.SETUP_ERROR` - and
+because the store is then still at version 1, EVERY SUBSEQUENT RESTART
+FAILS IDENTICALLY. No entities, no engine, nothing scheduled, and the only
+trace is a setup traceback nobody reads on the one week they cannot. Every
+coercion below is therefore guarded, and `migrate_v1` also wraps the
+per-rule conversion in a catch-all so an unanticipated shape becomes one
+kept-disabled-reported rule rather than a permanently unbootable install.
+`yaml_io.import_yaml` closed the identical hole at the YAML door first.
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import time as _time
 
 from .models import EREV
+
+# stdlib only - this module imports zero Home Assistant, by constraint.
+_LOGGER = logging.getLogger(__name__)
 
 _UNCHANGED = ("id", "profile", "day", "time", "name", "icon", "color")
 
@@ -104,8 +121,55 @@ def safe_profile(raw: dict) -> int:
     return int(value) if _parses_as_profile(value) else 1
 
 
-def migrate_v1_rule(raw: dict) -> tuple[dict | None, str | None]:
-    """One v1 rule as v2, or None plus the reason it could not be."""
+def _entity_ids(value) -> list[str] | None:
+    """A v1 `devices` list as a list of entity ids, or None if it is not one.
+
+    `list(value or ())` was not enough on either of its two call sites.
+    `devices: 5` raised TypeError (see the module docstring for what that
+    costs); `devices: "climate.salon"` - the single-device shape a human
+    hand-editing `.storage` writes first - silently became the CHARACTERS
+    of the string, one bogus "domain" per letter; and `devices: [None]`
+    reached `devices[0].split(".", 1)` and raised AttributeError.
+
+    None means "this is not a device list at all", which the caller routes
+    through keep-disable-report; `[]` means "no devices", which already had
+    its own reason.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        return None
+    if not all(isinstance(item, str) and item for item in value):
+        return None
+    return list(value)
+
+
+def _settings(value) -> dict | None:
+    """A v1 `settings`/`variables` mapping, or None if it is not one.
+
+    `dict(raw.get("settings") or {})` raised ValueError on `'hot'` and
+    TypeError on `5` - on the SUCCESS path, so one corrupt field took the
+    whole store's load down rather than one rule. Absent and null are the
+    only non-mappings tolerated: anything else is data this function cannot
+    claim to understand, and guessing on the user's behalf is what the
+    keep-disable-report path exists to avoid.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        return None
+    return dict(value)
+
+
+def migrate_v1_rule(
+    raw: dict, default_settings: dict | None = None
+) -> tuple[dict | None, str | None]:
+    """One v1 rule as v2, or None plus the reason it could not be.
+
+    `default_settings` is the v1 store's GLOBAL `defaults.settings`. It is
+    inlined here, per rule, rather than migrated into v2's `defaults.data`
+    - see `migrate_v1_defaults` for why.
+    """
     # id, time, profile and day are required fields on the v2 Rule
     # dataclass - `rule_from_dict` does `data["id"]`, `data["profile"]`,
     # `data["day"]` and `data["time"]` unconditionally. A "successfully"
@@ -139,6 +203,21 @@ def migrate_v1_rule(raw: dict) -> tuple[dict | None, str | None]:
     if not _parses_as_time(time_value):
         return None, f"time is not a valid clock time: {time_value!r}"
 
+    # Guarded before anything is built: a field this function cannot parse
+    # is a rule it cannot claim to have understood, whichever branch below
+    # would have consumed it. Uniform on purpose - the alternative,
+    # checking `settings` only where it is read, means a future reader has
+    # to work out which v1 actions consume which fields before they can
+    # tell whether a corrupt one matters. The whole raw rule is stashed in
+    # `migration_source`, so being told about it costs the user one field
+    # to fix rather than a rule to rewrite.
+    settings = _settings(raw.get("settings"))
+    if settings is None:
+        return None, f"settings must be a mapping: {raw.get('settings')!r}"
+    variables = _settings(raw.get("variables"))
+    if variables is None:
+        return None, f"variables must be a mapping: {raw.get('variables')!r}"
+
     action = raw.get("action")
     out = {key: raw[key] for key in _UNCHANGED if key in raw}
     out["enabled"] = raw.get("enabled", True)
@@ -148,13 +227,20 @@ def migrate_v1_rule(raw: dict) -> tuple[dict | None, str | None]:
         script = raw.get("script")
         if not script:
             return None, "a custom rule with no script has nothing to call"
+        if not isinstance(script, str):
+            # Otherwise this lands on a target of `{"entity_id": [5]}`,
+            # which migrates "successfully" and fails at fire time.
+            return None, f"script must be an entity id: {script!r}"
         out["action"] = "script.turn_on"
         out["target"] = {"entity_id": [script]}
-        variables = raw.get("variables") or {}
-        out["data"] = {"variables": dict(variables)} if variables else {}
+        out["data"] = {"variables": variables} if variables else {}
         return out, None
 
-    devices = list(raw.get("devices") or ())
+    devices = _entity_ids(raw.get("devices"))
+    if devices is None:
+        return None, (
+            f"devices must be a list of entity ids: {raw.get('devices')!r}"
+        )
     if not devices:
         return None, "a rule with no devices has nothing to target"
 
@@ -163,7 +249,6 @@ def migrate_v1_rule(raw: dict) -> tuple[dict | None, str | None]:
         return None, "a rule targeting several domains cannot become one action"
 
     out["target"] = {"entity_id": devices}
-    settings = dict(raw.get("settings") or {})
 
     if action == "off":
         out["action"] = f"{domain}.turn_off"
@@ -177,32 +262,127 @@ def migrate_v1_rule(raw: dict) -> tuple[dict | None, str | None]:
     # domain's `turn_on` ignored it. Carrying it through unconditionally
     # gets the migrated call rejected at fire time (e.g. `switch.turn_on`
     # does not accept a `temperature` key).
-    if domain == "climate" and settings:
+    #
+    # The GLOBAL v1 settings are folded in here, per key, for the same
+    # reason: v1 resolved them against this rule before reading them, and
+    # the merge order matches `block.merge_defaults` so the effective
+    # payload is unchanged. Only climate sees them, which is the whole
+    # point - see `migrate_v1_defaults`.
+    merged = {**(default_settings or {}), **settings} if domain == "climate" else {}
+    if merged:
         out["action"] = "climate.set_temperature"
-        out["data"] = settings
+        out["data"] = merged
     else:
         out["action"] = f"{domain}.turn_on"
         out["data"] = {}
     return out, None
 
 
-def migrate_v1_defaults(raw: dict) -> dict:
+def v1_default_settings(raw) -> dict:
+    """The v1 store's global `settings`, for inlining onto climate rules.
+
+    Tolerant by contract: a `defaults` that is not a mapping, or a
+    `settings` that is not one, yields `{}` rather than raising. See
+    `migrate_v1_defaults` and the module docstring.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    settings = _settings(raw.get("settings"))
+    if settings is None:
+        _LOGGER.warning(
+            "The v1 defaults' settings are not a mapping (%r); they have been "
+            "dropped. Rules that carried their own settings are unaffected.",
+            raw.get("settings"),
+        )
+        return {}
+    return settings
+
+
+def migrate_v1_defaults(raw) -> dict:
+    """The v1 global defaults as v2 defaults: the TARGET only.
+
+    v1's global `settings` are deliberately NOT migrated into v2's
+    `defaults.data`. v1 read `settings` for the climate domain and nowhere
+    else, but v2's defaults are domain-BLIND: `block.merge_defaults` folds
+    `defaults["data"]` into every rule regardless of domain, and the engine
+    applies that on every refresh, catch-up and fire. So a v1 store with
+    global climate settings plus a `switch.boiler` rule migrated into
+    `switch.turn_on` carrying `{hvac_mode, temperature}`, which Home
+    Assistant refuses outright - `make_entity_service_schema` defaults to
+    PREVENT_EXTRA - after 3 x 30s of retries. A schedule that worked in v1
+    stopped working on upgrade, on every rule that was not climate.
+
+    Not migrating them at all would have lost the other half: a v1 climate
+    rule with no `settings` of its own DID read the global ones, and would
+    have quietly become a bare `climate.turn_on` - the AC coming on at
+    whatever temperature it was last left at, reported nowhere. So they are
+    inlined onto each climate rule's own `data` instead (see
+    `migrate_v1_rule`), which is the only lossless representation available:
+    v2 defaults cannot express "climate only", so there is nowhere else for
+    a climate-only default to live.
+
+    The cost, stated plainly: the values are materialised per rule, so
+    editing the shared defaults afterwards no longer changes them. That is
+    a v1 concept v2 does not have, and copying it is honest where
+    reinterpreting it is not.
+    """
     out: dict = {}
-    devices = list(raw.get("devices") or ())
-    if devices:
+    if not isinstance(raw, dict):
+        return out
+    devices = _entity_ids(raw.get("devices"))
+    if devices is None:
+        _LOGGER.warning(
+            "The v1 defaults' devices are not a list of entity ids (%r); the "
+            "shared default target has been dropped. Every migrated rule "
+            "carries its own target, so nothing that fires is affected.",
+            raw.get("devices"),
+        )
+    elif devices:
         out["target"] = {"entity_id": devices}
-    settings = dict(raw.get("settings") or {})
-    if settings:
-        out["data"] = settings
     return out
 
 
-def migrate_v1(data: dict) -> tuple[dict, list[str]]:
-    """The whole store as v2, plus the ids of rules that could not convert."""
+def migrate_v1(data) -> tuple[dict, list[str]]:
+    """The whole store as v2, plus the ids of rules that could not convert.
+
+    Total by construction: see the module docstring.
+    """
     rules: list[dict] = []
     failed: list[str] = []
 
-    for index, item in enumerate(data.get("rules") or ()):
+    if not isinstance(data, dict):
+        _LOGGER.error(
+            "The stored v1 data is not a mapping (%r); starting from an empty "
+            "rule set rather than refusing to start at all.", data
+        )
+        return {"rules": [], "defaults": {}}, []
+
+    raw_defaults = data.get("defaults")
+    if raw_defaults is not None and not isinstance(raw_defaults, dict):
+        # Nothing to disable and report against - a malformed `defaults` is
+        # not a rule - so it drops to empty and says so. Refusing to start
+        # is the defect being fixed here, and inventing a phantom rule to
+        # carry the report would put something in the store the user never
+        # wrote. Every rule a v1 store can migrate carries its own target
+        # already (a v1 rule with no devices cannot be migrated at all), so
+        # nothing that fires is lost.
+        _LOGGER.warning(
+            "The v1 defaults are not a mapping (%r); the shared defaults have "
+            "been dropped. Every migrated rule carries its own target, so "
+            "nothing that fires is affected.", raw_defaults
+        )
+    default_settings = v1_default_settings(raw_defaults)
+
+    raw_rules = data.get("rules")
+    if raw_rules is not None and not isinstance(raw_rules, (list, tuple)):
+        _LOGGER.error(
+            "The stored v1 rules are not a list (%r); there is no rule here to "
+            "keep. Starting from an empty rule set rather than refusing to "
+            "start at all.", raw_rules
+        )
+        raw_rules = ()
+
+    for index, item in enumerate(raw_rules or ()):
         # A `.storage` file can be hand-edited into nonsense. Fail-loud
         # would take the whole load down with it; a rule that is not even
         # a mapping is just another shape this code cannot convert, so it
@@ -212,14 +392,37 @@ def migrate_v1(data: dict) -> tuple[dict, list[str]]:
         if not isinstance(item, dict):
             converted, reason = None, f"rule is not a mapping, got {item!r}"
         else:
-            converted, reason = migrate_v1_rule(raw)
+            try:
+                converted, reason = migrate_v1_rule(raw, default_settings)
+            except Exception as err:  # noqa: BLE001 - see below
+                # Belt and braces, and the reason this function is total by
+                # construction rather than by enumeration. Eight instances
+                # of "a v1 rule migrates into something the system cannot
+                # handle" have been fixed one field at a time; the ninth
+                # must not brick the install while it waits to be found.
+                # It is reported, not swallowed: the rule is kept, disabled
+                # and named in the repair issue, with the exception in its
+                # `migration_error` and the raw v1 rule in
+                # `migration_source`. The trade being made is that a real
+                # bug in this function shows up as one disabled rule rather
+                # than a crash - which is the right trade for the one
+                # function whose crash costs the user every rule they have.
+                _LOGGER.exception("Migrating a v1 rule raised: %r", item)
+                converted = None
+                reason = (
+                    "the migration raised on this rule: "
+                    f"{type(err).__name__}: {err}"
+                )
 
         if converted is None:
             # A fallback id is needed even for a rule that never had one -
             # an empty string repeated across every unnamed failure gives
             # a future repair tool nothing distinct to name.
             fallback_id = raw.get("id") or f"unmigrated-{index}"
-            devices = list(raw.get("devices") or ())
+            # Guarded the same way the success path is: this record must
+            # load cleanly regardless of WHY the original rule failed, so a
+            # rule that failed on one field must not raise here on another.
+            devices = _entity_ids(raw.get("devices")) or []
             settings = raw.get("settings")
             # Kept so nothing is lost, disabled so it cannot fire in a
             # shape nothing understands, and reported so the user is
@@ -253,5 +456,5 @@ def migrate_v1(data: dict) -> tuple[dict, list[str]]:
 
     out = dict(data)
     out["rules"] = rules
-    out["defaults"] = migrate_v1_defaults(data.get("defaults") or {})
+    out["defaults"] = migrate_v1_defaults(raw_defaults)
     return out, failed

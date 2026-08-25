@@ -93,12 +93,16 @@ def test_an_unmigratable_rule_is_kept_and_disabled_not_dropped():
 
 
 def test_defaults_migrate_too():
+    """RE-AIMED (I3). This asserted `settings` became `defaults["data"]`,
+    which is the defect, not the behaviour: v2's defaults are domain-blind,
+    so `block.merge_defaults` then handed `{temperature: 26}` to every
+    `switch.turn_on` in the store and Home Assistant refused the call at
+    fire time. The devices half is unchanged; the settings half now lands
+    on the climate rules that would have read it in v1, pinned by the I3
+    tests below."""
     data = {"rules": [], "defaults": {"devices": ["climate.a"], "settings": {"temperature": 26}}}
     out, _ = migrate_v1(data)
-    assert out["defaults"] == {
-        "target": {"entity_id": ["climate.a"]},
-        "data": {"temperature": 26},
-    }
+    assert out["defaults"] == {"target": {"entity_id": ["climate.a"]}}
 
 
 def test_the_other_store_keys_survive():
@@ -637,3 +641,236 @@ def test_every_in_range_profile_and_day_still_migrates():
             assert reason is None, (profile, day)
             assert out["profile"] == profile
             assert out["day"] == day
+
+
+# --- I1: migrate_v1 must be TOTAL - it is the one function that cannot ----
+#     raise. A raise here escapes _async_migrate_func -> Store.async_load ->
+#     async_setup_entry, the store STAYS at version 1, and every subsequent
+#     restart fails identically. The seventh and eighth instances of the
+#     Task-5 class, in the two fields nobody swept. `yaml_io.py:172-175`
+#     already closed exactly this hole at the YAML door.
+
+
+def test_a_malformed_settings_is_kept_disabled_and_reported():
+    """`dict("hot")` raised ValueError on the SUCCESS path, so one corrupt
+    field took down the whole load rather than one rule.
+
+    Looped rather than parametrised, matching the shape sweeps already in
+    this file - `enable_custom_integrations` is autouse, so every test case
+    in this suite costs a fixture round trip whether it needs one or not.
+    """
+    for bad in ("hot", ["hot"], 5, 26.5, True):
+        raw = {**V1_CLIMATE_ON, "id": "bad", "settings": bad}
+        out, failed = migrate_v1({"rules": [raw, V1_SIMPLE_ON], "defaults": {}})
+
+        assert failed == ["bad"], bad
+        kept = next(rule for rule in out["rules"] if rule["id"] == "bad")
+        assert kept["enabled"] is False, bad
+        assert kept["migration_error"] and "settings" in kept["migration_error"]
+        assert kept["migration_source"] == raw
+        # ...and the OTHER rule in the same store is untouched and schedulable.
+        survivor = next(rule for rule in out["rules"] if rule["id"] == "b")
+        assert survivor["action"] == "switch.turn_on", bad
+        assert survivor.get("migration_error") is None
+
+
+async def test_a_malformed_store_still_loads_and_the_rest_still_resolves(
+    hass, hass_storage
+):
+    """One store, both malformed fields, through the real `Store` - which is
+    where the raise actually escaped from. The SHAPES are swept by the pure
+    tests either side of this one; a second `hass` fixture per shape buys
+    nothing but seconds off the gate.
+    """
+    hass_storage["shabbat_scheduler.rules"] = {
+        "version": 1, "minor_version": 1, "key": "shabbat_scheduler.rules",
+        "data": {
+            "rules": [{**V1_CLIMATE_ON, "id": "bad", "settings": "hot"}, V1_SIMPLE_ON],
+            "defaults": "everything",
+        },
+    }
+    store = RuleStore(hass)
+    await store.async_load()  # used to raise, permanently
+
+    assert store.migration_failures == ["bad"]
+    assert {rule.id for rule in store.rules} == {"bad", "b"}
+    assert store.defaults == {}
+    resolved = resolve_rules(store.rules, _one_day_block(), TZ)
+    assert [item.rule.id for item in resolved] == ["b"]
+
+
+def test_a_malformed_defaults_drops_to_empty_rather_than_refusing_to_start():
+    """A truthy non-mapping `defaults` sailed past `or {}` and then
+    AttributeError'd inside migrate_v1_defaults.
+
+    There is no rule to disable here, so keep-disable-report has nothing to
+    attach to: the defaults drop to empty and the discard is logged. Every
+    rule a v1 store could migrate carries its own target already (a v1 rule
+    with no devices cannot be migrated at all), so nothing that fires is
+    lost - and refusing to start forever is strictly worse.
+    """
+    for bad in ("everything", ["climate.a"], 5, True, {"devices": 5}):
+        out, failed = migrate_v1({"rules": [V1_SIMPLE_ON], "defaults": bad})
+
+        assert out["defaults"] == {}, bad
+        assert failed == [], bad
+        assert out["rules"][0]["action"] == "switch.turn_on", bad
+
+
+async def test_a_malformed_v1_store_still_sets_the_config_entry_up(
+    hass, hass_storage, jerusalem
+):
+    """The failure the reviewer actually observed was ConfigEntryState.
+    SETUP_ERROR with the store left at version 1 - so no entities, no
+    engine, nothing scheduled, on every restart forever."""
+    from homeassistant.config_entries import ConfigEntryState
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from custom_components.shabbat_scheduler.const import DOMAIN
+
+    hass_storage["shabbat_scheduler.rules"] = {
+        "version": 1, "minor_version": 1, "key": "shabbat_scheduler.rules",
+        "data": {
+            "rules": [{**V1_CLIMATE_ON, "settings": "hot"}, V1_SIMPLE_ON],
+            "defaults": "everything",
+        },
+    }
+    entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert hass_storage["shabbat_scheduler.rules"]["version"] == 2
+
+
+def test_every_other_coercion_in_the_migration_is_also_total():
+    """The same sweep, applied to the remaining `list(...)`/`dict(...)`
+    coercions rather than only to the two the review named.
+
+    `script: 5` is the one here that did NOT raise: it migrated
+    "successfully" into a target of `{"entity_id": [5]}` and failed at fire
+    time instead - the quieter half of the same class."""
+    cases = [
+        ("devices", 5),
+        ("devices", "climate.salon"),
+        ("devices", {"climate.salon": True}),
+        ("devices", [None]),
+        ("variables", "thirty"),
+        ("variables", 30),
+        ("script", 5),
+    ]
+    for field, bad in cases:
+        source = V1_CUSTOM if field in ("variables", "script") else V1_SIMPLE_ON
+        raw = {**source, "id": "bad", field: bad}
+        out, failed = migrate_v1({"rules": [raw, V1_OFF], "defaults": {}})
+
+        assert failed == ["bad"], (field, bad)
+        kept = next(rule for rule in out["rules"] if rule["id"] == "bad")
+        assert kept["enabled"] is False, (field, bad)
+        assert kept["migration_source"] == raw
+        survivor = next(r for r in out["rules"] if r["id"] == "c")
+        assert survivor["action"] == "climate.turn_off", (field, bad)
+
+
+def test_migrate_v1_survives_a_store_whose_shape_is_nonsense():
+    """Belt and braces: whatever else is wrong, this must return."""
+    for data in ({"rules": 5}, {"rules": "abc"}, {"defaults": {"devices": 5}}):
+        out, failed = migrate_v1(data)
+        assert isinstance(out["rules"], list)
+        assert isinstance(out["defaults"], dict)
+
+
+# --- I3: v1's global `settings` were climate-only; v2 defaults are --------
+#     domain-blind. Carrying them into `defaults.data` makes block.py's
+#     merge_defaults hand `{hvac_mode, temperature}` to switch.turn_on,
+#     which Home Assistant rejects at fire time. So they are inlined onto
+#     the climate rules that would have read them in v1 instead.
+
+
+V1_DEFAULTS_CLIMATE = {
+    "devices": ["climate.salon"],
+    "settings": {"hvac_mode": "cool", "temperature": 24},
+}
+
+
+def test_the_v1_global_settings_do_not_become_domain_blind_v2_defaults():
+    out, _ = migrate_v1({"rules": [], "defaults": V1_DEFAULTS_CLIMATE})
+    assert out["defaults"] == {"target": {"entity_id": ["climate.salon"]}}
+    assert "data" not in out["defaults"]
+
+
+def test_a_climate_rule_inherits_the_v1_global_settings_onto_its_own_data():
+    """v1 read `settings` for climate, so a climate rule with none of its
+    own still got the global temperature. Dropping them outright would
+    silently turn a set_temperature into a bare turn_on."""
+    bare_climate = {
+        "id": "x", "profile": 1, "day": "1", "time": "18:00:00", "action": "on",
+        "devices": ["climate.salon"],
+    }
+    out, _ = migrate_v1(
+        {"rules": [bare_climate], "defaults": V1_DEFAULTS_CLIMATE}
+    )
+    assert out["rules"][0]["action"] == "climate.set_temperature"
+    assert out["rules"][0]["data"] == {"hvac_mode": "cool", "temperature": 24}
+
+
+def test_a_rules_own_settings_win_key_by_key_over_the_global_ones():
+    out, _ = migrate_v1(
+        {"rules": [V1_CLIMATE_ON], "defaults": V1_DEFAULTS_CLIMATE}
+    )
+    # v1 merged per key, exactly as block.merge_defaults does for `data`.
+    assert out["rules"][0]["data"] == {"temperature": 26, "hvac_mode": "cool"}
+
+
+def test_a_non_climate_rule_never_inherits_the_v1_global_settings():
+    out, _ = migrate_v1(
+        {"rules": [V1_SIMPLE_ON, V1_OFF, V1_CUSTOM], "defaults": V1_DEFAULTS_CLIMATE}
+    )
+    by_id = {rule["id"]: rule for rule in out["rules"]}
+    assert by_id["b"]["data"] == {}          # switch.turn_on
+    assert by_id["c"]["data"] == {}          # climate.turn_off - v1 ignored settings
+    assert by_id["d"]["data"] == {"variables": {"minutes": 30}}  # script.turn_on
+
+
+def test_a_mixed_v1_rule_set_migrates_into_calls_home_assistant_accepts():
+    """The reviewer's exact repro, driven through the real schemas Home
+    Assistant registers: `switch.turn_on` registers `None`, which becomes
+    `cv.make_entity_service_schema(None)` with PREVENT_EXTRA, so an
+    inherited `temperature` key is refused outright."""
+    import voluptuous as vol
+    from homeassistant.components.climate import SET_TEMPERATURE_SCHEMA
+    from homeassistant.helpers import config_validation as cv
+
+    from custom_components.shabbat_scheduler.block import merge_defaults
+    from custom_components.shabbat_scheduler.device_ops import expand_action
+
+    entity_service = cv.make_entity_service_schema(None)
+    schemas = {
+        "switch.turn_on": entity_service,
+        "switch.turn_off": entity_service,
+        "climate.turn_off": entity_service,
+        "script.turn_on": cv.make_entity_service_schema({vol.Optional("variables"): dict}),
+        "climate.set_temperature": SET_TEMPERATURE_SCHEMA,
+        "climate.set_hvac_mode": cv.make_entity_service_schema(
+            {vol.Required("hvac_mode"): cv.string}
+        ),
+        "climate.set_fan_mode": cv.make_entity_service_schema(
+            {vol.Required("fan_mode"): cv.string}
+        ),
+    }
+
+    out, failed = migrate_v1(
+        {
+            "rules": [V1_CLIMATE_ON, V1_SIMPLE_ON, V1_OFF, V1_CUSTOM],
+            "defaults": V1_DEFAULTS_CLIMATE,
+        }
+    )
+    assert failed == []
+
+    for stored in out["rules"]:
+        rule = merge_defaults(out["defaults"], rule_from_dict(stored))
+        for action, data in expand_action(rule.action, dict(rule.data)):
+            payload = {**data, **rule.target}
+            # Raises vol.Invalid if HA would refuse the call at fire time.
+            schemas[action](payload)

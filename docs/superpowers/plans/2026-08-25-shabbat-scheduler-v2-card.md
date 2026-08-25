@@ -22,6 +22,34 @@ Copied from `docs/superpowers/specs/2026-08-22-shabbat-scheduler-v2-alpha-design
 - Home Assistant 2026.8.2 or later.
 - **Reach for `<ha-selector>` with the selector you want, never for a specific picker element.** Availability differs element-by-element on a dashboard. `ha-entity-picker`, `ha-area-picker`, `ha-label-picker`, `ha-form` and `ha-icon-picker` are present; `ha-device-picker`, `ha-floor-picker`, `ha-target-picker` and `ha-textfield` are **not**. That list is not something to depend on.
 
+## Testing Standards
+
+These are not general advice. Each one was learned by a review catching a test
+in this plan that **could not fail**, and every remaining task is bound by them.
+
+- **A test that asserts key ABSENCE must not use `toEqual`.** Vitest treats an
+  omitted key as equal to `key: undefined`. Use `toStrictEqual`, or assert
+  `'key' in value` directly. Caught when a replay editor was ablated to emit
+  `within: undefined` and all six of its tests still passed.
+- **A replace-vs-merge property must be driven in the direction where replace
+  and merge DIFFER.** Seeding a value and changing it somewhere the two happen
+  to agree proves nothing. This gap appeared three separate times — `replay`
+  twice and `target`/`data` once — each time correct in code and unguarded in
+  test. The test must start from a populated value and assert a key present
+  before is **gone** after.
+- **A fixture that equals the component's own default proves nothing about the
+  binding.** `expect(el.value).toEqual({enabled: false})` passed with the
+  binding deleted entirely, because that is what the element defaults to. Seed
+  a non-default value.
+- **Do not add production code to satisfy a test's timing.** A test that
+  asserts synchronously after a click should `await el.updateComplete`. A
+  `performUpdate()` added to a save handler for this reason was reverted.
+- **Every task's review will ablate.** Assume each behaviour you implement
+  will be individually reverted to see whether a test notices. Write the test
+  that would notice.
+
+---
+
 ## Project Context
 
 Read this before Task 1. It is the state you are starting from, and several

@@ -149,18 +149,25 @@ async def test_a_v1_store_on_disk_migrates_on_load(hass, hass_storage):
 
 def test_a_kept_disabled_rule_preserves_target_and_data_where_derivable():
     """"Kept" has to mean repairable: a rule whose devices are known but
-    whose action is ambiguous must not lose its target on the way to
-    disabled-and-reported."""
-    multi_domain = {
+    which cannot be converted must not lose its target on the way to
+    disabled-and-reported.
+
+    EXAMPLE CHANGED in fix round 3, assertions untouched. This used to use a
+    mixed-domain rule, which round 3 makes migratable (it splits - see the
+    I6 section, which now pins that case). The property here is about the
+    SALVAGE, not about that rule shape, so it moved to a shape that still
+    cannot convert: a domain v1 never drove.
+    """
+    unsupported = {
         "id": "e", "profile": 1, "day": "1", "time": "12:00:00", "action": "on",
-        "devices": ["climate.salon", "switch.boiler"],
+        "devices": ["lock.front", "lock.back"],
         "settings": {"temperature": 26},
     }
-    out, failed = migrate_v1({"rules": [multi_domain], "defaults": {}})
+    out, failed = migrate_v1({"rules": [unsupported], "defaults": {}})
     survivor = out["rules"][0]
-    assert survivor["target"] == {"entity_id": ["climate.salon", "switch.boiler"]}
+    assert survivor["target"] == {"entity_id": ["lock.front", "lock.back"]}
     assert survivor["data"] == {"temperature": 26}
-    assert survivor["migration_source"] == multi_domain
+    assert survivor["migration_source"] == unsupported
     assert failed == ["e"]
 
 
@@ -998,21 +1005,37 @@ def test_a_rule_with_neither_its_own_devices_nor_shared_ones_is_still_kept():
         assert kept["migration_source"] == V1_NO_DEVICES_ON
 
 
-def test_shared_default_devices_spanning_several_domains_say_which_they_are():
-    """The same "cannot become one action" case, one level up - and it hits
-    EVERY inheriting rule at once, so the reason must not read as though
-    this rule chose those devices."""
+def test_shared_default_devices_spanning_several_domains_are_split_too():
+    """RE-AIMED in fix round 3, from disabled-with-a-good-message to working.
+
+    Round 2 made this keep-disable-report and pinned that the reason named
+    the DEFAULTS rather than the rule, since it hits every inheriting rule
+    at once. Round 3 removes the case entirely: v1 drove inherited devices
+    through the same per-entity loop as any others (5192d4c:engine.py:104),
+    so an inheriting rule spanning two domains WORKED in v1 and now splits
+    like any other. Strictly stronger - the old assertion was still
+    describing a working v1 rule we had disabled.
+    """
     out, failed = migrate_v1(
         {
             "rules": [V1_NO_DEVICES_ON],
-            "defaults": {"devices": ["climate.salon", "switch.boiler"]},
+            "defaults": {
+                "devices": ["climate.salon", "switch.boiler"],
+                "settings": {"temperature": 24},
+            },
         }
     )
-    assert failed == ["n1"]
-    reason = out["rules"][0]["migration_error"]
-    assert "default" in reason.lower() and "domain" in reason.lower(), reason
-    # Salvaged, so "kept" still means repairable.
-    assert out["rules"][0]["migration_source"] == V1_NO_DEVICES_ON
+    assert failed == []
+    by_id = {rule["id"]: rule for rule in out["rules"]}
+    assert set(by_id) == {"n1-climate", "n1-switch"}
+    assert by_id["n1-climate"]["action"] == "climate.set_temperature"
+    assert by_id["n1-climate"]["data"] == {"temperature": 24}
+    assert by_id["n1-switch"]["action"] == "switch.turn_on"
+    assert by_id["n1-switch"]["data"] == {}, "v1 ignored settings for switch"
+    assert all(rule["enabled"] is True for rule in out["rules"])
+    # And both parts stash what the user actually wrote.
+    assert by_id["n1-climate"]["migration_source"] == V1_NO_DEVICES_ON
+    assert by_id["n1-switch"]["migration_source"] == V1_NO_DEVICES_ON
 
 
 def test_a_malformed_shared_devices_list_does_not_disable_a_rule_that_has_its_own():
@@ -1025,3 +1048,306 @@ def test_a_malformed_shared_devices_list_does_not_disable_a_rule_that_has_its_ow
     survivor = next(rule for rule in out["rules"] if rule["id"] == "b")
     assert survivor["enabled"] is True
     assert survivor["action"] == "switch.turn_on"
+
+
+# --- I6: what a VALID, WORKING v1 store did ------------------------------
+#     Every case below is cited to v1's own source at 5192d4c. Five rounds
+#     of fixes asked "what nonsense can a v1 store contain?"; none asked
+#     "what did a working v1 store DO?" - and that is where the two worst
+#     defects were. The full enumeration is the table in the report.
+
+
+V1_MIXED = {
+    "id": "e", "profile": 1, "day": "1", "time": "12:00:00", "action": "on",
+    "devices": ["climate.salon", "switch.boiler", "climate.bedroom"],
+    "settings": {"temperature": 26},
+}
+
+
+def test_a_mixed_domain_rule_worked_in_v1_so_it_becomes_one_rule_per_domain():
+    """5192d4c:engine.py:104 looped `for entity_id in rule.devices` and
+    5192d4c:device_ops.py:71 re-derived the domain per entity, so this rule
+    drove BOTH appliances correctly. Disabling it threw away a working piece
+    of someone's schedule."""
+    out, failed = migrate_v1({"rules": [V1_MIXED], "defaults": {}})
+
+    assert failed == []
+    by_id = {rule["id"]: rule for rule in out["rules"]}
+    assert set(by_id) == {"e-climate", "e-switch"}
+    # Both entities of the same domain stay on one rule, in v1's order.
+    assert by_id["e-climate"]["target"] == {
+        "entity_id": ["climate.salon", "climate.bedroom"]
+    }
+    assert by_id["e-climate"]["action"] == "climate.set_temperature"
+    assert by_id["e-climate"]["data"] == {"temperature": 26}
+    # ...and the switch part gets the action v1 gave it, with no settings.
+    assert by_id["e-switch"]["target"] == {"entity_id": ["switch.boiler"]}
+    assert by_id["e-switch"]["action"] == "switch.turn_on"
+    assert by_id["e-switch"]["data"] == {}
+    # Present AND WORKING, which is stronger than the promise.
+    assert all(rule["enabled"] is True for rule in out["rules"])
+    # The rule count changed under the user, so both parts say where they
+    # came from - the whole original rule, not this part's slice of it.
+    assert all(rule["migration_source"] == V1_MIXED for rule in out["rules"])
+
+
+def test_a_split_rules_ids_are_derived_and_stable_not_random():
+    """A re-migration - restoring a .storage backup - must produce the same
+    ids, or the rules come back as strangers with new entities."""
+    first, _ = migrate_v1({"rules": [V1_MIXED], "defaults": {}})
+    second, _ = migrate_v1({"rules": [V1_MIXED], "defaults": {}})
+    assert [r["id"] for r in first["rules"]] == ["e-climate", "e-switch"]
+    assert [r["id"] for r in first["rules"]] == [r["id"] for r in second["rules"]]
+
+
+def test_a_split_id_never_lands_on_an_id_the_store_already_uses():
+    """A hand-edited store can contain `e-climate` right next to `e`, and
+    two rules with the same id break every update and delete by id."""
+    squatter = {
+        "id": "e-climate", "profile": 1, "day": "1", "time": "09:00:00",
+        "action": "on", "devices": ["switch.other"],
+    }
+    out, failed = migrate_v1({"rules": [V1_MIXED, squatter], "defaults": {}})
+    ids = [rule["id"] for rule in out["rules"]]
+    assert len(ids) == len(set(ids)), ids
+    assert "e-climate-2" in ids
+    assert failed == []
+
+
+def test_the_split_copies_every_rule_level_field_to_both_parts():
+    raw = {
+        **V1_MIXED, "name": "Evening", "icon": "mdi:x", "color": "red",
+        "enabled": True, "replay_on_restart": True,
+    }
+    out, _ = migrate_v1({"rules": [raw], "defaults": {}})
+    for rule in out["rules"]:
+        assert rule["name"] == "Evening"
+        assert rule["icon"] == "mdi:x"
+        assert rule["color"] == "red"
+        assert rule["profile"] == 1 and rule["day"] == "1"
+        assert rule["time"] == "12:00:00"
+        assert rule["replay"] == {"enabled": True}
+
+
+def test_a_split_rule_produces_calls_home_assistant_accepts():
+    import voluptuous as vol
+    from homeassistant.components.climate import SET_TEMPERATURE_SCHEMA
+    from homeassistant.helpers import config_validation as cv
+
+    from custom_components.shabbat_scheduler.block import merge_defaults
+    from custom_components.shabbat_scheduler.device_ops import expand_action
+
+    schemas = {
+        "switch.turn_on": cv.make_entity_service_schema(None),
+        "climate.set_temperature": SET_TEMPERATURE_SCHEMA,
+        "climate.set_hvac_mode": cv.make_entity_service_schema(
+            {vol.Required("hvac_mode"): cv.string}
+        ),
+    }
+    out, failed = migrate_v1({"rules": [V1_MIXED], "defaults": {}})
+    assert failed == []
+    for stored in out["rules"]:
+        rule = merge_defaults(out["defaults"], rule_from_dict(stored))
+        for action, data in expand_action(rule.action, dict(rule.data)):
+            schemas[action]({**data, **rule.target})
+
+
+def test_a_split_rules_two_parts_are_not_reported_as_a_conflict():
+    """Same profile, day and time by construction - but disjoint targets,
+    so `find_conflicts` must not warn about a rule conflicting with itself."""
+    from custom_components.shabbat_scheduler.block import conflict_warnings
+
+    out, _ = migrate_v1({"rules": [V1_MIXED], "defaults": {}})
+    rules = [rule_from_dict(item) for item in out["rules"]]
+    warnings = conflict_warnings(
+        out["defaults"], rules, lambda target: frozenset(target.get("entity_id", ()))
+    )
+    assert warnings == []
+
+
+def test_a_domain_v1_could_not_drive_is_kept_disabled_not_invented():
+    """5192d4c:device_ops.py:95-101 returned Skip("unsupported domain") for
+    anything outside climate + _SIMPLE_DOMAINS, so v1 made NO call. Inventing
+    `lock.turn_on` (which does not exist) or `scene.turn_on` (which does, and
+    would start doing something new) are both worse than saying so."""
+    for entity_id in ("lock.front", "cover.blinds", "scene.evening", "media_player.tv"):
+        raw = {
+            "id": "u", "profile": 1, "day": "1", "time": "12:00:00",
+            "action": "on", "devices": [entity_id],
+        }
+        out, failed = migrate_v1({"rules": [raw], "defaults": {}})
+        assert failed == ["u"], entity_id
+        kept = out["rules"][0]
+        assert kept["enabled"] is False
+        assert kept["action"] == "shabbat_scheduler.unmigrated"
+        reason = kept["migration_error"]
+        assert entity_id.split(".")[0] in reason, reason
+        assert kept["migration_source"] == raw
+
+
+def test_every_domain_v1_could_drive_still_migrates():
+    """The allow-list must not be so tight it rejects what v1 supported.
+    5192d4c:device_ops.py:14 plus the climate branch."""
+    for domain in ("switch", "light", "input_boolean", "fan"):
+        for action, service in (("on", "turn_on"), ("off", "turn_off")):
+            raw = {
+                "id": "s", "profile": 1, "day": "1", "time": "12:00:00",
+                "action": action, "devices": [f"{domain}.thing"],
+            }
+            out, failed = migrate_v1({"rules": [raw], "defaults": {}})
+            assert failed == [], (domain, action)
+            assert out["rules"][0]["action"] == f"{domain}.{service}"
+
+
+def test_a_split_part_on_a_domain_v1_could_not_drive_fails_alone():
+    """Exactly what v1 did: drove the climate entity, skipped the lock. The
+    working half must not be lost with the half that never worked."""
+    raw = {
+        "id": "m", "profile": 1, "day": "1", "time": "12:00:00", "action": "on",
+        "devices": ["climate.salon", "lock.front"],
+        "settings": {"temperature": 26},
+    }
+    out, failed = migrate_v1({"rules": [raw], "defaults": {}})
+
+    assert failed == ["m-lock"]
+    by_id = {rule["id"]: rule for rule in out["rules"]}
+    assert by_id["m-climate"]["enabled"] is True
+    assert by_id["m-climate"]["action"] == "climate.set_temperature"
+    assert by_id["m-lock"]["enabled"] is False
+    assert by_id["m-lock"]["migration_source"] == raw
+
+
+def test_settings_keys_v1_never_read_are_not_carried_into_the_call():
+    """5192d4c:device_ops.py:_plan_climate read hvac_mode, temperature and
+    fan_mode. Anything else it IGNORED, and the rule worked. Carrying it
+    breaks the rule outright: set_temperature is PREVENT_EXTRA, so the whole
+    call - temperature included - is refused at fire time."""
+    raw = {
+        "id": "k", "profile": 1, "day": "1", "time": "12:00:00", "action": "on",
+        "devices": ["climate.salon"],
+        "settings": {
+            "temperature": 26, "hvac_mode": "cool", "fan_mode": "quiet",
+            "swing_mode": "both", "humidity": 40, "target_temp_high": 28,
+        },
+    }
+    out, failed = migrate_v1({"rules": [raw], "defaults": {}})
+    assert failed == []
+    assert out["rules"][0]["data"] == {
+        "temperature": 26, "hvac_mode": "cool", "fan_mode": "quiet",
+    }
+
+
+def test_a_v1_rule_whose_settings_v1_never_read_at_all_still_fires_as_v1_did():
+    """Only unrecognised keys: v1 made NO call for this rule, so v2 must not
+    invent one - least of all a `climate.set_temperature` HA refuses."""
+    raw = {
+        "id": "k", "profile": 1, "day": "1", "time": "12:00:00", "action": "on",
+        "devices": ["climate.salon"], "settings": {"swing_mode": "both"},
+    }
+    out, failed = migrate_v1({"rules": [raw], "defaults": {}})
+    assert failed == ["k"]
+    assert out["rules"][0]["enabled"] is False
+    assert out["rules"][0]["migration_source"] == raw
+
+
+def test_the_surviving_settings_still_produce_calls_home_assistant_accepts():
+    import voluptuous as vol
+    from homeassistant.components.climate import SET_TEMPERATURE_SCHEMA
+    from homeassistant.helpers import config_validation as cv
+
+    from custom_components.shabbat_scheduler.device_ops import expand_action
+
+    schemas = {
+        "climate.set_temperature": SET_TEMPERATURE_SCHEMA,
+        "climate.set_hvac_mode": cv.make_entity_service_schema(
+            {vol.Required("hvac_mode"): cv.string}
+        ),
+        "climate.set_fan_mode": cv.make_entity_service_schema(
+            {vol.Required("fan_mode"): cv.string}
+        ),
+    }
+    raw = {
+        "id": "k", "profile": 1, "day": "1", "time": "12:00:00", "action": "on",
+        "devices": ["climate.salon"],
+        "settings": {"temperature": 26, "swing_mode": "both"},
+    }
+    out, _ = migrate_v1({"rules": [raw], "defaults": {}})
+    rule = rule_from_dict(out["rules"][0])
+    for action, data in expand_action(rule.action, dict(rule.data)):
+        schemas[action]({**data, **rule.target})
+
+
+def test_a_climate_on_rule_with_no_settings_anywhere_is_not_invented_into_turn_on():
+    """5192d4c:device_ops.py:124-183 - _plan_climate with no hvac_mode,
+    temperature or fan_mode appended NO calls, and 5192d4c:engine.py:493-500
+    reported `ok` with the state unchanged. So this rule did nothing in v1.
+    `climate.turn_on` would start an air conditioner, unattended, on a
+    Shabbat, at whatever temperature it was last left at."""
+    raw = {
+        "id": "z", "profile": 1, "day": "1", "time": "12:00:00", "action": "on",
+        "devices": ["climate.salon"],
+    }
+    out, failed = migrate_v1({"rules": [raw], "defaults": {}})
+
+    assert failed == ["z"]
+    kept = out["rules"][0]
+    assert kept["enabled"] is False
+    assert kept["action"] == "shabbat_scheduler.unmigrated"
+    assert "no service call" in kept["migration_error"]
+    assert kept["migration_source"] == raw
+    # A climate OFF rule with no settings is unaffected: v1 DID call
+    # climate.turn_off for it (5192d4c:device_ops.py:111-122).
+    out, failed = migrate_v1(
+        {"rules": [{**raw, "action": "off"}], "defaults": {}}
+    )
+    assert failed == []
+    assert out["rules"][0]["action"] == "climate.turn_off"
+
+
+def test_a_custom_rule_ignores_devices_exactly_as_v1_did():
+    """5192d4c:engine.py:451-470 - _apply_custom used `rule.script` and
+    `rule.variables` and never looked at `devices`. So a custom rule with
+    devices must not split, inherit, or grow a target from them."""
+    raw = {**V1_CUSTOM, "devices": ["climate.salon", "switch.boiler"]}
+    out, failed = migrate_v1(
+        {"rules": [raw], "defaults": {"devices": ["light.hall"]}}
+    )
+    assert failed == []
+    assert len(out["rules"]) == 1, "a custom rule must never be split"
+    assert out["rules"][0]["action"] == "script.turn_on"
+    assert out["rules"][0]["target"] == {"entity_id": ["script.boiler"]}
+
+
+async def test_both_halves_of_a_split_rule_get_their_own_switch_entity(
+    hass, hass_storage, jerusalem, rule_switch_entity_id
+):
+    """The split changes the rule COUNT, so it changes the entity count. A
+    rule switch's unique_id is derived from `rule.id` and its entity_id from
+    the rule's NAME - and both parts share the name. "No rule switch had
+    been created at all" was a real production bug in this project, so the
+    end of the pipeline gets checked rather than assumed.
+    """
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from custom_components.shabbat_scheduler.const import DOMAIN
+
+    hass_storage["shabbat_scheduler.rules"] = {
+        "version": 1, "minor_version": 1, "key": "shabbat_scheduler.rules",
+        "data": {"rules": [{**V1_MIXED, "name": "Evening"}], "defaults": {}},
+    }
+    entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    store = hass.data[DOMAIN][entry.entry_id]["store"]
+    assert {rule.id for rule in store.rules} == {"e-climate", "e-switch"}
+
+    climate_switch = rule_switch_entity_id(entry, "e-climate")
+    switch_switch = rule_switch_entity_id(entry, "e-switch")
+    assert climate_switch, "the climate half has no switch entity"
+    assert switch_switch, "the switch half has no switch entity"
+    assert climate_switch != switch_switch, "one entity for two rules"
+    # Both enabled, so both are schedulable - the point of splitting.
+    assert hass.states.get(climate_switch).state == "on"
+    assert hass.states.get(switch_switch).state == "on"

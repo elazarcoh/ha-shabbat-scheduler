@@ -267,11 +267,107 @@ later be repointed at a domain the frozen action does not belong to. A
 migrated rule describes itself. `defaults.devices` still becomes a shared
 `defaults.target` as well, for rules authored later.
 
-If the shared devices span **several domains**, an inheriting rule cannot
-become one action, and it is kept-disabled-reported like any other — but the
-reason names the *defaults*, because in that case every inheriting rule
-fails at once and the user needs pointing at the one thing that is wrong,
-not at ten rules that are not.
+If the shared devices span **several domains**, an inheriting rule is split
+into one rule per domain, exactly as a rule carrying its own mixed devices is
+— see the next section.
+
+## The migration reproduces what v1 DID, not what a v1 rule said
+
+A v1 rule's stored fields are not the same thing as its behaviour. v1 read
+some of them, ignored others, and could not act on some at all — so
+converting a rule field-for-field produces something that looks right and
+does not behave the way the user's schedule behaved. Four cases, each cited
+to v1's source at `5192d4c` so the claim can be checked rather than trusted.
+
+**v1 drove five domains, and no others.** `climate`, plus
+`device_ops._SIMPLE_DOMAINS = ("switch", "light", "input_boolean", "fan")`
+(`5192d4c:device_ops.py:14`). Anything else fell through `plan_calls` and
+came back as `Skip("unsupported domain 'x'")` — v1 made **no service call**
+for it, ever. So a v1 rule on `lock.front` never did anything, and a blind
+`f"{domain}.turn_on"` would either name a service that does not exist
+(`lock.turn_on`) or, worse, one that does (`scene.turn_on`, `script.turn_on`)
+and quietly start doing something the user never had. Such a rule is kept,
+disabled and reported instead, with the domain named. The allow-list lives in
+`migration.py` rather than `device_ops.py` because it is a fact about v1, not
+about Home Assistant: a rule you author in v2 can name any service you like.
+
+**v1 read exactly three keys out of `settings`:** `hvac_mode`, `temperature`
+and `fan_mode`, one branch each in `_plan_climate`
+(`5192d4c:device_ops.py:104-183`). A `swing_mode`, a `humidity`, a
+`target_temp_high` or a typo was **ignored, and the rule worked**. Carrying
+those keys into `climate.set_temperature` breaks a rule that used to work,
+because the schema is `PREVENT_EXTRA` and refuses the whole call — so the
+temperature stops being set too. Only the three keys are carried; the rest
+are logged and dropped, which is precisely what v1 did with them.
+
+**A v1 climate `on` rule with no `hvac_mode`, `temperature` or `fan_mode`
+did nothing at all.** `_plan_climate` appended no calls, and the engine
+reported `outcome: "ok"` with the state unchanged
+(`5192d4c:engine.py:493-500`). Converting it to `climate.turn_on` would make
+an air conditioner start up, unattended, on a Shabbat, at whatever
+temperature it was last left at. That is inventing behaviour on the user's
+behalf, so the rule is kept, disabled and reported instead, and the message
+says what to add to make it act. A climate `off` rule with no settings is
+unaffected: v1 genuinely called `climate.turn_off` for it.
+
+**A v1 rule spanning two domains worked, so it becomes two v2 rules.** v1
+looped `for entity_id in rule.devices` and re-derived the domain per entity
+(`5192d4c:engine.py:104`), so one rule could legitimately drive
+`climate.salon` and `switch.boiler` together — and the v1 card let you select
+several devices for one rule. v2 is one rule, one action, so the only way to
+keep that schedule working is one v2 rule per domain. **This is the one place
+the migration changes the number of rules you have**, and it is worth knowing
+before you open the card after an upgrade:
+
+- Ids are derived and deterministic: `e` becomes `e-climate` and `e-switch`,
+  suffixed further only to dodge a collision with an id the store already
+  uses. A re-migration of the same store produces the same ids.
+- Both parts are renamed, rather than one keeping `e`, so that nothing
+  implies one is "the real rule". `e` and `e-switch` would leave a reader
+  unable to tell whether `e` had always been climate-only.
+- Both parts stash the whole original rule in `migration_source`, so the
+  YAML export shows exactly what the single v1 rule was. That field alone
+  raises no repair issue and renders nothing in the card — only
+  `migration_error` does — so it is a paper trail, not a warning.
+- Each part gets its own rule switch. Both parts share the original's name,
+  so Home Assistant dedupes the second entity id.
+- The two parts share a profile, day and time but have disjoint targets, so
+  they are not reported as conflicting with each other.
+- A part on a domain v1 could not drive fails on its own, leaving the
+  working part working — which is exactly what v1 did with that rule.
+
+A `custom` (script) rule is never split: `_apply_custom`
+(`5192d4c:engine.py:451-470`) used `script` and `variables` and never looked
+at `devices`, so a custom rule's devices did nothing in v1 either.
+
+## v1 resolved fan-mode synonyms against the device; v2 does not
+
+Not a migration defect — a capability v2 dropped. Recorded here because
+nothing else in the repo says so, and the v1 README's own example config
+depends on it.
+
+v1 carried a `FAN_SYNONYMS` table (`5192d4c:const.py:17-21`, mapping
+`quiet`/`silent`/`low` onto each other) and `resolve_fan_mode`
+(`5192d4c:device_ops.py:44-51`) picked the first synonym the device actually
+listed in its `fan_modes` attribute. If none was supported it emitted a
+`Skip`: that one sub-call was dropped and reported, and the rest of the rule
+still ran. v2 has neither — `const.py` has no synonym table — so the migrated
+rule sends the authored `fan_mode` string verbatim.
+
+A v1 rule asking for `fan_mode: quiet` on a unit that exposes only `silent`
+therefore worked in v1 and now fails: loudly, at fire time, with Home
+Assistant rejecting the mode and the retry/notification path reporting it.
+The v1 README's documented example config uses exactly `fan_mode: quiet`, so
+this is not a corner case.
+
+It cannot be fixed in the migration: choosing a synonym needs the device's
+`fan_modes` attribute, which needs a running instance, and `migration.py`
+imports no Home Assistant. The honest fix is to restore the resolution at
+fire time in the engine, which already reads each entity's state and
+attributes, together with v1's `Skip` behaviour so an unsupported mode drops
+one sub-call and reports it rather than failing the whole rule. That is a
+change to the fire path, not to the upgrade path, so it is recorded rather
+than smuggled into a migration fix.
 
 ## `migrate_v1` never raises, by construction
 

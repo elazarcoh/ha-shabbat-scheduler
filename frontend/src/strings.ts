@@ -50,6 +50,8 @@ const STRINGS = {
     none_set: 'none',
     migration_error: 'This rule could not be converted from the old format and will not fire:',
     preview_banner: 'Preview — not the coming Shabbat. Dates are not shown because this block is not scheduled.',
+    inherits_target_from_defaults: 'Inherited from the shared defaults:',
+    target_none: 'No target — this rule will not reach anything.',
   },
   he: {
     erev: 'ערב',
@@ -94,6 +96,8 @@ const STRINGS = {
     none_set: 'ללא',
     migration_error: 'לא ניתן להמיר את הכלל הזה מהפורמט הישן והוא לא יופעל:',
     preview_banner: 'תצוגה מקדימה — לא השבת הקרובה. התאריכים אינם מוצגים כי הבלוק הזה אינו מתוכנן.',
+    inherits_target_from_defaults: 'נורש מברירת המחדל המשותפת:',
+    target_none: 'ללא יעד — הכלל לא יפעל על שום דבר.',
   },
 } as const;
 

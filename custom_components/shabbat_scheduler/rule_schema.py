@@ -33,6 +33,18 @@ _V1_FIELDS = {"devices", "settings", "script", "variables", "replay_on_restart"}
 # never chose to send. They are dropped instead of stored: a client still
 # cannot set them, so the guarantee the ledger asked for is intact, but a
 # read-modify-write no longer fails.
+#
+# WHERE THE SEAM IS. Dropping them is right for a websocket client, whose
+# payload is an EDIT: it echoes back a rule it did not author these fields
+# on, and a forged `migration_error` would put a healthy rule in the
+# unmigrated repair issue and make the card claim its migration failed.
+# It is wrong for `yaml_io`, whose payload is a SERIALISED STORE: the
+# documented way to inspect and re-author an unmigrated rule is to export
+# it, and an export that cannot carry these two fields cannot show the user
+# the stashed v1 payload - while the import silently deleted it, along with
+# the `migration_error` the repair issue is derived from. So the drop stays
+# the default and `rule_from_api` takes an explicit opt-in instead;
+# `changes_from_api`, which only ever serves the websocket, has none.
 _READ_ONLY_FIELDS = {"migration_error", "migration_source"}
 
 
@@ -189,8 +201,13 @@ def _coerce(field: str, value):
         return _replay(value)
     if field == "enabled":
         return _bool(field, value)
-    if field in ("name", "icon", "color"):
+    if field in ("name", "icon", "color", "migration_error"):
         return _text(field, value)
+    if field == "migration_source":
+        # `dict | None` on the Rule, and what a repair tool would load back
+        # through `rule_from_dict`. Preserved verbatim is not the same as
+        # unvalidated: the shape is typed here like every other field.
+        return None if value is None else _mapping(field, value)
     # Every rule field is now typed; only the defaults payload, which
     # shares this helper for its own two keys, ever reaches here.
     return value
@@ -217,12 +234,23 @@ def changes_from_api(data: dict) -> dict:
     return {field: _coerce(field, value) for field, value in payload.items()}
 
 
-def rule_from_api(data: dict, rule_id: str) -> Rule:
-    """Build a validated Rule. Any client-supplied id is ignored."""
-    payload = _strip_read_only(
-        {key: value for key, value in data.items() if key != "id"}
+def rule_from_api(
+    data: dict, rule_id: str, *, keep_server_fields: bool = False
+) -> Rule:
+    """Build a validated Rule. Any client-supplied id is ignored.
+
+    `keep_server_fields` preserves `migration_error`/`migration_source`
+    instead of dropping them, and is for `yaml_io` ONLY - a YAML document
+    is a serialised store, not a client edit. See `_READ_ONLY_FIELDS`. It
+    defaults to off so a new call site is safe by default; the websocket
+    API passes nothing and keeps the old behaviour exactly.
+    """
+    payload = {key: value for key, value in data.items() if key != "id"}
+    if not keep_server_fields:
+        payload = _strip_read_only(payload)
+    _check_unknown_fields(
+        payload, _FIELDS | _READ_ONLY_FIELDS if keep_server_fields else _FIELDS
     )
-    _check_unknown_fields(payload)
 
     for required in ("profile", "day", "time", "action"):
         if required not in payload:

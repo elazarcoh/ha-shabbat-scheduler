@@ -208,3 +208,57 @@ async def test_the_unmigrated_issue_clears_once_the_rules_are_repaired(
     await hass.async_block_till_done()
 
     assert issues.async_get_issue(DOMAIN, ISSUE_UNMIGRATED_RULES) is None
+
+
+async def test_a_yaml_round_trip_no_longer_destroys_the_repair_warning(
+    hass, hass_storage
+):
+    """I4, end to end through the real services.
+
+    The documented recovery route is export -> edit -> import, and
+    `import_yaml` calls `async_replace_all` with the WHOLE rule set. While
+    the export omitted `migration_error`/`migration_source` and the import
+    stripped both, following that advice deleted the stashed v1 payload
+    permanently AND cleared the flag this issue is derived from - so the
+    warning vanished and the rule was left a disabled stub pointing at a
+    service that does not exist, with nothing anywhere saying why.
+    """
+    hass_storage["shabbat_scheduler.rules"] = {
+        "version": 1, "minor_version": 1, "key": "shabbat_scheduler.rules",
+        "data": {"rules": [V1_SIMPLE_ON, V1_CUSTOM_NO_SCRIPT], "defaults": {}},
+    }
+    entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    issues = async_get_issue_registry(hass)
+    assert issues.async_get_issue(DOMAIN, ISSUE_UNMIGRATED_RULES) is not None
+
+    exported = await hass.services.async_call(
+        DOMAIN, "export_yaml", {}, blocking=True, return_response=True
+    )
+    # The documented inspection route: the original v1 rule is IN the dump.
+    assert "migration_source" in exported["yaml"]
+    assert "script" in exported["yaml"]
+
+    await hass.services.async_call(
+        DOMAIN, "import_yaml", {"yaml": exported["yaml"]}, blocking=True
+    )
+    await hass.async_block_till_done()
+
+    issue = issues.async_get_issue(DOMAIN, ISSUE_UNMIGRATED_RULES)
+    assert issue is not None, "the round trip deleted the only warning"
+    assert "d" in issue.translation_placeholders["rule_ids"]
+
+    store = hass.data[DOMAIN][entry.entry_id]["store"]
+    stub = next(rule for rule in store.rules if rule.id == "d")
+    assert stub.migration_error == "a custom rule with no script has nothing to call"
+    assert stub.migration_source == V1_CUSTOM_NO_SCRIPT
+    assert stub.enabled is False
+    # And it survives the write to .storage, not just the in-memory swap.
+    reloaded = RuleStore(hass)
+    await reloaded.async_load()
+    assert next(r for r in reloaded.rules if r.id == "d").migration_source == (
+        V1_CUSTOM_NO_SCRIPT
+    )

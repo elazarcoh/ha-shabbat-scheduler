@@ -509,6 +509,40 @@ async def test_a_rule_read_from_the_api_can_be_written_straight_back(
     assert reloaded.rules[0].migration_source is None
 
 
+async def test_a_client_cannot_forge_the_migration_fields_on_create(
+    hass, hass_ws_client
+):
+    """The other half of the I4 seam. `yaml_io` now PRESERVES
+    `migration_error`/`migration_source`, because a YAML file is a
+    serialised store; the websocket door must still drop them, because a
+    client payload is an edit. A forged `migration_error` would put a
+    healthy rule in the unmigrated-rules repair issue and make the card
+    render a migration failure that never happened.
+    """
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {
+            "id": 1,
+            "type": "shabbat_scheduler/rules/create",
+            "rule": {
+                **NEW_RULE,
+                "migration_error": "forged",
+                "migration_source": {"devices": ["climate.a"]},
+            },
+        }
+    )
+    msg = await client.receive_json()
+    assert msg["success"], msg.get("error")
+    assert msg["result"]["rule"]["migration_error"] is None
+    assert msg["result"]["rule"]["migration_source"] is None
+
+    reloaded = RuleStore(hass)
+    await reloaded.async_load()
+    assert reloaded.rules[0].migration_error is None
+    assert reloaded.rules[0].migration_source is None
+
+
 async def test_update_succeeds_but_warns_on_a_conflict(hass, hass_ws_client):
     await _setup(hass, [
         Rule(id="a", profile=1, day="1", time=time(11, 0),

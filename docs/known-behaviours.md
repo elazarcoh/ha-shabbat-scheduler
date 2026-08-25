@@ -711,6 +711,43 @@ confirmation modal on a wall tablet becomes muscle memory within a week, which
 buys nothing. Recovering a deleted rule means adding it again, or re-importing
 a YAML export.
 
+## A mode-only null payload still emits a call Home Assistant refuses
+
+`expand_action("climate.set_temperature", {"hvac_mode": None})` — a null mode
+and nothing else — drops the null (correctly, per the reasoning in
+`device_ops.py`) and is then left with an empty payload, so it emits
+`climate.set_temperature {}`. Home Assistant refuses that: the schema requires
+at least one of `temperature`, `target_temp_high`, `target_temp_low`. The rule
+retries three times and raises a persistent notification.
+
+That contradicts the letter of `test_hvac_mode_only_does_not_emit_an_empty_
+set_temperature_call`, which holds for a *non-null* mode-only payload. The
+inconsistency is real and is recorded here rather than fixed, for two reasons.
+
+The migration cannot produce this shape — v1's own three settings keys are
+value-gated in `migration.py`, so a null never reaches storage from an upgrade.
+It is reachable only from a rule authored directly against the v2 API with an
+explicit null mode and no temperature, which is a nonsense rule, and for such a
+rule a loud refusal naming the problem beats silence.
+
+The apparent fix — return no calls at all — is worse as things stand. The
+engine records `last_run` from what `expand_action` yields, so an empty
+expansion would log the rule as fired having done nothing, with no row
+explaining why. That is the silent no-op shape this project treats as its
+primary defect class, and closing it properly means giving the engine and the
+logbook a way to say "fired, no call was possible" — engine work, not a guard
+in the shim.
+
+**Revisit when the card starts authoring arbitrary service data** (the
+`ha-service-control` work). Until then the shape is unreachable in practice;
+after then it is one selector click away, and the honest empty-expansion path
+should land with it.
+
+A sibling of the same key-versus-value gating survives in
+`migrate_v1_defaults`: a null in `defaults.settings` is dropped silently, while
+an unrecognised key there is reported. The behaviour is right — v1 dropped it
+too — and only the reporting is inconsistent.
+
 ## Deployment note
 
 Nothing here has been installed on the live instance. The integration ships

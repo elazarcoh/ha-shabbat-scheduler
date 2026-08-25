@@ -104,6 +104,16 @@ def expand_action(action: str, data: dict) -> list[tuple[str, dict]]:
     }
 
     if _HVAC_MODE not in data and _FAN_MODE not in data:
+        # No split is needed. Note `data` can be EMPTY here, if the only keys
+        # present were null modes - in which case this emits
+        # `set_temperature {}` and Home Assistant refuses it. That is a known,
+        # documented inconsistency with the mode-only case, not an oversight:
+        # see "A mode-only null payload still emits a call Home Assistant
+        # refuses" in docs/known-behaviours.md before changing it. Returning
+        # `[]` is the obvious fix and is the wrong one today, because the
+        # engine builds `last_run` from what this yields, so an empty
+        # expansion would record the rule as fired having silently done
+        # nothing - the defect class this project cares most about.
         return [(action, data)]
 
     calls: list[tuple[str, dict]] = []

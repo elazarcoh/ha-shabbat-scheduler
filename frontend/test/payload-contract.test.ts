@@ -22,7 +22,16 @@ import type { CardState, DayGroup, RuleData, WarningData } from '../src/types';
 import { dayGroups, renderCardWithState, ruleRows, type Card } from './helpers';
 import payload from './fixtures/state-payload.json';
 
-const state = payload as unknown as CardState;
+/**
+ * Assigned to `CardState` with NO cast, deliberately.
+ *
+ * That makes `npm run typecheck` a second drift guard, free and cheaper
+ * than the Python one: if `_state_payload` ever sends a shape `types.ts`
+ * does not describe, this line stops compiling. A `payload as unknown as
+ * CardState` would have thrown exactly that away - it asserts the very
+ * thing the file exists to verify.
+ */
+const state: CardState = payload;
 
 /** The conflict on rules the card is actually drawing. */
 const onDisplayedRules = (): WarningData =>
@@ -32,10 +41,30 @@ const onDisplayedRules = (): WarningData =>
 const onHiddenProfile = (): WarningData =>
   state.warnings.find((warning) => warning.profile !== state.block!.length)!;
 
+/** The days the card draws for this block: 'erev', then 1..length. */
+const blockDays = (): string[] => {
+  const days = ['erev'];
+  for (let day = 1; day <= state.block!.length; day += 1) days.push(String(day));
+  return days;
+};
+
+/**
+ * The rules `buildGroups` would actually draw - BOTH halves of its filter.
+ * Profile alone is not it: a rule whose profile matches but whose `day` is
+ * outside the block (a day-2 rule in a 1-day block) is not drawn either,
+ * and counting it would make this test assert a bug.
+ */
 const displayedRules = (): RuleData[] =>
-  state.rules.filter((rule) => rule.profile === state.block!.length);
+  state.rules.filter(
+    (rule) =>
+      rule.profile === state.block!.length && blockDays().includes(rule.day),
+  );
 
 const text = (el: Card): string => el.shadowRoot!.textContent!.trim();
+
+/** How many times `needle` appears in `haystack`. */
+const occurrences = (haystack: string, needle: string): number =>
+  haystack.split(needle).length - 1;
 
 describe('the card, against a real server payload', () => {
   it('carries the two conflicts the generator promises', () => {
@@ -90,16 +119,26 @@ describe('the card, against a real server payload', () => {
   });
 
   it('does not repeat a displayed conflict in the banner', async () => {
-    // The other half of the split above: a conflict shown on a row must
-    // not also be shown in the banner, or every conflict reads as two.
+    // The other half of the split above: a conflict shown on a row must not
+    // also be shown in the banner, or every conflict reads as two.
+    //
+    // The discriminator has to be the conflict's TIME. Rule ids are not:
+    // `formatWarning` never emits an id, so asserting the banner omits
+    // them is vacuous - it passes with `displayedRuleIds` deleted
+    // entirely, which is the exact bug this test is named for. Targets are
+    // not either: both conflicts in this payload resolve to
+    // `climate.mamad`, so the two are indistinguishable by target. The
+    // times differ, and they are what `formatWarning` actually renders.
     const el = await renderCardWithState(state);
     const warnings = el.shadowRoot!.querySelector('shabbat-warnings') as Card;
     await warnings.updateComplete;
-    const shown = text(warnings);
-    for (const ruleId of onDisplayedRules().rule_ids!) {
-      expect(shown).not.toContain(ruleId);
-    }
-    expect(shown.split(onHiddenProfile().time!).length - 1).toBe(1);
+    const banner = text(warnings);
+
+    expect(occurrences(banner, onDisplayedRules().time!)).toBe(0);
+    // Paired with the line above so it cannot pass for the wrong reason: an
+    // empty banner would satisfy the zero, and a banner rendering the
+    // hidden conflict twice would be its own bug.
+    expect(occurrences(banner, onHiddenProfile().time!)).toBe(1);
   });
 
   it('renders a row for every rule in the block the payload describes', async () => {
@@ -131,6 +170,32 @@ describe('the card, against a real server payload', () => {
     }
   });
 
+  it('describes each row with the rule data merged over the defaults', async () => {
+    // `ruleBrief` merges `defaults.data` UNDER the rule's own, and the
+    // generated payload seeds that where merge and replace visibly differ:
+    // one rule overrides a defaults key with a different value, another adds
+    // a key the defaults do not carry at all. A payload where every rule's
+    // `data` was empty would render identically under either behaviour.
+    const el = await renderCardWithState(state);
+    const defaultData = state.defaults.data ?? {};
+    let overrides = 0;
+
+    for (const row of await ruleRows(el)) {
+      const rule = row.rule as RuleData;
+      const brief = row.shadowRoot!.querySelector('.brief')!.textContent!;
+      for (const [key, value] of Object.entries({ ...defaultData, ...rule.data })) {
+        expect(brief).toContain(String(value));
+        if (key in rule.data && key in defaultData && rule.data[key] !== defaultData[key]) {
+          // The overridden default must be GONE, not merely outnumbered.
+          expect(brief).not.toContain(String(defaultData[key]));
+          overrides += 1;
+        }
+      }
+    }
+
+    expect(overrides).toBeGreaterThan(0);
+  });
+
   it('reads the master switch entity id the server resolved, not a guess', async () => {
     // Every hand-written fixture in this suite invents 'switch.master'.
     // The real one is slugified from a user-editable name, which is why
@@ -157,10 +222,6 @@ describe('the card, against a real server payload', () => {
         state.block!.dates[day],
       );
     }
-    const expected = ['erev'];
-    for (let day = 1; day <= state.block!.length; day += 1) {
-      expected.push(String(day));
-    }
-    expect(groups.map((group) => (group.group as DayGroup).day)).toEqual(expected);
+    expect(groups.map((group) => (group.group as DayGroup).day)).toEqual(blockDays());
   });
 });

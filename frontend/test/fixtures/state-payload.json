@@ -38,7 +38,8 @@
       "name": "Salon AC",
       "profile": 1,
       "replay": {
-        "enabled": true
+        "enabled": true,
+        "within": "01:30:00"
       },
       "target": {
         "entity_id": [
@@ -50,8 +51,16 @@
     {
       "action": "climate.turn_on",
       "color": null,
-      "condition": [],
-      "data": {},
+      "condition": [
+        {
+          "condition": "state",
+          "entity_id": "input_boolean.guests",
+          "state": "on"
+        }
+      ],
+      "data": {
+        "hvac_mode": "cool"
+      },
       "day": "1",
       "enabled": true,
       "icon": null,

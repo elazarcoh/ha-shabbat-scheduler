@@ -13,7 +13,7 @@ Regenerate with:
 
 import json
 import os
-from datetime import time
+from datetime import time, timedelta
 from pathlib import Path
 
 from custom_components.shabbat_scheduler.models import Replay, Rule
@@ -34,9 +34,12 @@ DEFAULTS = {
 }
 
 RULES = (
-    # An ordinary rule, carrying every optional field a rule can carry, so
-    # the card's row rendering is exercised against real serialisation
-    # (`replay.within` as 'HH:MM:SS', a colour, an icon, a name).
+    # An ordinary rule carrying every optional field a rule can carry, so
+    # the card's row rendering is exercised against real serialisation - in
+    # particular `replay.within`, which `replay_to_dict` writes as
+    # 'HH:MM:SS' via `_duration_to_str` and OMITS entirely when None. A
+    # fixture with `Replay(enabled=True)` alone therefore pins nothing about
+    # that duration format at all: the key simply is not there.
     Rule(
         id="erev-salon",
         profile=1,
@@ -44,8 +47,11 @@ RULES = (
         time=time(18, 50),
         action="climate.set_temperature",
         target={"entity_id": ["climate.salon"]},
+        # Overrides `DEFAULTS["data"]["temperature"]`, so the merge in
+        # `ruleBrief` is driven in the direction where merge and replace
+        # visibly differ (26, never 24).
         data={"temperature": 26},
-        replay=Replay(enabled=True),
+        replay=Replay(enabled=True, within=timedelta(hours=1, minutes=30)),
         name="Salon AC",
         icon="mdi:snowflake",
         color="#4caf50",
@@ -54,6 +60,13 @@ RULES = (
     # (profile 1 is the coming block's length), so `unattachedWarnings`
     # keeps this warning out of the banner and the only place its text can
     # appear is the rule rows themselves.
+    #
+    # This one also carries the only non-empty `condition` in the payload.
+    # `condition` is a list of raw Home Assistant condition configs and the
+    # card carries it through untouched (rule-dialog.ts shows it read-only,
+    # `formToChanges` diffs it) - so a payload where it is empty everywhere
+    # leaves the shape of a field the card must not corrupt entirely
+    # unpinned.
     Rule(
         id="day1-mamad-on",
         profile=1,
@@ -61,6 +74,16 @@ RULES = (
         time=time(11, 0),
         action="climate.turn_on",
         target={"entity_id": ["climate.mamad"]},
+        # A key the defaults do NOT carry, so the merged result is
+        # distinguishable from either side alone.
+        data={"hvac_mode": "cool"},
+        condition=(
+            {
+                "condition": "state",
+                "entity_id": "input_boolean.guests",
+                "state": "on",
+            },
+        ),
     ),
     Rule(
         id="day1-mamad-off",
@@ -156,6 +179,31 @@ async def test_the_committed_frontend_fixture_matches_a_real_payload(
         "hand-written fixture guessed it"
     )
     assert payload["block"] is not None
+
+    # The v2 rule fields most likely to drift are the ones a lazily-seeded
+    # fixture leaves blank, and a blank field pins nothing: an empty
+    # `condition` list is identical whether the server sends conditions
+    # correctly or drops them, and `replay` without `within` says nothing
+    # about the 'HH:MM:SS' duration format `rule_schema` demands back. Assert
+    # the payload actually carries them, so this generator cannot regress to
+    # a fixture that is real but hollow.
+    by_id = {rule["id"]: rule for rule in payload["rules"]}
+    assert by_id["erev-salon"]["replay"] == {"enabled": True, "within": "01:30:00"}, (
+        "a rule with a bounded replay must serialise `within` as 'HH:MM:SS' - "
+        "the shape `rule_schema` accepts back, so a client can round-trip it"
+    )
+    assert by_id["day1-mamad-on"]["condition"] == [
+        {"condition": "state", "entity_id": "input_boolean.guests", "state": "on"}
+    ], "the card carries `condition` through untouched; an empty one pins nothing"
+    assert by_id["day1-mamad-on"]["data"] == {"hvac_mode": "cool"}
+    assert by_id["erev-salon"]["data"] == {"temperature": 26}, (
+        "must differ from DEFAULTS['data'], or the merge in `ruleBrief` is "
+        "driven where merge and replace happen to agree"
+    )
+    assert by_id["day1-disabled"]["target"] == {}, (
+        "one rule must name no target of its own, so the defaults fallback is "
+        "exercised rather than assumed"
+    )
 
     current = json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n"
 

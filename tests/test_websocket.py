@@ -5,14 +5,21 @@ import pytest
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+# Imported rather than restated. `tests/test_frontend_fixture.py` generates
+# the card's committed payload fixture through conftest's `setup_scheduler`,
+# whose docstring claims it pins the same block every websocket test does.
+# A second copy of these two timestamps would let that claim go quietly
+# false, and the card's fixture would then answer to a block no websocket
+# test exercises - the shape of failure this whole fixture exists to close.
+#
+# `tests/` is not a package, but pytest (importmode=prepend) puts this
+# directory on sys.path and imports the conftest as top-level `conftest`, so
+# this is the same object the fixtures read.
+from conftest import ZMANIM
+
 from custom_components.shabbat_scheduler.const import DOMAIN
 from custom_components.shabbat_scheduler.models import Rule
 from custom_components.shabbat_scheduler.store import RuleStore
-
-ZMANIM = {
-    "sensor.jewish_calendar_upcoming_candle_lighting": "2026-08-14T15:44:00+00:00",
-    "sensor.jewish_calendar_upcoming_havdalah": "2026-08-15T17:01:00+00:00",
-}
 
 
 async def _setup(hass, rules=(), defaults=None, enabled=False):

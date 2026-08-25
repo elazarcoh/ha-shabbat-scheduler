@@ -5,6 +5,155 @@ or known-and-deferred. Recorded here because the review scratch directory is
 not committed and these are things a future maintainer will otherwise
 rediscover the hard way.
 
+## The one climate shim
+
+A rule is a single `action` with a `target` and a `data` payload — no
+domain-specific knowledge is supposed to live in this integration at all.
+`climate.set_temperature` is the one exception, and it exists because Home
+Assistant itself will not accept the obvious single call.
+
+`climate/__init__.py`'s `SET_TEMPERATURE_SCHEMA` is `PREVENT_EXTRA` and
+requires at least one of `temperature`, `target_temp_high` or
+`target_temp_low`. So the natural way to author "put the AC on cool at 26,
+quiet fan" —
+
+```yaml
+action: climate.set_temperature
+data: { temperature: 26, hvac_mode: cool, fan_mode: quiet }
+```
+
+— is rejected outright by Home Assistant's own validator, not merely
+unsupported by some hardware: `hvac_mode` and `fan_mode` are extra keys
+`PREVENT_EXTRA` does not allow alongside `temperature`, and a bare `{
+hvac_mode: cool }` with no temperature key fails the "at least one of"
+requirement the other way. Neither failure is specific to this project —
+any automation writing that YAML gets the same rejection.
+
+`expand_action` (`device_ops.py`) is the one place this integration still
+knows something about a domain: a `climate.set_temperature` call carrying
+`hvac_mode` and/or `fan_mode` is split into up to three ordered calls —
+`set_hvac_mode`, `set_temperature` (only when a temperature-ish key
+remains), `set_fan_mode` — in that order, because reversing it can leave a
+unit briefly at the wrong setpoint. Every other action passes through
+untouched.
+
+This counts as a compatibility shim rather than domain knowledge creeping
+back in for two reasons: it is forced by Home Assistant's own schema, not
+by a preference of this project's, and the ecosystem's most-used
+third-party scheduler hardcodes the identical three-call split for the
+identical reason. If Home Assistant ever relaxes `SET_TEMPERATURE_SCHEMA`,
+this shim becomes unnecessary rather than wrong — the single natural call
+would simply start working, and `expand_action` could be deleted, not
+rewritten.
+
+## Conflicts are coarser than they were
+
+`block.find_conflicts` warns when two enabled rules resolve to overlapping
+targets at the same profile/day/time — full stop. It no longer asks
+whether the two rules actually disagree.
+
+The old model could ask that question because a rule's effect was three
+hardcoded fields (`on`/`off`/a climate triple), so "opposite" had a
+concrete meaning: one rule wants the unit on, the other wants it off. A v2
+rule's effect is `action` + arbitrary `data` — an opaque payload for
+whatever service `action` names. Two rules pointing `light.turn_on` at the
+same area with different `brightness` values are trivially "different",
+but so are a `light.turn_on` and a `light.turn_off` on the same target,
+and so, for that matter, are two identical `light.turn_on` calls that
+would produce no observable disagreement at all. Without understanding
+each service's payload — which would mean re-implementing a piece of
+every domain's semantics inside this integration — "same" and "opposite"
+are indistinguishable, so both must be reported alike: as a conflict.
+
+This means some warnings are now for genuinely harmless overlaps (two
+rules that happen to agree), where v1 would have stayed silent on them.
+That is the accepted cost of the trade: a rule with no precedence over
+another is never silently resolved either way, so an over-eager warning
+is the safe direction to err in. See "Two rules on one device at one
+instant can interleave" below for why detection, not resolution, is the
+whole of what this buys.
+
+## Replay is opt-in and bounded
+
+v1's restart catch-up could ask a device "what state should you be in
+right now?" and compare it against what it actually held, because a rule's
+effect was a small, fixed, queryable shape (on/off, or a temperature/mode/
+fan triple) — the same shape the device itself reports back. That
+comparison is what made catch-up idempotent: re-applying an already-true
+state was a no-op.
+
+A v2 rule's effect is an opaque Home Assistant service call. There is no
+general way to ask "did this notification already go out?" or "was this
+scene already applied?" — most services have no queryable desired state
+at all, and the ones that do (like `light.turn_on`) do not expose it in a
+form this integration could compare against arbitrary `data`. So catch-up
+can no longer compute "what should be true" and diff against "what is
+true"; the old mechanism could not survive the move to a generic action.
+
+What replaced it is opt-in, author-declared safety: `replay.enabled`
+(default `false`) says the rule's effect is safe to repeat at all —
+"turn the lights off" is, "start the dishwasher" is not — and
+`replay.within` bounds how late a repeat may still happen. `within`
+exists because being right about *what* to replay is not enough; being
+right about *when* matters just as much. An 11:00 "good morning" scene
+replayed at 23:00 because Home Assistant happened to restart late is
+actively wrong — worse than not replaying it — even though the same
+action at 11:05 would have been exactly correct. A replay older than
+`within` is reported as `skipped_stale`, with how late and how wide the
+window was, rather than either firing blindly or vanishing without a
+trace. Omitting `within` means no bound at all, matching how every rule
+behaved before this option existed.
+
+## Two rules on one device at one instant can interleave
+
+v1 guaranteed that two rules touching one device at the same instant could
+never have their service calls interleave — its own spec named the
+failure this prevented: "the unit left off with a target temperature
+applied — a state matching neither rule." It bought this with an
+`asyncio.Lock` keyed on `entity_id`.
+
+v2 no longer can. A target may be an area, a floor or a label rather than
+a single device, and some calls (`notify.*`) carry no entity at all — there
+is no single entity left to key a lock on. `ShabbatEngine._locks` is now
+keyed on `rule.id` instead. What survives: one rule still cannot interleave
+with a re-entrant application of itself (a timer racing a restart
+catch-up). What is lost: two *different* rules whose resolved targets
+overlap can now genuinely interleave their service calls, and the result
+can be a device left in a state matching neither rule's `data`.
+
+What protects the household now is detection, not prevention:
+`block.find_conflicts` is what surfaces this to the user (see "Conflicts
+are coarser than they were", above) — the engine no longer refuses to run
+either rule on their behalf, it warns and lets both proceed. The full
+account, including the characterisation tests that pin the bad ending
+deterministically and how to get the guarantee back (a lock keyed on the
+*resolved* target set, costed but not scheduled), is in the ledger entry
+headed "A GUARANTEE v2 GAVE UP" in
+`.superpowers/sdd/2026-08-24-shabbat-scheduler-v2-model/progress.md`.
+
+## A rule that could not be migrated is kept, disabled, and reported
+
+A v1 store can contain a rule shape the v1→v2 migration cannot translate
+into a `target`/`data` pair — a hand-edited `.storage` file, or a v1 field
+combination nobody anticipated. That rule is never dropped. It is kept in
+the store with `enabled: false` and `action: shabbat_scheduler.unmigrated`
+so it cannot fire in a shape nothing understands, `migration_error` names
+why it could not convert, and `migration_source` stashes the entire
+original v1 rule dict verbatim — including anything the migration *did*
+manage to salvage into `target`/`data` along the way.
+
+The user is told through a repair issue (Settings → Repairs), not a log
+line during the one week nobody reads logs: `ISSUE_UNMIGRATED_RULES` names
+every affected rule id so they do not have to hunt through the whole rule
+set to find them. What to do with one: open it in the card (it renders the
+migration error inline) or export the rule set to YAML and look at
+`migration_source` directly, then re-author it by hand as a v2
+`action`/`target`/`data` rule and re-enable it — nothing does this
+automatically, because a migration confident enough to invent a `target`
+on your behalf is exactly the kind of silent guess this project exists to
+avoid. Preserving `migration_source` whole is what makes that
+reconstruction possible instead of a rewrite from memory.
+
 ## The zmanim sensors roll forward at havdalah
 
 `sensor.jewish_calendar_upcoming_candle_lighting` and

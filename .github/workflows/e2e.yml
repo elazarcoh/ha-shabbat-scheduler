@@ -26,9 +26,18 @@ jobs:
 
       - name: Wait for Home Assistant to answer
         run: |
-          for _ in $(seq 1 120); do
+          for i in $(seq 1 120); do
             code=$(curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:8124/ || true)
+            echo "attempt $i/120: http_code=$code"
             [ "$code" = "200" ] && exit 0
+            if [ $((i % 12)) -eq 0 ]; then
+              echo "::group::docker compose ps (attempt $i)"
+              docker compose -f dev/docker-compose.yml ps
+              echo "::endgroup::"
+              echo "::group::docker compose logs, last 100 lines (attempt $i)"
+              docker compose -f dev/docker-compose.yml logs --tail=100
+              echo "::endgroup::"
+            fi
             sleep 5
           done
           echo "Home Assistant never answered on :8124" >&2

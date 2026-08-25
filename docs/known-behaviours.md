@@ -192,15 +192,93 @@ on your behalf is exactly the kind of silent guess this project exists to
 avoid. Preserving `migration_source` whole in storage is what makes that
 reconstruction possible instead of a rewrite from memory.
 
-**Do not reach for the YAML export to inspect or recover one.**
-`export_yaml` emits neither `migration_source` nor `migration_error`, and
-`import_yaml` strips both on the way back in. So a YAML round trip cannot
-show you the original v1 payload, and it permanently destroys the stashed
-copy — while also clearing the very flag this repair issue keys on, so the
-warning disappears too. The rule is left a disabled stub pointing at a
-service that does not exist, with nothing anywhere saying why. Read
-`migration_source` out of `.storage` directly if you need it, until the
-export learns to carry these two fields.
+The YAML export is the other way to inspect one, and it is now safe. Both
+`migration_error` and `migration_source` are written by `export_yaml` and
+preserved by `import_yaml`, so a round trip shows you the original v1 rule
+verbatim and leaves an untouched stub exactly as it was — still disabled,
+still carrying its error, still named in the repair issue. To repair one
+this way, replace the stub's `action`/`target`/`data` with the v2 rule you
+want, delete its two `migration_*` keys and set `enabled: true`; the warning
+clears itself once no rule carries a `migration_error` any more.
+
+This was not always true, and the earlier behaviour was destructive: the
+export omitted both fields, so the documented inspection route could not
+work, and the import stripped them, so a round trip permanently deleted the
+stashed v1 payload *and* cleared the flag the repair issue is derived from —
+leaving a disabled stub pointing at a service that does not exist with
+nothing anywhere saying why.
+
+Note the asymmetry this creates, deliberately. A **websocket client** still
+cannot set either field: `rule_schema._READ_ONLY_FIELDS` drops them from
+every create and update, because a client payload is an *edit* that echoes
+back fields it did not author, and a forged `migration_error` would put a
+healthy rule in the repair issue and make the card claim a migration failed.
+A **YAML document** is a serialised store rather than an edit, so it opts in
+(`rule_from_api(..., keep_server_fields=True)`). Forging one there is
+pointless rather than dangerous: the shape is still validated, and the only
+thing it achieves is listing your own rule as unmigrated.
+
+## The shared defaults are domain-blind, and v1's were not
+
+`block.merge_defaults` folds `defaults["data"]` into **every** rule, whatever
+domain it targets, and `defaults["target"]` into every rule that has none of
+its own. There is no per-domain defaults concept and no filtering: a
+`data` of `{hvac_mode, temperature}` reaches a `switch.turn_on` rule
+untouched, and Home Assistant then refuses the call outright —
+`make_entity_service_schema` defaults to `PREVENT_EXTRA`, so the error is
+`extra keys not allowed @ data['hvac_mode']`, after three retries and a
+notification. This is worth knowing before you author a `light.turn_on` rule
+in a rule set whose defaults were written for an air conditioner.
+
+v1 was different: it read its global `settings` for the **climate** domain
+and nowhere else, so a mixed v1 rule set was safe by accident. The v1 → v2
+migration therefore does **not** copy `defaults.settings` into
+`defaults.data`. It inlines them onto each migrated climate rule's own `data`
+instead, merged per key with the rule's own settings and in the same order
+`merge_defaults` uses — so the effective payload of every rule is byte for
+byte what v1 fired, and no non-climate rule inherits anything. Dropping them
+instead would have been lossy in the other direction: a v1 climate rule with
+no settings of its own *did* read the global ones, and would have become a
+bare `climate.turn_on` — the unit coming on at whatever temperature it was
+last left at, reported nowhere.
+
+The cost is stated where the code is (`migration.migrate_v1_defaults`): the
+values are **materialised per rule**, so editing the shared defaults
+afterwards no longer changes them. That is unavoidable — "climate only" is a
+v1 concept v2 cannot express — and copying it is honest where reinterpreting
+it is not. Only `defaults.devices` survives as a shared `defaults.target`.
+
+## `migrate_v1` never raises, by construction
+
+The whole migration is total. Anything it raised escaped
+`_MigratingStore._async_migrate_func` → `Store.async_load` →
+`RuleStore.async_load` → `async_setup_entry`, which failed with
+`ConfigEntryState.SETUP_ERROR` — and because the store was then still at
+version 1, **every subsequent restart failed identically**. No entities, no
+engine, nothing scheduled, and the only trace a setup traceback nobody reads
+during the one week they cannot. Two live instances of that were closed
+(a `settings` or a `defaults` that was a truthy non-mapping, e.g. `'hot'`),
+along with the same shape in `devices` and `variables`.
+
+Two rules follow from it, and both are load-bearing:
+
+- Every coercion is guarded, and a field the migration cannot parse routes
+  the rule through keep-disable-report — the same path as any other
+  unconvertible rule, with the whole raw v1 rule stashed in
+  `migration_source`, so being told costs one field to fix.
+- The per-rule conversion is additionally wrapped in a catch-all, so the
+  *ninth* instance of that failure class becomes one kept, disabled and
+  reported rule rather than a permanently unbootable install. The trade: a
+  genuine bug in `migrate_v1_rule` shows up as a disabled rule naming the
+  exception rather than as a crash. For the one function whose crash costs
+  the user every rule they have, that is the right way round.
+
+A malformed **`defaults`** is the one case with nothing to disable — it is
+not a rule — so it drops to empty and logs a warning. Nothing that fires is
+lost by that: a v1 rule with no `devices` cannot be migrated at all, so every
+successfully migrated rule already carries its own target. Inventing a
+phantom rule to carry the report would put something in the store the user
+never wrote, which is a worse violation than a log line.
 
 ## The zmanim sensors roll forward at havdalah
 

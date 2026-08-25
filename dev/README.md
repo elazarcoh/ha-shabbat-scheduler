@@ -81,7 +81,8 @@ docker run --rm -v "$PWD/dev/config:/config" \
 docker start shabbat-scheduler-dev
 ```
 
-then re-seed. A full `down -v` achieves the same thing more bluntly.
+then re-seed. The full reset at the top of this file achieves the same thing
+more bluntly.
 
 The e2e tests navigate to `/shabbat-scheduler/0`, a dashboard created via
 `lovelace/dashboards/create`, not `/lovelace/0`. On this Home Assistant

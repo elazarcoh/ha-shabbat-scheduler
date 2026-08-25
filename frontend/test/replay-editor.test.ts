@@ -59,7 +59,8 @@ describe('shabbat-replay-editor', () => {
     });
     withinBox(el)!.value = '';
     withinBox(el)!.dispatchEvent(new Event('change'));
-    expect(seen).toEqual([{ enabled: true }]);
+    expect(seen).toStrictEqual([{ enabled: true }]);
+    expect('within' in seen[0]).toBe(false);
   });
 
   it('forgets the window when switched off, so off means off', async () => {
@@ -70,6 +71,7 @@ describe('shabbat-replay-editor', () => {
     });
     enabledBox(el).checked = false;
     enabledBox(el).dispatchEvent(new Event('change'));
-    expect(seen).toEqual([{ enabled: false }]);
+    expect(seen).toStrictEqual([{ enabled: false }]);
+    expect('within' in seen[0]).toBe(false);
   });
 });

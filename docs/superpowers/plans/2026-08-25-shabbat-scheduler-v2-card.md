@@ -1576,6 +1576,15 @@ Delete the whole `<div class="readonly">…</div>` block, the
             ></shabbat-replay-editor>
 ```
 
+**`replay` and `target` must be REPLACED, not merged.** `_patch` spreads at
+the form level (`{...this._form, ...patch}`), so assigning
+`replay: event.detail.value` replaces the whole object — which is what makes
+the replay editor's "switching off drops `within`" property hold end to end.
+Do not deep-merge either value: a merge would resurrect a `within` the user
+just cleared, and an old `entity_id` list under a new `area_id` target. This
+was raised as a cross-task "cannot verify" item by the Task 4 review; it is
+resolved here, so keep it resolved.
+
 - [ ] **Step 5: Make save consult the condition editor**
 
 Replace the save button's handler so it refuses while a condition is

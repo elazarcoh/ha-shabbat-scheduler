@@ -248,13 +248,45 @@ def seed_rules(token: str) -> None:
             await socket.recv()  # auth_required
             await socket.send(json.dumps({"type": "auth", "access_token": token}))
             await socket.recv()  # auth_ok
+
+            message_id = 0
+
+            async def call(payload: dict) -> dict:
+                nonlocal message_id
+                message_id += 1
+                await socket.send(json.dumps({"id": message_id, **payload}))
+                return json.loads(await socket.recv())
+
+            # DELETE EVERY EXISTING RULE FIRST. rules/create always appends -
+            # there is no upsert - so without this, every re-run of this
+            # script added another four rules on top of the last run's. That
+            # is not a cosmetic mess: e2e's edit test asserts that after
+            # changing the 11:00 rule to 12:15 there is no 11:00 rule left,
+            # and with N copies of the fixture N-1 of them are still there,
+            # so the test fails and reads exactly like a broken card. The
+            # instance this was found on held FIVE copies (20 rules).
+            #
+            # This is what "re-runnable" has to mean for a fixture: the
+            # instance ends in the same state whether the script has run
+            # once or ten times.
+            listed = await call({"type": "shabbat_scheduler/rules/list"})
+            if not listed.get("success"):
+                raise SystemExit(f"listing rules failed: {listed}")
+            for existing in listed["result"]["rules"]:
+                reply = await call({
+                    "type": "shabbat_scheduler/rules/delete",
+                    "rule_id": existing["id"],
+                })
+                if not reply.get("success"):
+                    raise SystemExit(
+                        f"clearing rule {existing['id']} failed: {reply}"
+                    )
+
             for index, rule in enumerate(rules, start=1):
-                await socket.send(json.dumps({
-                    "id": index,
+                reply = await call({
                     "type": "shabbat_scheduler/rules/create",
                     "rule": rule,
-                }))
-                reply = json.loads(await socket.recv())
+                })
                 if not reply.get("success"):
                     raise SystemExit(f"seeding rule {index} failed: {reply}")
 

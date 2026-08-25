@@ -8,6 +8,70 @@ import pytest
 
 BASE = "http://127.0.0.1:8124"
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _is_e2e(report) -> bool:
+    """Is this report for a test in THIS directory?
+
+    The hook below runs for the whole session - `uv run pytest` collects
+    tests/ as well - so the tally has to be limited to e2e or a full run
+    would never see "everything skipped".
+    """
+    path = str(getattr(report, "fspath", "") or "")
+    if not os.path.isabs(path):
+        path = os.path.abspath(path)
+    return os.path.dirname(path) == _HERE
+
+
+def pytest_terminal_summary(terminalreporter) -> None:
+    """Say out loud when e2e verified nothing.
+
+    The skips themselves are correct - there is no dev container on a CI
+    box and no token in a plain `uv run pytest` - but a silent skip is
+    how this suite stayed RED, unnoticed, through an entire plan: every
+    run said "N passed" for the Python suite and never mentioned that the
+    only tests that exercise Home Assistant's own elements in a real
+    browser had not run at all.
+
+    Reasons are printed rather than a hard-coded "no HA_DEV_TOKEN",
+    because a down container and an EXPIRED token skip for different
+    reasons and the fix differs. See the `token` fixture.
+    """
+    stats = terminalreporter.stats
+    skipped = [r for r in stats.get("skipped", []) if _is_e2e(r)]
+    if not skipped:
+        return
+    # A test that actually ran has a `call` report; a test skipped during
+    # setup never gets one. So "no call reports at all" is exactly "every
+    # e2e test skipped", regardless of pass or fail.
+    ran = [
+        report
+        for outcome in ("passed", "failed", "error")
+        for report in stats.get(outcome, [])
+        if _is_e2e(report) and getattr(report, "when", None) == "call"
+    ]
+    if ran:
+        return
+
+    terminalreporter.write_sep(
+        "=",
+        "e2e: ALL TESTS SKIPPED - nothing about the card was verified",
+        red=True,
+        bold=True,
+    )
+    reasons = []
+    for report in skipped:
+        reason = report.longrepr[2] if isinstance(report.longrepr, tuple) else ""
+        reason = str(reason).removeprefix("Skipped: ")
+        if reason and reason not in reasons:
+            reasons.append(reason)
+    for reason in reasons or ["(no reason reported)"]:
+        terminalreporter.write_line(f"e2e: {reason}", red=True)
+    terminalreporter.write_line(
+        f"e2e: {len(skipped)} test(s) skipped. See dev/README.md.", red=True
+    )
+
 
 @pytest.fixture(autouse=True)
 def _real_sockets(socket_enabled):

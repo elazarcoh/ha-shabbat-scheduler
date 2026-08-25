@@ -88,6 +88,37 @@ describe('shabbat-condition-editor', () => {
     expect(el.hasError).toBe(true);
   });
 
+  it('rejects YAML that parses to a bare scalar, not a mapping', async () => {
+    const el = await render({ value: [stateCondition] });
+    const seen: any[] = [];
+    el.addEventListener('condition-changed', (e: Event) => {
+      seen.push((e as CustomEvent).detail.value);
+    });
+    const area = areaFor(el, 0);
+    area.value = 'just a string';
+    area.dispatchEvent(new Event('change'));
+    await el.updateComplete;
+    expect(seen).toEqual([]);
+    expect(el.hasError).toBe(true);
+  });
+
+  it('rejects YAML that parses to explicit null, not a mapping', async () => {
+    // `typeof null === 'object'` in JS, so the `parsed === null` check is
+    // load-bearing on its own - without it this text would slip past the
+    // "not a mapping" guard and be emitted as a condition.
+    const el = await render({ value: [stateCondition] });
+    const seen: any[] = [];
+    el.addEventListener('condition-changed', (e: Event) => {
+      seen.push((e as CustomEvent).detail.value);
+    });
+    const area = areaFor(el, 0);
+    area.value = '~';
+    area.dispatchEvent(new Event('change'));
+    await el.updateComplete;
+    expect(seen).toEqual([]);
+    expect(el.hasError).toBe(true);
+  });
+
   it('adds an empty condition row', async () => {
     const el = await render();
     const seen: any[] = [];
@@ -107,6 +138,54 @@ describe('shabbat-condition-editor', () => {
     });
     (rows(el)[1].querySelector('button.remove-condition') as HTMLButtonElement).click();
     expect(seen).toEqual([[stateCondition]]);
+  });
+
+  it('keeps a genuine error attached to the row it belongs to when an unrelated row is removed', async () => {
+    const rowA = { condition: 'state', entity_id: 'input_boolean.a', state: 'on' };
+    const rowB = { condition: 'state', entity_id: 'input_boolean.b', state: 'on' };
+    const rowC = { condition: 'state', entity_id: 'input_boolean.c', state: 'on' };
+    const el = await render({ value: [rowA, rowB, rowC] });
+    // The dialog this composes into re-applies the emitted value; simulate
+    // that here so removal actually re-renders the shortened row list.
+    el.addEventListener('condition-changed', (e: Event) => {
+      el.value = (e as CustomEvent).detail.value;
+    });
+
+    // Break row 2 (the third row) with unparseable text.
+    const brokenArea = areaFor(el, 2);
+    brokenArea.value = 'condition: [state';
+    brokenArea.dispatchEvent(new Event('change'));
+    await el.updateComplete;
+    expect(el.hasError).toBe(true);
+
+    // Remove row 0, which has nothing to do with the broken row.
+    (rows(el)[0].querySelector('button.remove-condition') as HTMLButtonElement).click();
+    await el.updateComplete;
+
+    expect(rows(el).length).toBe(2);
+    expect(el.hasError).toBe(true);
+    expect(rows(el)[1].querySelector('.row-error')).not.toBeNull();
+  });
+
+  it('clears the error when the row it belongs to is the one removed', async () => {
+    const rowA = { condition: 'state', entity_id: 'input_boolean.a', state: 'on' };
+    const rowB = { condition: 'state', entity_id: 'input_boolean.b', state: 'on' };
+    const el = await render({ value: [rowA, rowB] });
+    el.addEventListener('condition-changed', (e: Event) => {
+      el.value = (e as CustomEvent).detail.value;
+    });
+
+    const brokenArea = areaFor(el, 1);
+    brokenArea.value = 'condition: [state';
+    brokenArea.dispatchEvent(new Event('change'));
+    await el.updateComplete;
+    expect(el.hasError).toBe(true);
+
+    (rows(el)[1].querySelector('button.remove-condition') as HTMLButtonElement).click();
+    await el.updateComplete;
+
+    expect(rows(el).length).toBe(1);
+    expect(el.hasError).toBe(false);
   });
 
   it('disables every control when the user cannot write', async () => {

@@ -268,6 +268,13 @@ async def ws_defaults(hass: HomeAssistant, connection, msg: dict[str, Any]) -> N
     store = data["store"]
     try:
         defaults = validate_defaults(msg["defaults"])
+        # The same second door `ws_create`/`ws_update` put a rule's target
+        # through, for the same reason. `validate_defaults` only asks "is it
+        # a mapping", so without this an identical target - authored in the
+        # same editor, in the same card - was refused in the rule dialog and
+        # accepted here, then merged into every rule that has no target of
+        # its own and refused at FIRE time on Shabbat instead.
+        ha_validation.validate_defaults_for_ha(defaults)
     except RuleValidationError as err:
         connection.send_error(msg["id"], "invalid_rule", str(err))
         return

@@ -382,6 +382,103 @@ async def test_defaults_update_rejects_a_bare_string_target_payload(
     assert reloaded.defaults == {}
 
 
+async def test_defaults_update_of_an_invalid_target_is_rejected(
+    hass, hass_ws_client
+):
+    """The same door `ws_create` was closed against, for the same reason.
+
+    A defaults target comes out of the SAME editor a rule's does, but
+    `validate_defaults` only asks "is it a mapping" - so an identical
+    selector was refused in the rule dialog and accepted here, then merged
+    into every rule with no target of its own (`block.merge_defaults`) and
+    refused at FIRE time on Shabbat instead of at save time in the dialog
+    the author was looking at.
+
+    `not_a_selector` is the same key
+    `test_create_of_an_invalid_target_is_rejected` uses, deliberately: the
+    point is that the two doors now give the same answer to one payload.
+    """
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {
+            "id": 1,
+            "type": "shabbat_scheduler/defaults/update",
+            "defaults": {"target": {"not_a_selector": ["climate.a"]}},
+        }
+    )
+    msg = await client.receive_json()
+    assert not msg["success"]
+    assert msg["error"]["code"] == "invalid_rule"
+
+    # Refused, not "refused and half-written".
+    reloaded = RuleStore(hass)
+    await reloaded.async_load()
+    assert reloaded.defaults == {}
+
+
+async def test_defaults_update_accepts_every_target_selector_a_rule_may_use(
+    hass, hass_ws_client
+):
+    """Validated the same way, not merely validated MORE.
+
+    A guard that rejects a bogus key is worth nothing if it also rejects
+    the real ones: an area or a label is a perfectly ordinary shared
+    default, and refusing them would break authoring rather than tighten
+    it. Driven per selector so one over-broad schema cannot pass this.
+    """
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    for index, target in enumerate(
+        (
+            {"entity_id": ["climate.a"]},
+            {"area_id": ["salon"]},
+            {"device_id": ["abc123"]},
+            {"floor_id": ["ground"]},
+            {"label_id": ["shabbat"]},
+        ),
+        start=1,
+    ):
+        await client.send_json(
+            {
+                "id": index,
+                "type": "shabbat_scheduler/defaults/update",
+                "defaults": {"target": target},
+            }
+        )
+        msg = await client.receive_json()
+        assert msg["success"], target
+        assert msg["result"]["defaults"]["target"] == target
+
+
+async def test_defaults_update_accepts_a_payload_with_no_target_at_all(
+    hass, hass_ws_client
+):
+    """`target` is optional, and a data-only default is the normal case.
+
+    The HA-side check must therefore not fire on an ABSENT target. Asserts
+    key absence explicitly: `validate_defaults` returns only the keys the
+    client sent, so a `target` appearing here would mean the guard had
+    invented one on the way through.
+    """
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {
+            "id": 1,
+            "type": "shabbat_scheduler/defaults/update",
+            "defaults": {"data": {"temperature": 24}},
+        }
+    )
+    msg = await client.receive_json()
+    assert msg["success"]
+    assert "target" not in msg["result"]["defaults"]
+
+    reloaded = RuleStore(hass)
+    await reloaded.async_load()
+    assert "target" not in reloaded.defaults
+
+
 ORIGINAL = Rule(
     id="r1", profile=1, day="1", time=time(11, 0),
     action="climate.turn_on", target={"entity_id": ["climate.a"]},

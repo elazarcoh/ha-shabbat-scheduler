@@ -26,7 +26,7 @@ jobs:
 
       - name: Wait for Home Assistant to answer
         run: |
-          for _ in $(seq 1 60); do
+          for _ in $(seq 1 120); do
             code=$(curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:8124/ || true)
             [ "$code" = "200" ] && exit 0
             sleep 5

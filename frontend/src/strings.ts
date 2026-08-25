@@ -49,6 +49,25 @@ const STRINGS = {
     remove_condition: 'Remove',
     condition_unparseable: 'Not valid YAML — this condition is not being saved.',
     condition_not_a_mapping: 'A condition must be a mapping, like `condition: state`.',
+    // What happened the last time a rule came due. The wording deliberately
+    // mirrors logbook.py's rows: the person reading the card and the person
+    // reading the logbook must not be told two different things about the
+    // same rule. "Did not run" appears in each of the three non-firing
+    // outcomes and in neither of the two firing ones.
+    outcome_called: 'Fired',
+    outcome_would_call: 'Would have fired [dry run]',
+    outcome_failed: 'Did not run — failed',
+    outcome_blocked: 'Did not run — blocked',
+    outcome_skipped_stale: 'Did not run — skipped as stale',
+    // A verdict from a server one version ahead of this card. Saying this
+    // beats rendering an empty line that looks like nothing happened.
+    outcome_unknown: 'Finished with no reported outcome',
+    // The English values here must stay byte-identical to
+    // UNKNOWN_ENTITY_PREFIX and NO_LIVE_TARGETS_NOTE in const.py - see
+    // `formatOutcome`, which de-duplicates against the server's own English
+    // wording already present in `detail`.
+    outcome_no_such_entity: 'no such entity: ',
+    outcome_reached_nothing: 'reached no entity that exists',
   },
   he: {
     erev: 'ערב',
@@ -95,6 +114,14 @@ const STRINGS = {
     remove_condition: 'הסרה',
     condition_unparseable: 'YAML לא תקין — התנאי הזה לא נשמר.',
     condition_not_a_mapping: 'תנאי חייב להיות מפה, כמו `condition: state`.',
+    outcome_called: 'הופעל',
+    outcome_would_call: 'היה מופעל [הרצה יבשה]',
+    outcome_failed: 'לא רץ — נכשל',
+    outcome_blocked: 'לא רץ — נחסם',
+    outcome_skipped_stale: 'לא רץ — דולג כמיושן',
+    outcome_unknown: 'הסתיים ללא תוצאה מדווחת',
+    outcome_no_such_entity: 'אין ישות כזו: ',
+    outcome_reached_nothing: 'לא הגיע לאף ישות קיימת',
   },
 } as const;
 

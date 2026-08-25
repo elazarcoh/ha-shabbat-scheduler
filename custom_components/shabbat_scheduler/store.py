@@ -146,6 +146,34 @@ def active_block_from_dict(data) -> tuple[datetime, datetime] | None:
     return candle, havdalah
 
 
+def last_outcomes_from_dict(data) -> dict[str, dict]:
+    """Deserialise the per-rule outcome map, tolerating absence and junk.
+
+    Never raises, for the same reason `active_block_from_dict` never does:
+    a `.storage` file written before this key existed - which is every
+    install in the field right now - or one hand-edited into nonsense, must
+    degrade to "no outcome recorded" rather than stop the integration
+    loading. An outcome is a REPORT about the past; losing one costs the
+    card a line, while failing to load costs the user their whole schedule.
+    That asymmetry is why nothing here is strict.
+
+    Entries with no `outcome` are dropped: the card keys everything it says
+    off that field, and `{"outcome": null}` renders as a rule claiming to
+    have finished with no verdict, which is worse than saying nothing.
+
+    Adding this key needed no STORAGE_VERSION bump precisely because of
+    this function - see `test_a_store_written_before_last_outcome_existed_
+    still_loads`, which writes a version-2 store with no such key at all.
+    """
+    if not isinstance(data, dict):
+        return {}
+    return {
+        str(rule_id): dict(value)
+        for rule_id, value in data.items()
+        if isinstance(value, dict) and value.get("outcome")
+    }
+
+
 class _MigratingStore(Store):
     """Home Assistant calls this when the stored version is behind.
 
@@ -177,6 +205,12 @@ class RuleStore:
         self._enabled: bool = False
         self._dry_run: bool = False
         self._active_block: tuple[datetime, datetime] | None = None
+        # Keyed by rule id. NOT a field on Rule: an outcome is what
+        # happened TO a rule, not part of what the rule is - putting it on
+        # the dataclass would put it in `rule_to_dict`, and from there into
+        # the YAML export, where a report about last Shabbat would look
+        # like part of the schedule a user is meant to author.
+        self._last_outcomes: dict[str, dict] = {}
         self._on_change: Callable[[], None] | None = None
 
     @property
@@ -213,6 +247,50 @@ class RuleStore:
         """
         return self._active_block
 
+    def last_outcome(self, rule_id: str) -> dict | None:
+        """What happened the last time `rule_id` came due, or None.
+
+        None, never `{}`, for a rule that has never come due: the card
+        renders nothing at all for it, and an empty dict would have to be
+        distinguished from a real verdict by every reader in turn.
+
+        A copy, so a caller cannot mutate the store's own record - this is
+        handed straight out over the websocket on every push.
+        """
+        outcome = self._last_outcomes.get(rule_id)
+        return dict(outcome) if outcome is not None else None
+
+    async def async_record_outcome(self, rule_id: str, outcome: dict) -> None:
+        """Make one rule's verdict durable. REPLACES, never merges.
+
+        Replacing matters: a rule that named a misspelt entity last week
+        and names a real one today must stop being reported as a typo. A
+        merge would keep the stale `unknown_targets` alongside the new
+        `called` and have the card go on blaming a mistake already fixed.
+
+        Deliberately does NOT notify. The store's change listener is
+        `_rules_changed` (__init__.py), which RESCHEDULES the engine, so
+        notifying from here would mean every rule that fires triggers a
+        refresh from inside its own application - a re-evaluation, on the
+        one day nobody can intervene. "Fire once, never re-assert."
+        The engine pushes the card over SIGNAL_RULES_CHANGED instead,
+        which has no path back into the store.
+        """
+        self._last_outcomes[rule_id] = dict(outcome)
+        await self.async_save()
+
+    def _prune_outcomes(self) -> None:
+        """Forget the outcomes of rules that no longer exist.
+
+        Runs on every save, so the map is bounded by the rule set rather
+        than by how long the instance has been up: without it a user who
+        creates and deletes rules over a year accumulates a verdict for
+        every id they ever used, in a file loaded at every start.
+        """
+        live = {rule.id for rule in self._rules}
+        for rule_id in [key for key in self._last_outcomes if key not in live]:
+            del self._last_outcomes[rule_id]
+
     def async_set_change_listener(self, listener: Callable[[], None]) -> None:
         """Register the one callback fired after any rule-set change.
 
@@ -234,8 +312,12 @@ class RuleStore:
         self._dry_run = data.get("dry_run", False)
         # Added after v1 shipped; absent in every store written before it.
         self._active_block = active_block_from_dict(data.get("active_block"))
+        # Absent in every store written before Task 11; see
+        # `last_outcomes_from_dict` for why that needs no version bump.
+        self._last_outcomes = last_outcomes_from_dict(data.get("last_outcomes"))
 
     async def async_save(self) -> None:
+        self._prune_outcomes()
         data = {
             "rules": [rule_to_dict(rule) for rule in self._rules],
             "defaults": self._defaults,
@@ -246,6 +328,13 @@ class RuleStore:
         # active block keeps exactly the shape it has always had.
         if self._active_block is not None:
             data["active_block"] = active_block_to_dict(self._active_block)
+        # Same additive treatment as `active_block`: a store whose rules
+        # have never come due keeps exactly the shape it has always had.
+        if self._last_outcomes:
+            data["last_outcomes"] = {
+                rule_id: dict(outcome)
+                for rule_id, outcome in self._last_outcomes.items()
+            }
         await self._store.async_save(data)
 
     async def async_set_active_block(

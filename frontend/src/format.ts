@@ -1,9 +1,10 @@
-import { t } from './strings';
+import { t, type StringKey } from './strings';
 import type {
   BlockData,
   CardState,
   DayGroup,
   Defaults,
+  LastOutcome,
   RuleData,
   RuleFormState,
   WarningData,
@@ -213,6 +214,110 @@ export function formatWarning(warning: WarningData, language?: string): string {
     return parts.join(' · ');
   }
   return warning.message ?? '';
+}
+
+/**
+ * The English phrases the server itself uses for the two target
+ * diagnostics, byte-identical to `UNKNOWN_ENTITY_PREFIX` and
+ * `NO_LIVE_TARGETS_NOTE` in const.py.
+ *
+ * Kept as constants separately from the translated strings because they do
+ * two different jobs. The translated string is what the reader SEES; these
+ * are what `formatOutcome` de-duplicates AGAINST - a total miss already
+ * reads "no such entity: light.x" in `detail`, because that is what the
+ * engine puts in the failed result's `error`, and the card must not say it
+ * a second time. The server always sends `detail` in English, so the check
+ * has to be against English whatever language the card is in.
+ */
+const SERVER_NO_SUCH_ENTITY = 'no such entity: ';
+const SERVER_REACHED_NOTHING = 'reached no entity that exists';
+
+const OUTCOME_LABELS: Record<string, StringKey> = {
+  called: 'outcome_called',
+  would_call: 'outcome_would_call',
+  failed: 'outcome_failed',
+  blocked: 'outcome_blocked',
+  skipped_stale: 'outcome_skipped_stale',
+};
+
+/**
+ * A rule's own verdict as one line of prose.
+ *
+ * The same words the logbook row carries, on purpose. `detail` arrives
+ * already written by the server - `_condition_block_reason`'s "condition 1
+ * of 1 (state on input_boolean.kids) not met", the stale skip's "6:00:43
+ * late, window 1:00:00", the failure's type-prefixed error - and the card
+ * showing exactly those words is a feature: the person reading the card
+ * and the person reading the logbook must not be told two different things
+ * about the same rule.
+ *
+ * Both diagnostics are appended AFTER the outcome rather than replacing
+ * it, most actionable first, exactly as `_note_diagnostics` does in
+ * logbook.py. A misspelling is the one the reader can fix; "reached
+ * nothing" is the one that says a call that really happened changed
+ * nothing anyway. Neither is an outcome, and a rule can be `called` and
+ * carry either.
+ *
+ * An unrecognised `outcome` still renders: this arrives over a socket from
+ * a server that may be a version ahead, and a blank line reads as "nothing
+ * happened", which is the one thing this card must never imply.
+ */
+export function formatOutcome(outcome: LastOutcome, language?: string): string {
+  const key = OUTCOME_LABELS[outcome.outcome];
+  let text = t(language, key ?? 'outcome_unknown');
+  if (outcome.detail) text = `${text}: ${outcome.detail}`;
+
+  const unknown = outcome.unknown_targets ?? [];
+  if (unknown.length > 0 && !text.includes(SERVER_NO_SUCH_ENTITY)) {
+    text = `${text} — ${t(language, 'outcome_no_such_entity')}${unknown.join(', ')}`;
+  }
+  if (outcome.no_live_targets === true && !text.includes(SERVER_REACHED_NOTHING)) {
+    text = `${text} — ${t(language, 'outcome_reached_nothing')}`;
+  }
+  return text;
+}
+
+/**
+ * True when this verdict is something to worry about.
+ *
+ * The three non-firing outcomes, plus either target diagnostic on an
+ * outcome that otherwise reads as success. That second half is the point:
+ * `called` with a misspelt entity, or `called` having reached nothing, is
+ * a rule that reported success and changed less than it claimed - which is
+ * the failure mode this integration exists to surface, so it must not be
+ * drawn as quietly as a rule that simply worked.
+ */
+export function outcomeIsBad(outcome: LastOutcome): boolean {
+  return (
+    outcome.outcome === 'failed' ||
+    outcome.outcome === 'blocked' ||
+    outcome.outcome === 'skipped_stale' ||
+    (outcome.unknown_targets ?? []).length > 0 ||
+    outcome.no_live_targets === true ||
+    !(outcome.outcome in OUTCOME_LABELS)
+  );
+}
+
+/**
+ * When the verdict was reached, short and local.
+ *
+ * A durable outcome with no date is indistinguishable from last week's,
+ * and a row reading "did not run — blocked" about a Shabbat that is long
+ * over would send someone looking for a problem that no longer exists.
+ *
+ * Empty string for anything unparseable, so the caller can omit the
+ * element entirely rather than render the literal "Invalid Date" - and so
+ * a bad timestamp never takes the reason down with it.
+ */
+export function formatOutcomeAt(at: string, language?: string): string {
+  const when = new Date(at);
+  if (Number.isNaN(when.getTime())) return '';
+  return when.toLocaleString(language === 'he' ? 'he-IL' : 'en-GB', {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 /**

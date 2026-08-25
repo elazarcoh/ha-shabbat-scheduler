@@ -28,7 +28,7 @@ const rule = (over: Partial<RuleData> = {}): RuleData => ({
   target: { entity_id: ['climate.salon'] },
   data: {}, condition: [], replay: { enabled: false },
   name: null, icon: null, enabled: true, color: null,
-  ...over,
+  last_outcome: null, ...over,
 });
 
 const state = (over: Partial<CardState> = {}): CardState => ({

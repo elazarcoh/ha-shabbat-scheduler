@@ -16,6 +16,8 @@ import os
 from datetime import time, timedelta
 from pathlib import Path
 
+from freezegun import freeze_time
+
 from custom_components.shabbat_scheduler.models import Replay, Rule
 
 FIXTURE = (
@@ -23,6 +25,32 @@ FIXTURE = (
 )
 
 REGEN = "REGEN_FRONTEND_FIXTURE=1 uv run pytest tests/test_frontend_fixture.py"
+
+# WHY THE CLOCK IS FROZEN, and only around the setup call.
+#
+# This generator runs with `enabled=True, dry_run=True`, so the restart
+# catch-up really runs and `erev-salon` - the one rule that opts into replay
+# - really produces a `last_outcome`. That outcome carries `at`, and (for a
+# stale skip) a detail saying HOW LATE the rule was: both derived from the
+# clock. Against the real clock the regenerated fixture therefore differs
+# from the previous one on every single run, down to the microsecond, and a
+# guard that fails at random is a guard the next frustrated developer
+# disables.
+#
+# Frozen to an instant INSIDE the block conftest's ZMANIM describe (17:00
+# local on day 1, before the 20:01 havdalah), chosen so that:
+#   - every rule in RULES is already past, so `_upcoming` is empty and no
+#     timer is left armed across the un-freeze at teardown, and
+#   - `erev-salon` is 22h10m past its 18:50 erev slot, well outside its
+#     01:30:00 replay window, so the fixture carries a real `skipped_stale`
+#     - the outcome that most needs rendering, since it is the one where the
+#     rule did NOT run and has to say why.
+#
+# Only the setup call is frozen. `hass_ws_client`'s auth refuses a frozen
+# clock outright (`auth_invalid`), so the socket is opened afterwards, in
+# real time - which is harmless, because everything the payload reports was
+# already decided and recorded during setup.
+_FROZEN_NOW = "2026-08-15T14:00:00+00:00"
 
 # Every value here is deliberately NOT a default of anything on either
 # side. A fixture that happens to equal the card's own property defaults
@@ -136,7 +164,8 @@ async def test_the_committed_frontend_fixture_matches_a_real_payload(
     """The card's fixture is the server's payload, or the suite is lying."""
     # The client is minted before the entry loads, exactly as the other
     # websocket tests do it.
-    await setup_scheduler(RULES, defaults=DEFAULTS, enabled=True, dry_run=True)
+    with freeze_time(_FROZEN_NOW):
+        await setup_scheduler(RULES, defaults=DEFAULTS, enabled=True, dry_run=True)
     client = await hass_ws_client(hass)
 
     # A real round trip over the socket, not a call to `_state_payload`:
@@ -203,6 +232,28 @@ async def test_the_committed_frontend_fixture_matches_a_real_payload(
     assert by_id["day1-disabled"]["target"] == {}, (
         "one rule must name no target of its own, so the defaults fallback is "
         "exercised rather than assumed"
+    )
+    # The per-rule outcome, which is the whole reason the clock above is
+    # frozen. Both halves are asserted because both are load-bearing: a
+    # payload where every rule's outcome is null pins nothing about the
+    # field's shape, and a payload where none is null would not prove the
+    # card renders nothing for a rule that has never run.
+    assert by_id["erev-salon"]["last_outcome"] == {
+        "outcome": "skipped_stale",
+        "at": "2026-08-15T14:00:00+00:00",
+        "detail": "22:10:00 late, window 1:30:00",
+    }, (
+        "the replay-enabled rule must carry a REAL recorded outcome, naming "
+        "how late it was and the window it blew - if this drifted, the clock "
+        "above is no longer frozen or the engine stopped recording"
+    )
+    assert by_id["day1-mamad-on"]["last_outcome"] is None, (
+        "a rule that never came due must carry an explicit null, so the card "
+        "reads one field for every rule rather than a key that may be absent"
+    )
+    assert "last_outcome" in by_id["day1-mamad-on"], (
+        "present-and-null, not absent: `in`, because an absent key and a null "
+        "one are the same to a dict comparison and not the same to the card"
     )
 
     current = json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n"

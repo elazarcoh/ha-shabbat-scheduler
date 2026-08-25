@@ -11,6 +11,7 @@ const existing: RuleData = {
   condition: [],
   replay: { enabled: false },
   name: 'Morning', icon: null, enabled: true, color: null,
+  last_outcome: null,
 };
 
 async function render(props: Record<string, unknown> = {}) {

@@ -122,6 +122,25 @@ const STRINGS = {
         remove_condition: 'Remove',
         condition_unparseable: 'Not valid YAML — this condition is not being saved.',
         condition_not_a_mapping: 'A condition must be a mapping, like `condition: state`.',
+        // What happened the last time a rule came due. The wording deliberately
+        // mirrors logbook.py's rows: the person reading the card and the person
+        // reading the logbook must not be told two different things about the
+        // same rule. "Did not run" appears in each of the three non-firing
+        // outcomes and in neither of the two firing ones.
+        outcome_called: 'Fired',
+        outcome_would_call: 'Would have fired [dry run]',
+        outcome_failed: 'Did not run — failed',
+        outcome_blocked: 'Did not run — blocked',
+        outcome_skipped_stale: 'Did not run — skipped as stale',
+        // A verdict from a server one version ahead of this card. Saying this
+        // beats rendering an empty line that looks like nothing happened.
+        outcome_unknown: 'Finished with no reported outcome',
+        // The English values here must stay byte-identical to
+        // UNKNOWN_ENTITY_PREFIX and NO_LIVE_TARGETS_NOTE in const.py - see
+        // `formatOutcome`, which de-duplicates against the server's own English
+        // wording already present in `detail`.
+        outcome_no_such_entity: 'no such entity: ',
+        outcome_reached_nothing: 'reached no entity that exists',
     },
     he: {
         erev: 'ערב',
@@ -168,6 +187,14 @@ const STRINGS = {
         remove_condition: 'הסרה',
         condition_unparseable: 'YAML לא תקין — התנאי הזה לא נשמר.',
         condition_not_a_mapping: 'תנאי חייב להיות מפה, כמו `condition: state`.',
+        outcome_called: 'הופעל',
+        outcome_would_call: 'היה מופעל [הרצה יבשה]',
+        outcome_failed: 'לא רץ — נכשל',
+        outcome_blocked: 'לא רץ — נחסם',
+        outcome_skipped_stale: 'לא רץ — דולג כמיושן',
+        outcome_unknown: 'הסתיים ללא תוצאה מדווחת',
+        outcome_no_such_entity: 'אין ישות כזו: ',
+        outcome_reached_nothing: 'לא הגיע לאף ישות קיימת',
     },
 };
 function t(language, key) {
@@ -359,6 +386,104 @@ function formatWarning(warning, language) {
         return parts.join(' · ');
     }
     return warning.message ?? '';
+}
+/**
+ * The English phrases the server itself uses for the two target
+ * diagnostics, byte-identical to `UNKNOWN_ENTITY_PREFIX` and
+ * `NO_LIVE_TARGETS_NOTE` in const.py.
+ *
+ * Kept as constants separately from the translated strings because they do
+ * two different jobs. The translated string is what the reader SEES; these
+ * are what `formatOutcome` de-duplicates AGAINST - a total miss already
+ * reads "no such entity: light.x" in `detail`, because that is what the
+ * engine puts in the failed result's `error`, and the card must not say it
+ * a second time. The server always sends `detail` in English, so the check
+ * has to be against English whatever language the card is in.
+ */
+const SERVER_NO_SUCH_ENTITY = 'no such entity: ';
+const SERVER_REACHED_NOTHING = 'reached no entity that exists';
+const OUTCOME_LABELS = {
+    called: 'outcome_called',
+    would_call: 'outcome_would_call',
+    failed: 'outcome_failed',
+    blocked: 'outcome_blocked',
+    skipped_stale: 'outcome_skipped_stale',
+};
+/**
+ * A rule's own verdict as one line of prose.
+ *
+ * The same words the logbook row carries, on purpose. `detail` arrives
+ * already written by the server - `_condition_block_reason`'s "condition 1
+ * of 1 (state on input_boolean.kids) not met", the stale skip's "6:00:43
+ * late, window 1:00:00", the failure's type-prefixed error - and the card
+ * showing exactly those words is a feature: the person reading the card
+ * and the person reading the logbook must not be told two different things
+ * about the same rule.
+ *
+ * Both diagnostics are appended AFTER the outcome rather than replacing
+ * it, most actionable first, exactly as `_note_diagnostics` does in
+ * logbook.py. A misspelling is the one the reader can fix; "reached
+ * nothing" is the one that says a call that really happened changed
+ * nothing anyway. Neither is an outcome, and a rule can be `called` and
+ * carry either.
+ *
+ * An unrecognised `outcome` still renders: this arrives over a socket from
+ * a server that may be a version ahead, and a blank line reads as "nothing
+ * happened", which is the one thing this card must never imply.
+ */
+function formatOutcome(outcome, language) {
+    const key = OUTCOME_LABELS[outcome.outcome];
+    let text = t(language, key ?? 'outcome_unknown');
+    if (outcome.detail)
+        text = `${text}: ${outcome.detail}`;
+    const unknown = outcome.unknown_targets ?? [];
+    if (unknown.length > 0 && !text.includes(SERVER_NO_SUCH_ENTITY)) {
+        text = `${text} — ${t(language, 'outcome_no_such_entity')}${unknown.join(', ')}`;
+    }
+    if (outcome.no_live_targets === true && !text.includes(SERVER_REACHED_NOTHING)) {
+        text = `${text} — ${t(language, 'outcome_reached_nothing')}`;
+    }
+    return text;
+}
+/**
+ * True when this verdict is something to worry about.
+ *
+ * The three non-firing outcomes, plus either target diagnostic on an
+ * outcome that otherwise reads as success. That second half is the point:
+ * `called` with a misspelt entity, or `called` having reached nothing, is
+ * a rule that reported success and changed less than it claimed - which is
+ * the failure mode this integration exists to surface, so it must not be
+ * drawn as quietly as a rule that simply worked.
+ */
+function outcomeIsBad(outcome) {
+    return (outcome.outcome === 'failed' ||
+        outcome.outcome === 'blocked' ||
+        outcome.outcome === 'skipped_stale' ||
+        (outcome.unknown_targets ?? []).length > 0 ||
+        outcome.no_live_targets === true ||
+        !(outcome.outcome in OUTCOME_LABELS));
+}
+/**
+ * When the verdict was reached, short and local.
+ *
+ * A durable outcome with no date is indistinguishable from last week's,
+ * and a row reading "did not run — blocked" about a Shabbat that is long
+ * over would send someone looking for a problem that no longer exists.
+ *
+ * Empty string for anything unparseable, so the caller can omit the
+ * element entirely rather than render the literal "Invalid Date" - and so
+ * a bad timestamp never takes the reason down with it.
+ */
+function formatOutcomeAt(at, language) {
+    const when = new Date(at);
+    if (Number.isNaN(when.getTime()))
+        return '';
+    return when.toLocaleString(language === 'he' ? 'he-IL' : 'en-GB', {
+        day: 'numeric',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+    });
 }
 /**
  * Every field the form carries, including the four it displays read-only.
@@ -596,6 +721,11 @@ let ShabbatRuleRow = class ShabbatRuleRow extends i$1 {
     render() {
         const conflicts = warningsForRule(this.rule.id, this.warnings);
         const title = this.rule.name;
+        // Nothing at all for a rule that has never come due - an empty
+        // outcome line on every row of a fresh install would train the reader
+        // to skip exactly the line that matters on the one night it appears.
+        const outcome = this.rule.last_outcome ?? null;
+        const when = outcome === null ? '' : formatOutcomeAt(outcome.at, this.language);
         return b `
       <div
         class="row ${this.rule.enabled ? '' : 'disabled'}"
@@ -614,6 +744,12 @@ let ShabbatRuleRow = class ShabbatRuleRow extends i$1 {
         <div class="body">
           ${title ? b `<div class="title">${title}</div>` : A}
           <div class="brief">${ruleBrief(this.rule, this.defaults)}</div>
+          ${outcome !== null
+            ? b `<div class="last-outcome ${outcomeIsBad(outcome) ? 'bad' : ''}">
+                <span>${formatOutcome(outcome, this.language)}</span>
+                ${when ? b `<span class="last-outcome-at">${when}</span>` : A}
+              </div>`
+            : A}
           ${conflicts.length
             ? b `<div class="conflict-detail">
                 ${conflicts.map((conflict) => b `<div>${formatWarning(conflict, this.language)}</div>`)}
@@ -665,6 +801,20 @@ ShabbatRuleRow.styles = i$4 `
       overflow-wrap: anywhere;
       margin-block-start: 2px;
     }
+    /* Inline and always visible, for the same reason .conflict-detail is:
+       there is no hover on the wall tablet this card is built for, so a
+       tooltip would show nobody anything. */
+    .last-outcome {
+      font-size: 0.85em;
+      color: var(--secondary-text-color, #666);
+      overflow-wrap: anywhere;
+      margin-block-start: 2px;
+    }
+    /* Not red: a rule that did not run is not an error in the card, and
+       the conflict warning colour is already taken. Distinct enough to
+       find while scanning, quiet enough not to shout on every row. */
+    .last-outcome.bad { color: var(--error-color, #c62828); }
+    .last-outcome-at { opacity: 0.8; margin-inline-start: 0.5em; }
     .tag { font-size: 0.8em; color: var(--secondary-text-color, #666); }
     .row { cursor: pointer; }
     .row:focus-visible { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: -2px; }

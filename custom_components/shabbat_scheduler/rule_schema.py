@@ -47,6 +47,27 @@ _V1_FIELDS = {"devices", "settings", "script", "variables", "replay_on_restart"}
 # `changes_from_api`, which only ever serves the websocket, has none.
 _READ_ONLY_FIELDS = {"migration_error", "migration_source"}
 
+# Server-owned like the two above, and handed out on every rule the card
+# reads (see `_state_payload`), so a read-modify-write client echoes it
+# back - but NOT a field on `Rule` at all. An outcome is what happened to a
+# rule, not part of its definition; it lives in the store's own outcome map,
+# keyed by rule id.
+#
+# Dropped UNCONDITIONALLY, which is where this differs from
+# `_READ_ONLY_FIELDS`. Those have a `keep_server_fields` opt-in for
+# `yaml_io`, because a YAML document is a serialised store and an export
+# that cannot carry the stashed v1 payload cannot show the user the rule it
+# could not migrate. There is no such argument here: a YAML document is the
+# SCHEDULE, and a verdict about last Shabbat re-imported as part of it would
+# be a claim about a fire that never happened. There is also nowhere to put
+# it - `Rule` has no such field, so keeping it would be a TypeError.
+#
+# Forging is the reason this is a drop and not a passthrough. A client that
+# could set it would make the card report "fired" for a rule that never ran,
+# or "blocked" for one that did - which is the precise lie this whole
+# feature exists to make impossible.
+_NEVER_STORED_FIELDS = {"last_outcome"}
+
 
 class RuleValidationError(ValueError):
     """A rule as supplied cannot be built."""
@@ -55,6 +76,14 @@ class RuleValidationError(ValueError):
 def _strip_read_only(data: dict) -> dict:
     """Drop the server-owned fields a client may echo back. See above."""
     return {key: value for key, value in data.items() if key not in _READ_ONLY_FIELDS}
+
+
+def _strip_never_stored(data: dict) -> dict:
+    """Drop the fields no client and no document may ever set. See above."""
+    return {
+        key: value for key, value in data.items()
+        if key not in _NEVER_STORED_FIELDS
+    }
 
 
 def _check_unknown_fields(data: dict, allowed: set[str] = _FIELDS) -> None:
@@ -229,7 +258,7 @@ def changes_from_api(data: dict) -> dict:
     """Validate a partial update into kwargs for dataclasses.replace."""
     if "id" in data:
         raise RuleValidationError("id cannot be changed")
-    payload = _strip_read_only(data)
+    payload = _strip_never_stored(_strip_read_only(data))
     _check_unknown_fields(payload)
     return {field: _coerce(field, value) for field, value in payload.items()}
 
@@ -245,7 +274,9 @@ def rule_from_api(
     defaults to off so a new call site is safe by default; the websocket
     API passes nothing and keeps the old behaviour exactly.
     """
-    payload = {key: value for key, value in data.items() if key != "id"}
+    payload = _strip_never_stored(
+        {key: value for key, value in data.items() if key != "id"}
+    )
     if not keep_server_fields:
         payload = _strip_read_only(payload)
     _check_unknown_fields(

@@ -127,3 +127,57 @@ def test_defaults_take_target_and_data():
     assert validate_defaults({"target": {"entity_id": ["climate.a"]}, "data": {"temperature": 26}})
     with pytest.raises(RuleValidationError):
         validate_defaults({"devices": ["climate.a"]})
+
+
+# --- Task 11: `last_outcome` is server-owned and not a rule field ---------
+
+
+def test_a_forged_last_outcome_is_dropped_from_a_create():
+    """Dropped, not rejected - and never stored.
+
+    `_state_payload` hands `last_outcome` out on every rule, so a client
+    that reads a rule and writes it back sends it whether it means to or
+    not: rejecting it would refuse an honest edit for a field the client
+    never chose. But it must not land either - a client that could set it
+    would make the card claim a rule fired when it never ran.
+    """
+    rule = rule_from_api(
+        {**BASE, "last_outcome": {"outcome": "called", "at": "x", "detail": None}},
+        "r1",
+    )
+    # Not a `Rule` field at all: the outcome map lives in the store, keyed
+    # by rule id. Asserted by absence, so an implementation that quietly
+    # grew the field would fail here rather than pass by coincidence.
+    assert not hasattr(rule, "last_outcome")
+
+
+def test_a_forged_last_outcome_is_dropped_from_a_partial_update():
+    changes = changes_from_api(
+        {"name": "renamed",
+         "last_outcome": {"outcome": "called", "at": "x", "detail": None}}
+    )
+    assert changes == {"name": "renamed"}
+    assert "last_outcome" not in changes
+
+
+def test_yaml_import_cannot_smuggle_a_last_outcome_either():
+    """`keep_server_fields` is for `migration_error`/`migration_source` only.
+
+    A YAML document is a serialised store, which is why those two survive
+    an import - the documented way to inspect an unmigrated rule is to
+    export it. A verdict about last Shabbat is not part of the schedule
+    anybody authors, so this opt-in must NOT widen to cover it. It is the
+    branch a client can reach through the `import_yaml` service, and the
+    only test that drives it.
+    """
+    rule = rule_from_api(
+        {
+            **BASE,
+            "migration_error": "kept",
+            "last_outcome": {"outcome": "called", "at": "x", "detail": None},
+        },
+        "r1",
+        keep_server_fields=True,
+    )
+    assert rule.migration_error == "kept"   # still preserved, deliberately
+    assert not hasattr(rule, "last_outcome")

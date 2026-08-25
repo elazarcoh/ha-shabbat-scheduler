@@ -1103,3 +1103,95 @@ async def test_a_refresh_that_changes_nothing_pushes_nothing(
     await client.send_json({"id": 2, "type": "shabbat_scheduler/rules/list"})
     msg = await client.receive_json()
     assert msg["id"] == 2, "a refresh with no block change pushed anyway"
+
+
+# --- Task 11: the per-rule outcome, on the wire --------------------------
+
+
+async def test_the_payload_carries_each_rules_own_last_outcome(
+    hass, hass_ws_client
+):
+    """One verdict per rule, not one for the whole integration.
+
+    `engine.last_run` never reached the card at all, and could not have
+    usefully: the next rule to act overwrites it, so by the time anyone
+    looks it describes some other rule.
+    """
+    entry = await _setup(hass, [
+        Rule(id="blocked", profile=1, day="1", time=time(11, 0),
+             action="climate.turn_on", target={"entity_id": ["climate.a"]}),
+        Rule(id="ran", profile=1, day="1", time=time(12, 0),
+             action="climate.turn_off", target={"entity_id": ["climate.a"]}),
+        Rule(id="never", profile=1, day="1", time=time(13, 0),
+             action="climate.turn_off", target={"entity_id": ["climate.a"]}),
+    ])
+    store = hass.data[DOMAIN][entry.entry_id]["store"]
+    await store.async_record_outcome("blocked", {
+        "outcome": "blocked", "at": "2026-08-25T18:00:00+00:00",
+        "detail": "condition 1 of 1 (state on input_boolean.kids) not met",
+    })
+    await store.async_record_outcome("ran", {
+        "outcome": "called", "at": "2026-08-25T19:00:00+00:00", "detail": None,
+        "unknown_targets": ["climate.typo"],
+    })
+
+    client = await hass_ws_client(hass)
+    await client.send_json({"id": 1, "type": "shabbat_scheduler/rules/list"})
+    msg = await client.receive_json()
+    assert msg["success"], msg.get("error")
+    by_id = {rule["id"]: rule for rule in msg["result"]["rules"]}
+
+    assert by_id["blocked"]["last_outcome"]["outcome"] == "blocked"
+    assert "input_boolean.kids" in by_id["blocked"]["last_outcome"]["detail"]
+    assert by_id["ran"]["last_outcome"]["outcome"] == "called"
+    # The diagnostics ride ALONGSIDE the outcome rather than replacing it.
+    assert by_id["ran"]["last_outcome"]["unknown_targets"] == ["climate.typo"]
+    # Present and null, not absent: the card reads one field either way.
+    assert "last_outcome" in by_id["never"]
+    assert by_id["never"]["last_outcome"] is None
+
+
+async def test_a_client_cannot_forge_a_last_outcome(hass, hass_ws_client):
+    """A forged verdict is the one lie this feature must make impossible.
+
+    The card now reads `last_outcome` off every rule in the payload, so a
+    read-modify-write client echoes it back and must not be refused for it
+    - but a client that could SET it could make the card report "fired"
+    for a rule that never ran, on the one day nobody can check.
+    """
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    forged = {"outcome": "called", "at": "2020-01-01T00:00:00+00:00",
+              "detail": "never happened"}
+
+    await client.send_json({
+        "id": 1,
+        "type": "shabbat_scheduler/rules/create",
+        "rule": {**NEW_RULE, "last_outcome": forged},
+    })
+    msg = await client.receive_json()
+    # Dropped, not rejected - the echo must keep working, like the two
+    # migration fields before it.
+    assert msg["success"], msg.get("error")
+    rule_id = msg["result"]["rule"]["id"]
+    # It is not a rule field at all, so it cannot even ride along in the
+    # create response.
+    assert "last_outcome" not in msg["result"]["rule"]
+
+    await client.send_json({
+        "id": 2,
+        "type": "shabbat_scheduler/rules/update",
+        "rule_id": rule_id,
+        "changes": {"last_outcome": forged, "name": "renamed"},
+    })
+    msg = await client.receive_json()
+    assert msg["success"], msg.get("error")
+
+    await client.send_json({"id": 3, "type": "shabbat_scheduler/rules/list"})
+    listed = (await client.receive_json())["result"]["rules"][0]
+    assert listed["name"] == "renamed"     # the honest half of the edit landed
+    assert listed["last_outcome"] is None  # the forged half did not
+
+    reloaded = RuleStore(hass)
+    await reloaded.async_load()
+    assert reloaded.last_outcome(rule_id) is None

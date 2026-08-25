@@ -34,6 +34,7 @@ from .const import (
     EVENT_RULE_APPLIED,
     EVENT_RULE_COMPLETED,
     NO_LIVE_TARGETS_NOTE,
+    OUTCOME_PRECEDENCE,
     RETRY_ATTEMPTS,
     RETRY_DELAY_SECONDS,
     SIGNAL_RULES_CHANGED,
@@ -141,6 +142,98 @@ def _targets_every_entity(target: dict) -> bool:
     return ENTITY_MATCH_ALL in _entity_id_values(target)
 
 
+def build_outcome(
+    outcome: str,
+    at: datetime,
+    detail: str | None = None,
+    *,
+    unknown_targets: list[str] | None = None,
+    no_live_targets: bool = False,
+) -> dict:
+    """One rule's durable verdict, in the shape the card reads.
+
+    THE SHAPE, and why it has more than one axis. `outcome` answers "did
+    the call happen, and if not why not" - one of `called`, `would_call`,
+    `failed`, `blocked`, `skipped_stale`. The two optional keys answer a
+    DIFFERENT question: "did it reach anything?". They are not outcomes and
+    must not be flattened into one, because a call can genuinely have been
+    made (`called`) and still have reached nothing real, and calling that
+    `failed` blames a misspelling that is not there - the exact mistake
+    Gap B's first fix made in both directions. `_call` and the logbook
+    already keep the two apart; this keeps them apart in the store too, so
+    the card can say "fired" and "reached nothing" in one breath.
+
+    Both diagnostics are OMITTED when they do not apply, rather than
+    written as `[]`/`False`. A reader that has to tell an explicit False
+    from an absent key ends up rendering a warning-shaped nothing on every
+    healthy rule.
+
+    `at` is stored as an ISO string, not a datetime: this dict goes
+    straight into `.storage` (JSON) and straight out over the websocket,
+    and a value that survives neither trip is not a durable record.
+    """
+    record: dict = {"outcome": outcome, "at": at.isoformat(), "detail": detail}
+    if unknown_targets:
+        record["unknown_targets"] = list(unknown_targets)
+    if no_live_targets:
+        record["no_live_targets"] = True
+    return record
+
+
+def outcome_from_results(results: list[dict], at: datetime) -> dict | None:
+    """Fold a rule's per-call results into the ONE verdict a row can show.
+
+    A rule is one row on the card but may be several calls: `expand_action`
+    turns an authored `climate.set_temperature` carrying an `hvac_mode`
+    into up to three. So the row reports the worst outcome among them
+    (`OUTCOME_PRECEDENCE`, shared with the logbook so the two renderings
+    of the same verdict cannot disagree), the first reason belonging to
+    that outcome, and the UNION of the target diagnostics - a typo in the
+    target belongs to every call the rule makes, so reading only the call
+    that happens to carry it would drop it on a rule whose first call
+    succeeded.
+
+    None when there is nothing to report at all, so a rule that somehow
+    produced no results keeps its previous, true verdict instead of having
+    it overwritten by an empty one.
+    """
+    if not results:
+        return None
+    outcomes = {item.get("outcome") for item in results}
+    outcome = next(
+        (candidate for candidate in OUTCOME_PRECEDENCE if candidate in outcomes),
+        None,
+    )
+    if outcome is None:
+        return None
+    detail = next(
+        (
+            str(item["error"])
+            for item in results
+            if item.get("outcome") == outcome and item.get("error")
+        ),
+        None,
+    )
+    # dict.fromkeys: de-duplicated but in first-seen order, so the row
+    # names the ids in the order the rule names them.
+    unknown = list(
+        dict.fromkeys(
+            entity_id
+            for item in results
+            for entity_id in item.get("unknown_targets") or ()
+        )
+    )
+    return build_outcome(
+        outcome,
+        at,
+        detail,
+        unknown_targets=unknown,
+        no_live_targets=any(
+            item.get("no_live_targets") is True for item in results
+        ),
+    )
+
+
 class ShabbatEngine:
     """Applies rules by handing their action to Home Assistant to execute."""
 
@@ -214,6 +307,14 @@ class ShabbatEngine:
                 self.last_run = results
                 self.last_run_at = dt_util.utcnow()
                 self._fire_completed(rule, results)
+                # The same words the logbook row carries, deliberately:
+                # the person reading the card and the person reading the
+                # logbook must not be told two different things about why
+                # one rule did nothing.
+                await self._async_record_outcome(
+                    rule,
+                    build_outcome("blocked", self.last_run_at, blocked_by),
+                )
                 return results
 
         async with self._locks[rule.id]:
@@ -226,7 +327,40 @@ class ShabbatEngine:
         self.last_run = results
         self.last_run_at = dt_util.utcnow()
         self._fire_completed(rule, results)
+        await self._async_record_outcome(
+            rule, outcome_from_results(results, self.last_run_at)
+        )
         return results
+
+    async def _async_record_outcome(self, rule: Rule, record: dict | None) -> None:
+        """Make this rule's own verdict durable, and put it on the card.
+
+        `last_run` is ONE value for the whole integration, overwritten by
+        the next rule to act, so it can say what happened most recently and
+        nothing about what happened to any particular rule. That is half of
+        "a rule that does not fire must say why" missing, and the half the
+        card needs.
+
+        The push is separate from the write, and has to be. The store's
+        change listener reschedules the engine (`_rules_changed`,
+        __init__.py), so recording through it would refresh from inside a
+        rule's own application - a re-evaluation, on the one day nobody can
+        intervene. `async_record_outcome` therefore stays silent and the
+        signal is sent from here: its only subscribers are switch.py's
+        `_sync` and websocket_api's `_forward`, neither of which writes to
+        the store or refreshes, so nothing can come back round. Sent
+        outside any lock, like `async_refresh`'s, because the dispatcher
+        runs @callback subscribers synchronously.
+
+        Without the push the outcome exists but appears nowhere until the
+        next unrelated edit: nothing else pushes between rules, since the
+        zmanim sensors do not change again until havdalah. A wall tablet
+        left open through Shabbat is exactly the reader this is for.
+        """
+        if record is None:
+            return
+        await self.store.async_record_outcome(rule.id, record)
+        async_dispatcher_send(self.hass, SIGNAL_RULES_CHANGED)
 
     def _fire_completed(self, rule: Rule, results: list[dict]) -> None:
         """Announce the outcome, carrying enough to describe itself.
@@ -630,6 +764,17 @@ class ShabbatEngine:
                     "reason": f"{now - item.when} late, window {within}",
                 }
                 results.append(skipped)
+                # Recorded here and nowhere else: this path never reaches
+                # `async_apply_rule`, so the durable per-rule outcome has
+                # to be written on the skip itself. It is also the outcome
+                # most likely to be READ - the morning after a restart,
+                # asking why the lights never came on.
+                await self._async_record_outcome(
+                    item.rule,
+                    build_outcome(
+                        "skipped_stale", dt_util.utcnow(), skipped["reason"]
+                    ),
+                )
                 # Fired per rule, not only folded into the aggregate below.
                 # This path never reaches `async_apply_rule`, so it used to
                 # emit no event whatsoever: the skip lived only in the

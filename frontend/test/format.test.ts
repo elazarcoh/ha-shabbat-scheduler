@@ -15,7 +15,7 @@ const rule = (over: Partial<RuleData>): RuleData => ({
   id: 'r', profile: 1, day: '1', time: '11:00:00',
   action: 'climate.turn_on', target: {}, data: {}, condition: [],
   replay: { enabled: false }, name: null, icon: null, enabled: true,
-  color: null,
+  color: null, last_outcome: null,
   ...over,
 });
 

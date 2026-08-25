@@ -32,6 +32,55 @@ export interface RuleData {
    */
   migration_error?: string | null;
   migration_source?: Record<string, unknown> | null;
+  /**
+   * What happened the last time this rule came due. `null` for a rule that
+   * never has.
+   *
+   * Always present on every rule in `_state_payload` - the server attaches
+   * it per rule rather than storing it on the rule, so it is required here
+   * and nullable, not optional. Also server-owned: `rule_schema.py` drops
+   * it on the way back in, so echoing it is safe and forging it is not.
+   *
+   * This exists because `engine.last_run` is ONE value for the whole
+   * integration, overwritten by the next rule to act. A rule that does not
+   * fire must say why, in the logbook AND on the card; without a per-rule
+   * record the card could only ever say what happened most recently, to
+   * some other rule.
+   */
+  last_outcome: LastOutcome | null;
+}
+
+/**
+ * One rule's own verdict, as `engine.build_outcome` writes it.
+ *
+ * TWO AXES, deliberately not collapsed into one. `outcome` says whether
+ * the call happened and, if not, why not. The two optional diagnostics say
+ * whether it reached anything - a different question, whose answer can be
+ * "no" while the call genuinely was made. `called` plus `no_live_targets`
+ * is a real and common combination (an existing group whose members are
+ * all unavailable), and rendering it as a failure would blame a
+ * misspelling that is not there.
+ *
+ * The diagnostics are ABSENT rather than `[]`/`false` when they do not
+ * apply, so a healthy rule cannot render a warning-shaped nothing.
+ */
+export interface LastOutcome {
+  /**
+   * `called` | `would_call` | `failed` | `blocked` | `skipped_stale`.
+   *
+   * Typed as `string`, not a union, on purpose: this arrives over a socket
+   * from a server that may be a version ahead, and the card must render
+   * *something* for a value it does not know rather than a blank line. See
+   * `formatOutcome`'s fallback.
+   */
+  outcome: string;
+  at: string;                    // ISO 8601, UTC
+  /** The reason, in the same words the logbook row uses. */
+  detail: string | null;
+  /** Entity ids the rule names that do not exist. */
+  unknown_targets?: string[];
+  /** The call was made and resolved to no entity that exists. */
+  no_live_targets?: boolean;
 }
 
 /** Whether, and how late, a rule may be re-run after a restart. */

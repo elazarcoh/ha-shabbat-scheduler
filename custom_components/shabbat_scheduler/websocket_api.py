@@ -72,7 +72,24 @@ def _state_payload(hass: HomeAssistant, data: dict) -> dict:
     store, engine = data["store"], data["engine"]
     return {
         "defaults": store.defaults,
-        "rules": [rule_to_dict(rule) for rule in store.rules],
+        "rules": [
+            {
+                **rule_to_dict(rule),
+                # Attached here, not in `rule_to_dict`, because it is not
+                # part of a rule: it is what HAPPENED to one. Keeping it
+                # out of `rule_to_dict` keeps it out of `.storage`'s rule
+                # entries and out of the YAML export, where a report about
+                # last Shabbat would read as part of the schedule.
+                #
+                # Always present, `None` for a rule that has never come
+                # due, so the card has one field to read rather than a key
+                # that may or may not exist. `rule_schema` drops it on the
+                # way back in, so a client can echo a rule it read here
+                # without being refused - and cannot forge a verdict.
+                "last_outcome": store.last_outcome(rule.id),
+            }
+            for rule in store.rules
+        ],
         "enabled": store.enabled,
         "dry_run": store.dry_run,
         "warnings": _conflict_warnings(hass, store),

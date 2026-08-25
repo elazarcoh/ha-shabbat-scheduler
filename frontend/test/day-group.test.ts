@@ -35,11 +35,11 @@ describe('shabbat-day-group', () => {
           { id: 'a', profile: 1, day: '1', time: '11:00:00',
             action: 'climate.turn_on', target: {}, data: {}, condition: [],
             replay: { enabled: false }, name: null, icon: null,
-            enabled: true, color: null },
+            enabled: true, color: null, last_outcome: null },
           { id: 'b', profile: 1, day: '1', time: '18:00:00',
             action: 'climate.turn_off', target: {}, data: {}, condition: [],
             replay: { enabled: false }, name: null, icon: null,
-            enabled: true, color: null },
+            enabled: true, color: null, last_outcome: null },
         ],
       }),
     });

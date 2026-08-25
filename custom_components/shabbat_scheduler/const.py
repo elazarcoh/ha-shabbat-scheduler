@@ -27,6 +27,18 @@ UNKNOWN_ENTITY_PREFIX = "no such entity: "
 # Shared by the engine and the logbook for the same reason as above.
 NO_LIVE_TARGETS_NOTE = "reached no entity that exists"
 
+# Which outcome a multi-call rule reports, worst first. The climate shim
+# turns one authored action into up to three calls; if `set_hvac_mode`
+# succeeds and `set_temperature` does not, the rule must read as a failure.
+# "The first call worked" is not what the family needs to know.
+#
+# Shared for the same reason the two wordings above are: the logbook row and
+# the durable per-rule outcome the card renders are two renderings of ONE
+# verdict, and two independently-spelled precedence orders would eventually
+# disagree about the same rule - the card saying it fired while the logbook
+# says it did not.
+OUTCOME_PRECEDENCE = ("failed", "blocked", "skipped_stale", "would_call", "called")
+
 CONF_CANDLE_SENSOR = "candle_sensor"
 CONF_HAVDALAH_SENSOR = "havdalah_sensor"
 

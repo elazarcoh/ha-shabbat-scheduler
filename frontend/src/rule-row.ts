@@ -1,6 +1,14 @@
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
-import { formatWarning, ruleBrief, ruleColour, warningsForRule } from './format';
+import {
+  formatOutcome,
+  formatOutcomeAt,
+  formatWarning,
+  outcomeIsBad,
+  ruleBrief,
+  ruleColour,
+  warningsForRule,
+} from './format';
 import { t } from './strings';
 import type { Defaults, RuleData, WarningData } from './types';
 
@@ -38,6 +46,20 @@ export class ShabbatRuleRow extends LitElement {
       overflow-wrap: anywhere;
       margin-block-start: 2px;
     }
+    /* Inline and always visible, for the same reason .conflict-detail is:
+       there is no hover on the wall tablet this card is built for, so a
+       tooltip would show nobody anything. */
+    .last-outcome {
+      font-size: 0.85em;
+      color: var(--secondary-text-color, #666);
+      overflow-wrap: anywhere;
+      margin-block-start: 2px;
+    }
+    /* Not red: a rule that did not run is not an error in the card, and
+       the conflict warning colour is already taken. Distinct enough to
+       find while scanning, quiet enough not to shout on every row. */
+    .last-outcome.bad { color: var(--error-color, #c62828); }
+    .last-outcome-at { opacity: 0.8; margin-inline-start: 0.5em; }
     .tag { font-size: 0.8em; color: var(--secondary-text-color, #666); }
     .row { cursor: pointer; }
     .row:focus-visible { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: -2px; }
@@ -73,6 +95,11 @@ export class ShabbatRuleRow extends LitElement {
   override render() {
     const conflicts = warningsForRule(this.rule.id, this.warnings);
     const title = this.rule.name;
+    // Nothing at all for a rule that has never come due - an empty
+    // outcome line on every row of a fresh install would train the reader
+    // to skip exactly the line that matters on the one night it appears.
+    const outcome = this.rule.last_outcome ?? null;
+    const when = outcome === null ? '' : formatOutcomeAt(outcome.at, this.language);
     return html`
       <div
         class="row ${this.rule.enabled ? '' : 'disabled'}"
@@ -91,6 +118,12 @@ export class ShabbatRuleRow extends LitElement {
         <div class="body">
           ${title ? html`<div class="title">${title}</div>` : nothing}
           <div class="brief">${ruleBrief(this.rule, this.defaults)}</div>
+          ${outcome !== null
+            ? html`<div class="last-outcome ${outcomeIsBad(outcome) ? 'bad' : ''}">
+                <span>${formatOutcome(outcome, this.language)}</span>
+                ${when ? html`<span class="last-outcome-at">${when}</span>` : nothing}
+              </div>`
+            : nothing}
           ${conflicts.length
             ? html`<div class="conflict-detail">
                 ${conflicts.map(

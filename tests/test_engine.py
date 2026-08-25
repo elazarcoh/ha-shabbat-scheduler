@@ -1627,3 +1627,290 @@ async def test_concurrent_rules_get_distinct_contexts(hass, engine, _rule ):
 
     assert len(seen) == 2
     assert len(set(seen)) == 2
+
+
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
+
+from custom_components.shabbat_scheduler.const import SIGNAL_RULES_CHANGED
+
+# --- Task 11: the durable, PER-RULE outcome ------------------------------
+#
+# `engine.last_run` is a single transient value for the whole integration,
+# overwritten by the next rule to act, so it can never answer "why did
+# *this* rule not fire?" tomorrow. The logbook half of the constraint held;
+# these pin the half the card reads.
+
+
+async def _seeded(engine, rule):
+    """The rule as the engine really sees it: present in the store.
+
+    `RuleStore.async_save` prunes outcomes for rules that no longer exist,
+    so an outcome recorded for a rule that was never in the store is
+    correctly dropped again. In production `async_apply_rule` is only ever
+    reached for a rule the store holds - a timer built from it, or a
+    catch-up pass over it - so seeding is what makes these tests match
+    reality rather than a shortcut around it.
+    """
+    await engine.store.async_replace_all({}, [rule])
+    return rule
+
+
+async def test_a_rule_that_ran_records_that_it_ran(hass, engine, _rule):
+    hass.states.async_set("input_boolean.t", "off")
+    rule = await _seeded(engine, _rule())
+
+    await engine.async_apply_rule(rule)
+    await hass.async_block_till_done()
+
+    outcome = engine.store.last_outcome(rule.id)
+    assert outcome["outcome"] == "called"
+    assert outcome["detail"] is None
+    # The two target diagnostics are ADDITIVE keys, absent on a healthy
+    # call. Asserted by absence, not by comparing the whole dict: an
+    # explicit `"no_live_targets": False` would render a warning on the
+    # card for a rule that worked perfectly.
+    assert "unknown_targets" not in outcome
+    assert "no_live_targets" not in outcome
+    # A verdict with no timestamp cannot be told apart from last week's.
+    assert dt_util.parse_datetime(outcome["at"]) is not None
+
+
+async def test_a_dry_run_records_that_it_would_have_run(hass, engine, _rule):
+    """`would_call` is not `called`, and the card must not conflate them."""
+    hass.states.async_set("input_boolean.t", "off")
+    await engine.store.async_set_dry_run(True)
+    rule = await _seeded(engine, _rule())
+
+    await engine.async_apply_rule(rule)
+
+    assert engine.store.last_outcome(rule.id)["outcome"] == "would_call"
+
+
+async def test_a_blocked_rule_records_which_condition_held_it_back(
+    hass, engine, _rule
+):
+    """The card says the same words the logbook says.
+
+    `_condition_block_reason` already produces this wording for the
+    logbook row; reusing it verbatim is the point, not duplication - the
+    person reading the card and the person reading the logbook must not be
+    told two different things about the same rule.
+    """
+    hass.states.async_set("input_boolean.kids", "off")
+    rule = await _seeded(engine, _rule(condition=(
+        {"condition": "state", "entity_id": "input_boolean.kids", "state": "on"},
+    )))
+
+    await engine.async_apply_rule(rule)
+
+    outcome = engine.store.last_outcome(rule.id)
+    assert outcome["outcome"] == "blocked"
+    assert outcome["detail"] == (
+        "condition 1 of 1 (state on input_boolean.kids) not met"
+    )
+
+
+async def test_a_failed_rule_records_why_it_failed(hass, engine, _rule):
+    """"failed" with nothing to read is a rule that does not say why."""
+    hass.states.async_set("switch.t", "off")
+
+    async def always_fail(_call):
+        raise RuntimeError("cloud auth expired")
+
+    hass.services.async_register("switch", "turn_on", always_fail)
+    rule = await _seeded(
+        engine, _rule(action="switch.turn_on", entities=("switch.t",))
+    )
+
+    with patch("custom_components.shabbat_scheduler.engine.asyncio.sleep"):
+        await engine.async_apply_rule(rule)
+
+    outcome = engine.store.last_outcome(rule.id)
+    assert outcome["outcome"] == "failed"
+    assert "cloud auth expired" in outcome["detail"]
+    assert "RuntimeError" in outcome["detail"]
+
+
+async def test_a_stale_replay_skip_records_how_late_it_was(hass, engine):
+    """The skip never reaches `async_apply_rule` at all.
+
+    `async_catch_up` appends its result and `continue`s, so the recording
+    has to happen on that path too - otherwise the one outcome the user
+    most needs to see the morning after a restart is the one the card
+    cannot show.
+    """
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.store.async_set_enabled(True)
+    hass.states.async_set("input_boolean.t", "off")
+    await engine.store.async_replace_all({}, [
+        Rule(id="on11", profile=1, day="1", time=time(11, 0), action=_ON,
+             target={"entity_id": ["input_boolean.t"]},
+             replay=Replay(enabled=True, within=timedelta(hours=1))),
+    ])
+    await engine.async_refresh()
+
+    with freeze_time("2026-08-15T14:00:00+00:00"):   # 17:00 local, 6h late
+        await engine.async_catch_up()
+    await hass.async_block_till_done()
+
+    outcome = engine.store.last_outcome("on11")
+    assert outcome["outcome"] == "skipped_stale"
+    # The same string the logbook row carries: how late, and the window it
+    # blew. "too old" without either number is not actionable.
+    assert "late" in outcome["detail"]
+    assert "1:00:00" in outcome["detail"]
+    assert outcome["at"] == "2026-08-15T14:00:00+00:00"
+    # The rule really was not replayed - the outcome is not decoration.
+    assert hass.states.get("input_boolean.t").state == "off"
+
+
+async def test_a_typo_beside_a_working_entity_records_called_AND_the_typo(
+    hass, engine, _rule
+):
+    """`called` and a diagnostic, at once.
+
+    A partial typo still fires the rest of the target, so the outcome is
+    genuinely `called` - and a row saying only "fired" while one named
+    entity silently did nothing is the quiet failure this integration
+    exists to prevent. The two are orthogonal, so they compose rather than
+    displacing one another.
+    """
+    hass.states.async_set("input_boolean.t", "off")
+    rule = await _seeded(engine, _rule(
+        entities=("input_boolean.t", "input_boolean.nope"),
+    ))
+
+    await engine.async_apply_rule(rule)
+    await hass.async_block_till_done()
+
+    outcome = engine.store.last_outcome(rule.id)
+    assert outcome["outcome"] == "called"
+    assert outcome["unknown_targets"] == ["input_boolean.nope"]
+    assert "no_live_targets" not in outcome
+
+
+async def test_a_call_that_reached_nothing_records_that_too(hass, engine, _rule):
+    """The third diagnostic, and it is NOT `failed`.
+
+    The call genuinely happened and nothing is misspelt, so downgrading
+    the outcome would be a lie in the opposite direction. It rides
+    alongside `called` instead.
+    """
+    hass.states.async_set("group.leftover", "on")
+    async_mock_service(hass, "input_boolean", "turn_on")
+    rule = await _seeded(engine, dataclasses.replace(
+        _rule(action=_ON, entities=()), target={"entity_id": ["group.leftover"]},
+    ))
+
+    await engine.async_apply_rule(rule)
+    await hass.async_block_till_done()
+
+    outcome = engine.store.last_outcome(rule.id)
+    assert outcome["outcome"] == "called"
+    assert outcome["no_live_targets"] is True
+    assert "unknown_targets" not in outcome
+
+
+async def test_a_multi_call_rule_records_the_worst_of_its_calls(hass, engine):
+    """The climate shim turns one authored action into up to three calls.
+
+    If any of them fails, "it ran" is not what the family needs to know.
+    Same precedence the logbook row uses, from the same constant in
+    `const.py`, so the row and the logbook line cannot drift into
+    disagreeing about the same rule.
+
+    DRIVEN WHERE "FIRST" AND "WORST" DIFFER, which is the whole point.
+    `expand_action` emits `set_hvac_mode` BEFORE `set_temperature`, so
+    failing the hvac call would put the failure in `results[0]` and an
+    implementation that simply reported the first result would pass while
+    proving nothing. The FIRST call here succeeds and the SECOND fails, so
+    only a real worst-of fold gets this right. Confirmed by reverting the
+    fold to `results[0]["outcome"]`: without this direction the suite
+    stayed green.
+    """
+    async def always_fail(_call):
+        raise RuntimeError("unit did not answer")
+
+    async_mock_service(hass, "climate", "set_hvac_mode")
+    hass.services.async_register("climate", "set_temperature", always_fail)
+    hass.states.async_set("climate.ac", "off")
+
+    rule = await _seeded(engine, Rule(
+        id="r", profile=1, day="1", time=time(11, 0),
+        action="climate.set_temperature",
+        target={"entity_id": ["climate.ac"]},
+        data={"hvac_mode": "cool", "temperature": 22},
+    ))
+    with patch("custom_components.shabbat_scheduler.engine.asyncio.sleep"):
+        await engine.async_apply_rule(rule)
+    await hass.async_block_till_done()
+
+    outcome = engine.store.last_outcome("r")
+    assert outcome["outcome"] == "failed"
+    assert "unit did not answer" in outcome["detail"]
+
+
+async def test_one_rules_outcome_does_not_erase_anothers(hass, engine):
+    """The whole point. `last_run` held ONE result for the integration."""
+    hass.states.async_set("input_boolean.t", "off")
+    hass.states.async_set("input_boolean.kids", "off")
+    blocked = Rule(
+        id="blocked", profile=1, day="1", time=time(11, 0), action=_ON,
+        target={"entity_id": ["input_boolean.t"]},
+        condition=({"condition": "state", "entity_id": "input_boolean.kids",
+                    "state": "on"},),
+    )
+    ran = Rule(
+        id="ran", profile=1, day="1", time=time(12, 0), action=_ON,
+        target={"entity_id": ["input_boolean.t"]},
+    )
+    await engine.store.async_replace_all({}, [blocked, ran])
+
+    await engine.async_apply_rule(blocked)
+    await engine.async_apply_rule(ran)
+    await hass.async_block_till_done()
+
+    assert engine.store.last_outcome("blocked")["outcome"] == "blocked"
+    assert engine.store.last_outcome("ran")["outcome"] == "called"
+
+
+async def test_an_outcome_reaches_an_open_card(hass, engine, _rule):
+    """Durable is not enough: the constraint says "and on the card".
+
+    A wall tablet left open through Shabbat renders only what was pushed
+    to it, and nothing else pushes between rules - the zmanim sensors do
+    not change again until havdalah. Without this the outcome appears
+    only after the next unrelated edit, i.e. not during the block anyone
+    would want to read it in.
+    """
+    hass.states.async_set("input_boolean.t", "off")
+    rule = await _seeded(engine, _rule())
+    pushes = []
+    async_dispatcher_connect(
+        hass, SIGNAL_RULES_CHANGED, lambda: pushes.append(1)
+    )
+
+    await engine.async_apply_rule(rule)
+    await hass.async_block_till_done()
+
+    assert pushes, "the outcome was recorded where no open card can see it"
+
+
+async def test_recording_an_outcome_re_evaluates_nothing(hass, engine, _rule):
+    """Fire once, never re-assert.
+
+    The STORE's change listener is `_rules_changed` (__init__.py), which
+    reschedules the engine. If recording went through it, every rule that
+    fired would trigger a refresh from inside its own application, on the
+    one day nobody can intervene. The card is pushed over the dispatcher
+    instead, which has no path back into the store.
+    """
+    hass.states.async_set("input_boolean.t", "off")
+    rule = await _seeded(engine, _rule())
+    notified = []
+    engine.store.async_set_change_listener(lambda: notified.append(1))
+
+    await engine.async_apply_rule(rule)
+    await hass.async_block_till_done()
+
+    assert notified == []

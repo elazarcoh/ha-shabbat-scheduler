@@ -41,6 +41,7 @@ from .const import (
     EVENT_RULE_APPLIED,
     EVENT_RULE_COMPLETED,
     NO_LIVE_TARGETS_NOTE,
+    OUTCOME_PRECEDENCE,
     UNKNOWN_ENTITY_PREFIX,
 )
 
@@ -55,12 +56,6 @@ _ICON_FAILED = "mdi:alert-circle"
 _ICON_STALE = "mdi:clock-alert-outline"
 _ICON_DRY_RUN = "mdi:test-tube"
 _ICON_CATCH_UP = "mdi:restart"
-
-# Which outcome a multi-call rule reports, worst first. The climate shim
-# turns one authored action into up to three calls; if `set_hvac_mode`
-# succeeds and `set_temperature` does not, the row must read as a failure.
-# "The first call worked" is not what the family needs to know.
-_OUTCOME_PRECEDENCE = ("failed", "blocked", "skipped_stale", "would_call", "called")
 
 
 def _rule_label(data) -> str:
@@ -107,7 +102,7 @@ def _results(data) -> list[dict]:
 
 def _overall(results: list[dict]) -> str | None:
     outcomes = {item.get("outcome") for item in results}
-    for candidate in _OUTCOME_PRECEDENCE:
+    for candidate in OUTCOME_PRECEDENCE:
         if candidate in outcomes:
             return candidate
     return None

@@ -804,6 +804,73 @@ and check whether the card actually reads the field that moved. Do not silence
 it by editing the JSON — `payload-contract.test.ts` would then be rendering a
 shape the server does not send, which is the original failure exactly.
 
+**Its clock is frozen, and that is not incidental.** The generator runs with
+`enabled=True, dry_run=True`, so restart catch-up really runs and the one
+replay-enabled rule in the fixture really records a `last_outcome`. That
+outcome carries `at`, and a stale skip's `detail` says *how late* the rule was
+— both read from the clock. Against the real clock the regenerated fixture
+therefore differs on every run, down to the microsecond, and a guard that fails
+at random is a guard the next frustrated developer switches off. So
+`tests/test_frontend_fixture.py` freezes time around the **setup call only**,
+to an instant inside the block its ZMANIM describe. `hass_ws_client`'s auth
+refuses a frozen clock outright (`auth_invalid`), so the socket is opened
+afterwards, in real time — harmless, because everything the payload reports was
+already decided and recorded during setup. The frozen instant is also chosen so
+every rule is already past, leaving no timer armed across the un-freeze.
+
+## Each rule remembers its own last outcome; `last_run` remembers only one
+
+`engine.last_run` is a single value for the whole integration, overwritten by
+the next rule to act. It can say what happened most recently; it can never say
+what happened to *this* rule. Half of "a rule that does not fire must say why"
+therefore held only in the logbook, and the card — the thing on the wall — had
+nothing to show.
+
+`RuleStore` now keeps a `last_outcomes` map keyed by rule id, persisted beside
+the rules, and `_state_payload` attaches each rule's own entry as
+`last_outcome`. The record is
+`{outcome, at, detail, unknown_targets?, no_live_targets?}`, and it has **two
+axes on purpose**:
+
+- `outcome` — `called` | `would_call` | `failed` | `blocked` | `skipped_stale`.
+  Did the call happen, and if not, why not.
+- `unknown_targets` / `no_live_targets` — did it *reach* anything. A different
+  question, and one whose answer can be "no" while the call genuinely was made.
+  `called` **plus** `no_live_targets` is a real, common combination (an
+  existing group whose members are all unavailable); collapsing it into
+  `failed` would blame a misspelling that is not there, which is the mistake
+  Gap B's first fix made in both directions. Both keys are **absent** rather
+  than `[]`/`false` when they do not apply, so a healthy rule cannot render a
+  warning-shaped nothing.
+
+Four things worth knowing about it:
+
+- **`detail` is the server's own wording, reused verbatim.**
+  `_condition_block_reason` already writes "condition 1 of 1 (state on
+  input_boolean.kids) not met" for the logbook. The card showing the same words
+  is the point: two renderings of one verdict, never two different stories
+  about the same rule. `OUTCOME_PRECEDENCE` lives in `const.py` for the same
+  reason — a multi-call rule's row and its logbook line must agree on which of
+  its calls decides the verdict.
+- **Recording does not notify the store's change listener.** That listener is
+  `_rules_changed`, which reschedules the engine, so notifying would refresh
+  from inside a rule's own application — a re-evaluation, on the one day nobody
+  can intervene. The engine sends `SIGNAL_RULES_CHANGED` itself instead, whose
+  only subscribers are `switch.py`'s `_sync` and the websocket `_forward`;
+  neither writes to the store or refreshes, so nothing comes back round. Fire
+  once, never re-assert — and an open card still sees the outcome as it lands.
+- **No `STORAGE_VERSION` bump.** The key is absent on every store written
+  before it and `last_outcomes_from_dict` never raises, so an alpha user's
+  rules load unchanged; it is written only once there is something to write, so
+  a store that has never fired keeps exactly the shape it always had.
+  `test_a_store_written_before_last_outcome_existed_still_loads` is the proof
+  rather than the claim.
+- **Outcomes are pruned for deleted rules on every save**, so the map is
+  bounded by the rule set rather than by uptime. `last_outcome` is also
+  server-owned: `rule_schema.py` drops it on the way in (unconditionally, not
+  under `keep_server_fields`), so a client can echo a rule it read without
+  being refused and still cannot forge a verdict.
+
 ## Deployment note
 
 Nothing here has been installed on the live instance. The integration ships

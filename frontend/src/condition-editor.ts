@@ -158,10 +158,19 @@ export class ShabbatConditionEditor extends LitElement {
   };
 
   private _onRemove(index: number) {
-    // Errors are keyed by index, so removing a row would leave every later
-    // error pointing at the wrong row. Clearing them is correct rather than
-    // lazy: the rows all re-render from `value` immediately after this.
-    this._errors = {};
+    // Errors are keyed by index, so removing a row shifts every later row
+    // up by one. Re-index rather than clear: clearing would silently drop
+    // a genuine error on an untouched row (its broken text is still right
+    // there in that row's textarea), and hasError would report "clean"
+    // while a row still holds text that was never saved.
+    const errors: Record<number, string> = {};
+    for (const [key, message] of Object.entries(this._errors)) {
+      const i = Number(key);
+      if (i < index) errors[i] = message;
+      else if (i > index) errors[i - 1] = message;
+      // i === index: this row is being removed, so its error goes with it.
+    }
+    this._errors = errors;
     this._emit(this.value.filter((_, i) => i !== index));
   }
 }

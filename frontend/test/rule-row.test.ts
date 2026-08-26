@@ -415,6 +415,48 @@ describe('shabbat-rule-row', () => {
   });
 });
 
+describe('the row-level enable/disable toggle', () => {
+  it('renders a compact boolean selector for a writer', async () => {
+    const el = await render({ rule: rule({}), canWrite: true });
+    const sel = el.shadowRoot!.querySelector('ha-selector.row-toggle') as any;
+    expect(sel).not.toBeNull();
+    expect(sel.selector).toEqual({ boolean: {} });
+    expect(sel.value).toBe(true);
+  });
+
+  it('offers no toggle to a read-only user', async () => {
+    const el = await render({ rule: rule({}), canWrite: false });
+    expect(el.shadowRoot!.querySelector('ha-selector.row-toggle')).toBeNull();
+  });
+
+  it('fires rule-toggle-enabled naming the whole rule, not just its id', async () => {
+    const el = await render({ rule: rule({ id: 'a', enabled: true }), canWrite: true });
+    let detail: any = null;
+    el.addEventListener('rule-toggle-enabled', (e: Event) => {
+      detail = (e as CustomEvent).detail;
+    });
+    const sel = el.shadowRoot!.querySelector('ha-selector.row-toggle') as any;
+    sel.dispatchEvent(new CustomEvent('value-changed', { detail: { value: false } }));
+    expect(detail.rule.id).toBe('a');
+  });
+
+  it('does not open the dialog when the toggle is used', async () => {
+    const el = await render({ rule: rule({ id: 'a' }), canWrite: true });
+    let opened = false;
+    el.addEventListener('rule-open', () => { opened = true; });
+    const sel = el.shadowRoot!.querySelector('ha-selector.row-toggle') as any;
+    sel.dispatchEvent(new CustomEvent('click', { bubbles: true, composed: true }));
+    expect(opened).toBe(false);
+  });
+
+  it('shows a per-row error when the toggle write is rejected', async () => {
+    const el = await render({
+      rule: rule({}), canWrite: true, toggleError: 'That did not go through.',
+    });
+    expect(el.shadowRoot!.textContent).toContain('That did not go through.');
+  });
+});
+
 describe('shabbat-rule-row mobile layout', () => {
   it('drops to two lines under 600px: time+dot+title on line 1, the rest stacked', () => {
     const cssText = (ShabbatRuleRow.styles as unknown as { cssText: string }).cssText;

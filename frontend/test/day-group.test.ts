@@ -88,4 +88,22 @@ describe('shabbat-day-group', () => {
     const el = await render({ group: group({ rules: [] }), canWrite: true });
     expect(el.shadowRoot!.querySelector('.add')).not.toBeNull();
   });
+
+  it('threads canWrite and the matching toggle error down to each row', async () => {
+    const el = await render({
+      group: group({
+        rules: [
+          { id: 'a', profile: 1, day: '1', time: '11:00:00',
+            action: 'climate.turn_on', target: {}, data: {}, condition: [],
+            replay: { enabled: false }, name: null, icon: null,
+            enabled: true, color: null, last_outcome: null },
+        ],
+      }),
+      canWrite: true,
+      toggleErrors: { a: 'That did not go through.' },
+    });
+    const row = el.shadowRoot!.querySelector('shabbat-rule-row') as any;
+    expect(row.canWrite).toBe(true);
+    expect(row.toggleError).toBe('That did not go through.');
+  });
 });

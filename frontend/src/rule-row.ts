@@ -17,6 +17,8 @@ export class ShabbatRuleRow extends LitElement {
   @property({ attribute: false }) rule!: RuleData;
   @property({ attribute: false }) defaults: Defaults = {};
   @property({ attribute: false }) warnings: WarningData[] = [];
+  @property({ type: Boolean }) canWrite = false;
+  @property() toggleError: string | null = null;
   @property() language = 'en';
 
   static override styles = css`
@@ -61,6 +63,13 @@ export class ShabbatRuleRow extends LitElement {
     .last-outcome.bad { color: var(--error-color, #c62828); }
     .last-outcome-at { opacity: 0.8; margin-inline-start: 0.5em; }
     .tag { font-size: 0.8em; color: var(--secondary-text-color, #666); }
+    .row-toggle { flex: none; }
+    .row-error {
+      color: var(--error-color, #c62828);
+      font-size: 0.85em;
+      overflow-wrap: anywhere;
+      margin-block-start: 2px;
+    }
     .row { cursor: pointer; }
     .row:focus-visible { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: -2px; }
     /* Below 600px, .body's children (title, brief, last-outcome,
@@ -126,11 +135,32 @@ export class ShabbatRuleRow extends LitElement {
           }
         }}
       >
+        ${this.canWrite
+          ? html`<ha-selector
+              class="row-toggle"
+              .selector=${{ boolean: {} }}
+              .value=${this.rule.enabled}
+              @click=${(event: Event) => event.stopPropagation()}
+              @keydown=${(event: Event) => event.stopPropagation()}
+              @value-changed=${() => {
+                this.dispatchEvent(
+                  new CustomEvent('rule-toggle-enabled', {
+                    detail: { rule: this.rule },
+                    bubbles: true,
+                    composed: true,
+                  }),
+                );
+              }}
+            ></ha-selector>`
+          : nothing}
         <span class="dot" style="background:${ruleColour(this.rule)}"></span>
         <span class="time">${this.rule.time.slice(0, 5)}</span>
         <div class="body">
           ${title ? html`<div class="title">${title}</div>` : nothing}
           <div class="brief">${ruleBrief(this.rule, this.defaults)}</div>
+          ${this.toggleError !== null
+            ? html`<div class="row-error">${this.toggleError}</div>`
+            : nothing}
           ${outcome !== null
             ? html`<div class="last-outcome ${outcomeIsBad(outcome) ? 'bad' : ''}">
                 <span>${formatOutcome(outcome, this.language)}</span>

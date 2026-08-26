@@ -454,6 +454,46 @@ describe('authoring', () => {
     expect(el.shadowRoot!.querySelector('shabbat-rule-dialog')).not.toBeNull();
   });
 
+  it('toggles a rule enabled/disabled from the row, non-optimistically', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(withRules());
+    await el.updateComplete;
+
+    const row = (await ruleRows(el))[0] as any;
+    row.shadowRoot!.querySelector('ha-selector.row-toggle')!.dispatchEvent(
+      new CustomEvent('value-changed', { detail: { value: false } }),
+    );
+    await flush();
+
+    expect(hass.callWS).toHaveBeenCalledWith({
+      type: 'shabbat_scheduler/rules/update',
+      rule_id: withRules().rules[0].id,
+      changes: { enabled: !withRules().rules[0].enabled },
+    });
+    // No optimistic update: the row still shows what the last push said.
+    expect(row.rule.enabled).toBe(withRules().rules[0].enabled);
+  });
+
+  it('reports a rejected row toggle on the row, not the dialog', async () => {
+    const { hass, send } = fakeHass();
+    hass.callWS = vi.fn(async () => { throw { message: 'nope' }; });
+    const el = await mount(hass);
+    send(withRules());
+    await el.updateComplete;
+
+    const row = (await ruleRows(el))[0] as any;
+    row.shadowRoot!.querySelector('ha-selector.row-toggle')!.dispatchEvent(
+      new CustomEvent('value-changed', { detail: { value: false } }),
+    );
+    await flush();
+    await el.updateComplete;
+
+    const refreshedRow = (await ruleRows(el))[0] as any;
+    expect(refreshedRow.toggleError).toBe('nope');
+    expect(el.shadowRoot!.querySelector('shabbat-rule-dialog')).toBeNull();
+  });
+
   it('sends rules/update with only the changed fields', async () => {
     const { hass, send } = fakeHass();
     const el = await mount(hass);

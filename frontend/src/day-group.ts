@@ -22,6 +22,7 @@ export class ShabbatDayGroup extends LitElement {
   @property({ attribute: false }) warnings: WarningData[] = [];
   @property() language = 'en';
   @property({ type: Boolean }) canWrite = false;
+  @property({ attribute: false }) toggleErrors: Record<string, string> = {};
 
   static override styles = css`
     .heading {
@@ -93,6 +94,8 @@ export class ShabbatDayGroup extends LitElement {
                   .defaults=${this.defaults}
                   .warnings=${this.warnings}
                   .language=${this.language}
+                  .canWrite=${this.canWrite}
+                  .toggleError=${this.toggleErrors[rule.id] ?? null}
                 ></shabbat-rule-row>
               `,
             )

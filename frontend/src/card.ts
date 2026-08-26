@@ -58,6 +58,7 @@ export class ShabbatSchedulerCard extends LitElement {
   @state() private _creatingDay: string | null = null;
   @state() private _defaultsOpen = false;
   @state() private _dialogError: string | null = null;
+  @state() private _toggleErrors: Record<string, string> = {};
   @state() private _busy = false;
   @state() private _duplicateSeed: RuleFormState | null = null;
 
@@ -301,6 +302,38 @@ export class ShabbatSchedulerCard extends LitElement {
     this._dialogError = null;
   };
 
+  /**
+   * Same websocket write path `_saveChanges` uses for the dialog's own
+   * `enabled` field, scoped to one field on purpose - not a round trip
+   * through `_send`/`_dialogError`, which are dialog-scoped and would
+   * report a row's failure nowhere visible when no dialog is open.
+   */
+  private async _toggleRuleEnabled(rule: RuleData) {
+    try {
+      await this._hass.callWS({
+        type: 'shabbat_scheduler/rules/update',
+        rule_id: rule.id,
+        changes: { enabled: !rule.enabled },
+      });
+      if (rule.id in this._toggleErrors) {
+        const rest = { ...this._toggleErrors };
+        delete rest[rule.id];
+        this._toggleErrors = rest;
+      }
+    } catch (err) {
+      const detail = err as { message?: string } | null;
+      this._toggleErrors = {
+        ...this._toggleErrors,
+        [rule.id]: detail?.message ?? String(err),
+      };
+    }
+  }
+
+  private _onRuleToggleEnabled = (event: Event) => {
+    const { rule } = (event as CustomEvent).detail as { rule: RuleData };
+    void this._toggleRuleEnabled(rule);
+  };
+
   private _onRuleAdd = (event: Event) => {
     this._creatingDay = (event as CustomEvent).detail.day as string;
     this._editing = null;
@@ -426,7 +459,7 @@ export class ShabbatSchedulerCard extends LitElement {
     );
 
     return html`
-      <ha-card @rule-open=${this._onRuleOpen}>
+      <ha-card @rule-open=${this._onRuleOpen} @rule-toggle-enabled=${this._onRuleToggleEnabled}>
         ${this._config.title
           ? html`<div class="title">${this._config.title}</div>`
           : nothing}
@@ -465,6 +498,7 @@ export class ShabbatSchedulerCard extends LitElement {
               .warnings=${this._state!.warnings}
               .language=${this._language}
               .canWrite=${this._canWrite}
+              .toggleErrors=${this._toggleErrors}
               @rule-add=${this._onRuleAdd}
             ></shabbat-day-group>
           `,

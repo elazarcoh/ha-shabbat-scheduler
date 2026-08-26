@@ -72,8 +72,9 @@ fires before Shabbat begins, which is how you pre-cool; a last-day rule at
   device alone. Turn something off by hand afterwards and it stays off.
 - **Reports what happened, honestly.** A rule is an opaque service call, not
   a state to compare against — there is nothing to read back and check. Each
-  call reports `called`, `would_call`, `failed`, `blocked`, or `skipped`,
-  plus two diagnostics for a call that succeeded but reached nothing real:
+  call reports `called`, `would_call`, `failed`, `blocked`, or skipped (as
+  stale, or as never opted into replay), plus two diagnostics for a call
+  that succeeded but reached nothing real:
   `unknown_targets` (a typo) and `no_live_targets` (a target that resolved
   to nothing that exists). The integration hands the call to Home Assistant
   and tells you exactly what happened — it does not pretend to know what
@@ -84,10 +85,10 @@ fires before Shabbat begins, which is how you pre-cool; a last-day rule at
   installing cannot touch an appliance until you deliberately enable it.
 - **Replay is opt-in, off by default.** After a restart, a rule that already
   passed does **not** re-fire — even one that was due minutes before the
-  restart — unless you explicitly opt it in per rule (`replay: enabled`),
-  with an optional staleness window past which it is skipped rather than
-  replayed late. Nothing unexpected fires just because Home Assistant
-  restarted.
+  restart — unless you explicitly opt it in per rule (a `replay` block
+  with `enabled: true`), with an optional staleness window past which it
+  is skipped rather than replayed late. Nothing unexpected fires just
+  because Home Assistant restarted.
 
 ## Entities
 

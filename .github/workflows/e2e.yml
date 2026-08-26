@@ -45,6 +45,18 @@ jobs:
           exit 1
 
       - name: Seed and capture a token
+        # `shell: bash` explicitly, not the step-level default. GitHub
+        # Actions' UNWRITTEN default when no `shell:` is given is
+        # `bash -e {0}` - pipefail is NOT part of it, despite ADR 0277
+        # documenting `-eo pipefail` as what an EXPLICIT `shell: bash`
+        # gets (see actions/runner#353). Without this, a failing
+        # dev/seed.py left `token=$(... | tail -1)` exiting 0 with an
+        # empty token - confirmed against this exact commit's own runner
+        # log, which printed `shell: /usr/bin/bash -e {0}`. The
+        # pytest_sessionfinish hardening in e2e/conftest.py now catches
+        # the resulting all-skipped run regardless, but a red step here
+        # names the real error instead of a mystery "everything skipped".
+        shell: bash
         run: |
           token=$(uv run python dev/seed.py | tail -1)
           echo "HA_DEV_TOKEN=$token" >> "$GITHUB_ENV"

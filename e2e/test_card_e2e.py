@@ -89,6 +89,35 @@ def _set_target_entity(dialog, query, *narrow):
     _choose(picker, "ha-generic-picker ha-button", query, *narrow)
 
 
+def _set_time(dialog, hh_mm_ss):
+    """Fill the rule dialog's time field, `<ha-selector class="time"
+    .selector=${{time:{}}}>`.
+
+    Verified against the real dev container (HA 2026.8.2), not guessed:
+    `ha-selector` -> `ha-selector-time` -> `ha-time-input` ->
+    `ha-base-time-input`, which renders exactly three
+    `input[type=number]` fields in hour/minute/second order (named
+    `hours`/`minutes`/`seconds`) - the same `ha-base-time-input` shape the
+    duration selector uses (see dev/README.md and
+    test_replay_can_be_switched_on_with_a_window). Playwright locators
+    pierce all of that shadow DOM, so a flat `input` descendant locator
+    reaches all three directly.
+
+    Each field only commits a `value-changed` on blur, using whatever the
+    other two fields currently hold - so filling hour then minute can
+    momentarily emit a stale combination built from the old, not-yet-typed
+    third field. That is harmless here: by the time the third field is
+    filled, the first two already hold their target values, and the
+    dialog's own next click (Save, or moving to another field) blurs the
+    last one and commits the correct HH:MM:SS.
+    """
+    hour, minute, second = hh_mm_ss.split(":")
+    inputs = dialog.locator("ha-selector.time input")
+    inputs.nth(0).fill(hour)
+    inputs.nth(1).fill(minute)
+    inputs.nth(2).fill(second)
+
+
 def test_the_card_renders_the_timeline(page, base_url):
     page.goto(f"{base_url}/{DASHBOARD_URL_PATH}/0")
     card = page.locator("shabbat-scheduler-card")
@@ -206,8 +235,7 @@ def test_editing_a_rule_redraws_the_timeline(page, base_url):
         card.locator("shabbat-rule-row").filter(has_text="11:00").first.click()
         dialog.wait_for(state="attached", timeout=10_000)
 
-        time_input = dialog.locator("input.time")
-        time_input.fill("12:15:00")
+        _set_time(dialog, "12:15:00")
         dialog.locator("button.save").click()
 
         # No optimistic update: the redraw only happens once the server has
@@ -223,7 +251,7 @@ def test_editing_a_rule_redraws_the_timeline(page, base_url):
         if card.locator("shabbat-rule-row").filter(has_text="12:15").count():
             card.locator("shabbat-rule-row").filter(has_text="12:15").first.click()
             dialog.wait_for(state="attached", timeout=10_000)
-            dialog.locator("input.time").fill("11:00:00")
+            _set_time(dialog, "11:00:00")
             dialog.locator("button.save").click()
             card.locator("shabbat-rule-row .time").filter(
                 has_text="11:00"
@@ -263,7 +291,7 @@ def test_the_add_button_creates_a_rule_on_its_own_day(page, base_url):
     try:
         day_one.locator("button.add").click()
         dialog.wait_for(state="attached", timeout=10_000)
-        dialog.locator("input.time").fill("21:00:00")
+        _set_time(dialog, "21:00:00")
 
         # The action, through HA's own service control...
         _set_action(dialog, "switch.turn_on", "turn_on", "switch")

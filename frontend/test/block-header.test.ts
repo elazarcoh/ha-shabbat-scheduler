@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import '../src/block-header';
+import { ShabbatBlockHeader } from '../src/block-header';
 import type { BlockData } from '../src/types';
 
 const block: BlockData = {
@@ -111,5 +112,13 @@ describe('profile chips', () => {
     el.addEventListener('defaults-open', listener);
     (el.shadowRoot!.querySelector('.gear') as HTMLElement).click();
     expect(listener).toHaveBeenCalledOnce();
+  });
+});
+
+describe('shabbat-block-header mobile layout', () => {
+  it('wraps header controls onto their own row under 600px with 44px tap targets', () => {
+    const cssText = (ShabbatBlockHeader.styles as unknown as { cssText: string }).cssText;
+    expect(cssText).toContain('@media (max-width: 599px)');
+    expect(cssText).toContain('min-block-size: 44px');
   });
 });

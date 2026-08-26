@@ -63,6 +63,19 @@ export class ShabbatRuleRow extends LitElement {
     .tag { font-size: 0.8em; color: var(--secondary-text-color, #666); }
     .row { cursor: pointer; }
     .row:focus-visible { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: -2px; }
+    /* Below 600px, .body's children (title, brief, last-outcome,
+       conflict-detail) become direct flex items of .row via
+       display: contents - the same unwrap trick rule-dialog.ts's
+       .advanced class already uses, for the same reason: only that lets
+       .title stay on the row's first line, next to the dot and time,
+       while .brief/.last-outcome/.conflict-detail wrap onto their
+       own full-width lines below. .body itself has no visual box (no
+       padding/border/background), so nothing is lost by unwrapping it. */
+    @media (max-width: 599px) {
+      .row { flex-wrap: wrap; row-gap: 4px; }
+      .body { display: contents; }
+      .brief, .last-outcome, .conflict-detail { flex-basis: 100%; }
+    }
   `;
 
   private _open() {

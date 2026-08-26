@@ -60,6 +60,14 @@ export class ShabbatBlockHeader extends LitElement {
       border-color: transparent;
     }
     .gear { border: none; background: none; cursor: pointer; font-size: 1.1em; }
+    @media (max-width: 599px) {
+      .header { flex-wrap: wrap; }
+      .label { flex-basis: 100%; }
+      .chips, .gear, .master, button {
+        min-block-size: 44px;
+      }
+      .chip { min-block-size: 44px; display: inline-flex; align-items: center; }
+    }
   `;
 
   private _dates(): string {

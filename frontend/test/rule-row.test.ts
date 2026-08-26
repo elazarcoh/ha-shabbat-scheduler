@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import '../src/rule-row';
+import { ShabbatRuleRow } from '../src/rule-row';
 import { t } from '../src/strings';
 import type { RuleData } from '../src/types';
 
@@ -411,5 +412,13 @@ describe('shabbat-rule-row', () => {
     );
 
     expect(count).toBe(0);
+  });
+});
+
+describe('shabbat-rule-row mobile layout', () => {
+  it('drops to two lines under 600px: time+dot+title on line 1, the rest stacked', () => {
+    const cssText = (ShabbatRuleRow.styles as unknown as { cssText: string }).cssText;
+    expect(cssText).toContain('@media (max-width: 599px)');
+    expect(cssText).toContain('display: contents');
   });
 });

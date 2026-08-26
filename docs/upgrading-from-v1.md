@@ -108,3 +108,7 @@ dismiss it.
    turn on "Replay after a restart" for the ones where re-firing is
    genuinely safe - it's shown directly in the rule dialog, no need to
    expand "Advanced" first, and it's off by default post-migration.
+
+For the full v2 rule format, the card, and everything else this
+integration does, see the main [README](../README.md#upgrading) - or
+just [start from the top](../README.md).

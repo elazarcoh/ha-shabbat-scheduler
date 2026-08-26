@@ -104,6 +104,7 @@ dismiss it.
    ids and therefore two brand-new switch entities - the original entity
    is gone, and neither new one inherits its history.
 4. If you relied on v1's automatic catch-up after a restart, review which
-   rules you now want to opt into replay: open the rule for editing,
-   expand "Advanced", and turn on "Replay after a restart" for the ones
-   where re-firing is genuinely safe - it is off by default post-migration.
+   rules you now want to opt into replay: open the rule for editing and
+   turn on "Replay after a restart" for the ones where re-firing is
+   genuinely safe - it's shown directly in the rule dialog, no need to
+   expand "Advanced" first, and it's off by default post-migration.

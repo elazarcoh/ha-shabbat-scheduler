@@ -13,7 +13,7 @@ not give you: a rule **fires once and leaves the device alone** afterward
 **overlapping rules are reported, never silently and arbitrarily resolved**
 in whichever order the automation engine happens to run them.
 
-![The card showing a resolved Shabbat block](docs/images/card-screenshot.png)
+![The card showing a real, resolved schedule](docs/images/card-screenshot.png)
 
 *(The "Dry run" toggle — report what a rule would do without actually
 calling anything — is turned on for this screenshot, so the header shows
@@ -54,6 +54,18 @@ install; see step 3 below for why.)*
 
 [jewish-calendar]: https://www.home-assistant.io/integrations/jewish_calendar/
 
+## Terminology
+
+A **block** is one contiguous Shabbat/Chag period, derived entirely from the
+Jewish Calendar integration's candle-lighting and havdalah sensors. Its length
+in days — 1 for a regular Shabbat, 2 or 3 when a Chag abuts one — selects which
+**profile** of rules applies. Rules are authored explicitly per block length,
+so a rule always reads exactly as it will run.
+
+Rules are deliberately **not** clamped to the zmanim: an erev rule at 17:00
+fires before Shabbat begins, which is how you pre-cool; a last-day rule at
+23:00 fires after havdalah. A rule is a clock time on a resolved date.
+
 ## Design commitments
 
 - **Fire once, never re-assert.** A rule acts at its moment and then leaves the
@@ -66,18 +78,6 @@ install; see step 3 below for why.)*
   installing cannot touch an appliance until you deliberately enable it.
 - **Restart-aware.** A restart part-way through a block re-applies the current
   desired state once, rather than losing the rules that already passed.
-
-## Terminology
-
-A **block** is one contiguous Shabbat/Chag period, derived entirely from the
-Jewish Calendar integration's candle-lighting and havdalah sensors. Its length
-in days — 1 for a regular Shabbat, 2 or 3 when a Chag abuts one — selects which
-**profile** of rules applies. Rules are authored explicitly per block length,
-so a rule always reads exactly as it will run.
-
-Rules are deliberately **not** clamped to the zmanim: an erev rule at 17:00
-fires before Shabbat begins, which is how you pre-cool; a last-day rule at
-23:00 fires after havdalah. A rule is a clock time on a resolved date.
 
 ## Entities
 

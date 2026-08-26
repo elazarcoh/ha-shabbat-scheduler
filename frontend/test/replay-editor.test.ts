@@ -51,6 +51,12 @@ describe('duration conversion', () => {
     expect(durationStringToObject('not-a-duration')).toBeUndefined();
     expect(durationStringToObject('01:02')).toBeUndefined();
   });
+
+  it('rejects negative and non-integer parts', () => {
+    expect(durationStringToObject('-1:00:00')).toBeUndefined();
+    expect(durationStringToObject('01:30:5.5')).toBeUndefined();
+    expect(durationStringToObject('1::05')).toBeUndefined();
+  });
 });
 
 describe('shabbat-replay-editor', () => {
@@ -89,7 +95,14 @@ describe('shabbat-replay-editor', () => {
     expect(seen).toEqual([{ enabled: true, within: '00:45:00' }]);
   });
 
-  it('treats a cleared window as no bound, dropping the key', async () => {
+  it('treats an explicit undefined value as no bound, dropping the key', async () => {
+    // Defensive path, not a real-widget one: verified against the real
+    // dev container (see replay-editor.ts's class doc comment), HA's
+    // duration selector has no clear affordance and never itself emits
+    // `undefined` - the closest a user can get is zeroing every field,
+    // covered by the next test below. This exercises `_onWithin`'s
+    // handling of an `undefined` `detail.value` for whichever OTHER
+    // caller might construct one (this test included).
     const el = await render({ value: { enabled: true, within: '01:00:00' } });
     const seen: any[] = [];
     el.addEventListener('replay-changed', (e: Event) => {
@@ -100,6 +113,26 @@ describe('shabbat-replay-editor', () => {
     );
     expect(seen).toStrictEqual([{ enabled: true }]);
     expect('within' in seen[0]).toBe(false);
+  });
+
+  it('keeps an all-zero window as 00:00:00, not as no bound', async () => {
+    // The state a user ACTUALLY reaches by clearing every field of the
+    // real duration widget and blurring: verified against the real dev
+    // container, it converges to `{hours:0, minutes:0, seconds:0}`, not
+    // `undefined`. That is a real, valid `within` (replay only if the
+    // restart was instant - in effect, never) and must be kept, not
+    // silently promoted to "no bound".
+    const el = await render({ value: { enabled: true, within: '01:00:00' } });
+    const seen: any[] = [];
+    el.addEventListener('replay-changed', (e: Event) => {
+      seen.push((e as CustomEvent).detail.value);
+    });
+    withinSel(el)!.dispatchEvent(
+      new CustomEvent('value-changed', {
+        detail: { value: { hours: 0, minutes: 0, seconds: 0 } },
+      }),
+    );
+    expect(seen).toStrictEqual([{ enabled: true, within: '00:00:00' }]);
   });
 
   it('forgets the window when switched off, so off means off', async () => {

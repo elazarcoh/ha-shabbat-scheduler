@@ -20,8 +20,17 @@ const DEFAULT_WITHIN = '01:00:00';
  * "036"); minutes and seconds ARE zero-padded to two digits for display,
  * which is a rendering detail only and does not affect the object shape
  * read back on `value-changed`.
+ *
+ * ALSO VERIFIED, against the same running container: the widget has no
+ * clear affordance (no X button, nothing in `ha-duration-input` beyond
+ * the three number fields), and blanking all three fields by hand and
+ * blurring does NOT emit `undefined` or `null` - it converges to a
+ * `value-changed` of `{hours: 0, minutes: 0, seconds: 0}`, same as if
+ * the user had typed zeros directly. There is no user-reachable path
+ * through this widget that produces `undefined`. See `_onWithin` below
+ * for what that means for the "no bound" branch.
  */
-interface DurationValue {
+export interface DurationValue {
   hours?: number;
   minutes?: number;
   seconds?: number;
@@ -45,16 +54,21 @@ export function durationObjectToString(value: DurationValue | undefined): string
  * 'HH:MM:SS' -> {hours, minutes, seconds}, the shape `ha-selector`'s
  * duration selector expects. `undefined` input (no window set) becomes
  * `undefined`, not a zeroed object, so the selector renders as genuinely
- * empty rather than "00:00:00". A malformed string also becomes
- * `undefined` rather than guessed at - `rule_schema.py` is the only owner
- * of what counts as a valid duration.
+ * empty rather than "00:00:00" - this only ever happens on the way IN
+ * (an existing rule with no `within` at all), since the widget itself
+ * can never produce `undefined` on the way out; see `DurationValue`'s
+ * comment. A malformed string - not three colon-separated parts, a
+ * negative number, or a non-integer - also becomes `undefined` rather
+ * than guessed at, mirroring `rule_schema.py`'s own `_duration`, which
+ * requires each part to be `str.isdecimal()`: `rule_schema.py` is the
+ * only owner of what counts as a valid duration.
  */
 export function durationStringToObject(value: string | undefined): DurationValue | undefined {
   if (value === undefined) return undefined;
   const parts = value.split(':');
   if (parts.length !== 3) return undefined;
+  if (!parts.every((p) => /^\d+$/.test(p))) return undefined;
   const [hours, minutes, seconds] = parts.map((p) => Number(p));
-  if ([hours, minutes, seconds].some((n) => Number.isNaN(n))) return undefined;
   return { hours, minutes, seconds };
 }
 
@@ -67,8 +81,18 @@ export function durationStringToObject(value: string | undefined): DurationValue
  * strictest reading - after a restart, nothing unexpected ever fires.
  * See docs/known-behaviours.md.
  *
- * Note `within` is dropped rather than set to null when cleared. An
- * absent `within` means "no bound" to rule_schema.py.
+ * Note `_onWithin` drops `within` rather than setting it to null if it
+ * ever receives an `undefined` value - an absent `within` means "no
+ * bound" to rule_schema.py. In practice the real duration widget never
+ * sends `undefined` (see `DurationValue`'s comment): a user cannot reach
+ * "no bound" once replay is enabled, because there is no clear
+ * affordance and blanking every field converges to an explicit
+ * `00:00:00` (replay only if the restart was instant - in effect,
+ * never), not to "no bound". That branch exists for defensive symmetry
+ * with `durationStringToObject`'s `undefined` handling and for any
+ * other caller of `replay-changed` that constructs a `value-changed`
+ * event directly (this file's own unit tests do), not because a user
+ * can trigger it through this UI today.
  *
  * `within` is edited through `<ha-selector>` with a `{duration: {}}`
  * selector, per this project's own rule (see target-editor.ts): a
@@ -149,7 +173,8 @@ export class ShabbatReplayEditor extends LitElement {
   private _onWithin = (event: CustomEvent) => {
     const raw = event.detail?.value as DurationValue | undefined;
     // No validation here - rule_schema.py owns that, same as the plain
-    // <input> this replaced.
+    // <input> this replaced. `raw === undefined` is defensive, not a
+    // real-widget path - see the class doc comment above.
     this._emit(
       raw === undefined
         ? { enabled: true }

@@ -603,8 +603,8 @@ def test_replay_can_be_switched_on_with_a_window(page, base_url):
 
     Uses the erev 23:00 rule, which no other test in this file touches.
 
-    Verified against the real dev container (HA 2026.8.2). Two DOM facts
-    that are NOT how they would naively be guessed:
+    Verified against the real dev container (HA 2026.8.2). Three DOM/
+    behaviour facts that are NOT how they would naively be guessed:
 
     - `ha-selector`'s boolean selector renders `ha-selector-boolean` ->
       `ha-formfield` -> a slotted `<ha-switch>`, whose own internal
@@ -619,6 +619,13 @@ def test_replay_can_be_switched_on_with_a_window(page, base_url):
       ("00", "30"), but hours are NOT padded - `{hours: 1, ...}` renders
       as literal "1", not "01" (and `{hours: 36, ...}` renders as "36",
       unclamped, confirming replay-editor.ts's DurationValue comment).
+    - The duration widget has NO clear affordance (no X button anywhere
+      in it) and blanking all three fields by hand, then blurring, does
+      NOT clear the value to "no bound" - it converges to an explicit
+      00:00:00, which round-trips as a real (if unusual) `within` rather
+      than dropping the key. See replay-editor.ts's `DurationValue` and
+      `_onWithin` comments; this test's second block below exercises
+      exactly that path for real, not mocked.
     """
     card = _card(page, base_url)
     try:
@@ -656,6 +663,48 @@ def test_replay_can_be_switched_on_with_a_window(page, base_url):
         within.wait_for(timeout=10_000)
         expect(within.locator("ha-base-time-input input").nth(0)).to_have_value("2")
         expect(within.locator("ha-base-time-input input").nth(1)).to_have_value("30")
+
+        # Now the real clear path: blank every field of the real widget,
+        # rather than mocking a `value-changed` with `undefined` (a unit
+        # test covers that defensive branch; nothing before this commit
+        # exercised what the real widget actually sends). It has no
+        # clear/X affordance at all, and this must converge to an
+        # explicit 00:00:00 - a real, saved `within` - NOT to the window
+        # disappearing or replay silently reverting to unbounded. Each
+        # `fill("")` already fires the field's own value-changed before
+        # the next field is touched (confirmed directly against a bare
+        # `<ha-selector>` outside the dialog, where blanking hours then
+        # minutes then seconds emitted value-changed progressively:
+        # {0,30,5} -> {0,0,5} -> {0,0,0}) - so what matters is what gets
+        # SAVED, not each field's mid-edit display text, which can lag
+        # behind the last field's own blur this deep inside three nested
+        # shadow roots (card -> dialog -> replay-editor -> the widget's
+        # own internals).
+        hour = within.locator("ha-base-time-input input").nth(0)
+        minute = within.locator("ha-base-time-input input").nth(1)
+        second = within.locator("ha-base-time-input input").nth(2)
+        hour.fill("")
+        minute.fill("")
+        second.fill("")
+
+        dialog.locator("button.save").click()
+        dialog.wait_for(state="detached", timeout=15_000)
+
+        card = _card(page, base_url)
+        dialog = _open_rule(card, "23:00")
+        replay = dialog.locator("shabbat-replay-editor")
+        # Replay is still ON - clearing the window did not turn it off,
+        # and did not fall back to "no bound" (which would render with no
+        # ha-selector.replay-within at all; see the baseline assertion at
+        # the top of this test).
+        expect(
+            replay.locator("ha-selector.replay-enabled ha-switch input")
+        ).to_be_checked()
+        within = replay.locator("ha-selector.replay-within")
+        within.wait_for(timeout=10_000)
+        expect(within.locator("ha-base-time-input input").nth(0)).to_have_value("0")
+        expect(within.locator("ha-base-time-input input").nth(1)).to_have_value("00")
+        expect(within.locator("ha-base-time-input input").nth(2)).to_have_value("00")
         dialog.locator(CANCEL).click()
     finally:
         card = _card(page, base_url)

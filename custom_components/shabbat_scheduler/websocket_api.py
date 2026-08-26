@@ -310,7 +310,7 @@ async def ws_run_now(hass: HomeAssistant, connection, msg: dict[str, Any]) -> No
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "shabbat_scheduler/rules/run_day",
-        vol.Required("profile"): int,
+        vol.Required("profile"): vol.All(int, vol.Range(MIN_PROFILE, MAX_PROFILE)),
         vol.Required("day"): str,
         vol.Optional("simulate", default=True): bool,
         vol.Optional("force_conditions", default=False): bool,

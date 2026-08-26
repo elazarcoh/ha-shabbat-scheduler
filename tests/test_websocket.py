@@ -1216,6 +1216,45 @@ async def test_run_day_errors_cleanly_with_no_known_block(hass, hass_ws_client):
     assert msg["error"]["code"] == "no_block"
 
 
+async def test_run_day_rejects_a_profile_at_or_below_zero(
+    hass, hass_ws_client, setup_scheduler
+):
+    """profile=0 would otherwise reach compute_block with havdalah <=
+    candle_lighting, raising an unhandled ValueError instead of a clean
+    schema-validation error."""
+    await setup_scheduler([
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="input_boolean.turn_on"),
+    ])
+    client = await hass_ws_client(hass)
+
+    await client.send_json({
+        "id": 1, "type": "shabbat_scheduler/rules/run_day",
+        "profile": 0, "day": "1",
+    })
+    msg = await client.receive_json()
+
+    assert not msg["success"]
+    assert msg["error"]["code"] == "invalid_format"
+
+
+async def test_run_day_rejects_a_profile_above_the_max(
+    hass, hass_ws_client, setup_scheduler
+):
+    await setup_scheduler([
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="input_boolean.turn_on"),
+    ])
+    client = await hass_ws_client(hass)
+
+    await client.send_json({
+        "id": 1, "type": "shabbat_scheduler/rules/run_day",
+        "profile": 999, "day": "1",
+    })
+    msg = await client.receive_json()
+
+    assert not msg["success"]
+    assert msg["error"]["code"] == "invalid_format"
+
+
 # --- Final review I4: a subscription must follow the live store ----------
 
 

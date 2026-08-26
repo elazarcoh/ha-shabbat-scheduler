@@ -27,11 +27,24 @@ async function render(props: Record<string, unknown> = {}) {
   return el;
 }
 
+function timeSelector(el: any) {
+  return el.shadowRoot.querySelector('ha-selector.time');
+}
+function enabledSelector(el: any) {
+  return el.shadowRoot.querySelector('ha-selector.enabled');
+}
+function iconSelector(el: any) {
+  return el.shadowRoot.querySelector('ha-selector.icon');
+}
+function colorInput(el: any) {
+  return el.shadowRoot.querySelector('input.color') as HTMLInputElement | null;
+}
+
 describe('shabbat-rule-dialog', () => {
   it('opens an existing rule with its values filled in', async () => {
     const el = await render();
-    expect((el.shadowRoot!.querySelector('.time') as HTMLInputElement).value)
-      .toBe('11:00:00');
+    expect(timeSelector(el).value).toBe('11:00:00');
+    expect(enabledSelector(el).value).toBe(true);
     expect((el.shadowRoot!.querySelector('.name') as HTMLInputElement).value)
       .toBe('Morning');
     expect(el.shadowRoot!.textContent).toContain('Edit rule');
@@ -49,14 +62,27 @@ describe('shabbat-rule-dialog', () => {
     const listener = vi.fn();
     el.addEventListener('dialog-save', listener);
 
-    const time = el.shadowRoot!.querySelector('.time') as HTMLInputElement;
-    time.value = '12:30:00';
-    time.dispatchEvent(new Event('change'));
+    timeSelector(el).dispatchEvent(
+      new CustomEvent('value-changed', { detail: { value: '12:30:00' } }),
+    );
     (el.shadowRoot!.querySelector('.save') as HTMLElement).click();
 
     const detail = (listener.mock.calls[0][0] as CustomEvent).detail;
     expect(detail.form.time).toBe('12:30:00');
     expect(detail.rule.id).toBe('r1');
+  });
+
+  it('flips enabled through the boolean selector', async () => {
+    const el = await render();
+    const listener = vi.fn();
+    el.addEventListener('dialog-save', listener);
+
+    enabledSelector(el).dispatchEvent(
+      new CustomEvent('value-changed', { detail: { value: false } }),
+    );
+    (el.shadowRoot!.querySelector('.save') as HTMLElement).click();
+
+    expect((listener.mock.calls[0][0] as CustomEvent).detail.form.enabled).toBe(false);
   });
 
   it('shows the server error and stays open, keeping the input', async () => {
@@ -70,8 +96,8 @@ describe('shabbat-rule-dialog', () => {
     expect(el.shadowRoot!.textContent).toContain('do not have permission');
     expect(el.shadowRoot!.querySelector('.save')).toBeNull();
     expect(el.shadowRoot!.querySelector('.delete')).toBeNull();
-    expect((el.shadowRoot!.querySelector('.time') as HTMLInputElement).disabled)
-      .toBe(true);
+    expect(timeSelector(el).disabled).toBe(true);
+    expect(enabledSelector(el).disabled).toBe(true);
   });
 
   it('disables the actions while a command is in flight', async () => {
@@ -80,12 +106,34 @@ describe('shabbat-rule-dialog', () => {
       .toBe(true);
   });
 
-  it('shows the advanced fields only once asked for', async () => {
+  it('shows the advanced fields only once asked for, icon and colour among them', async () => {
     const el = await render();
-    expect(el.shadowRoot!.querySelector('.icon')).toBeNull();
+    expect(iconSelector(el)).toBeNull();
+    expect(colorInput(el)).toBeNull();
     (el.shadowRoot!.querySelector('.advanced-toggle') as HTMLElement).click();
     await el.updateComplete;
-    expect(el.shadowRoot!.querySelector('.icon')).not.toBeNull();
+    expect(iconSelector(el)).not.toBeNull();
+    expect(iconSelector(el).selector).toEqual({ icon: {} });
+    expect(colorInput(el)!.type).toBe('color');
+  });
+
+  it('edits icon through ha-selector and colour through a native color input', async () => {
+    const el = await render();
+    (el.shadowRoot!.querySelector('.advanced-toggle') as HTMLElement).click();
+    await el.updateComplete;
+    const listener = vi.fn();
+    el.addEventListener('dialog-save', listener);
+
+    iconSelector(el).dispatchEvent(
+      new CustomEvent('value-changed', { detail: { value: 'mdi:white-balance-sunny' } }),
+    );
+    colorInput(el)!.value = '#ff8800';
+    colorInput(el)!.dispatchEvent(new Event('change'));
+    (el.shadowRoot!.querySelector('.save') as HTMLElement).click();
+
+    const detail = (listener.mock.calls[0][0] as CustomEvent).detail;
+    expect(detail.form.icon).toBe('mdi:white-balance-sunny');
+    expect(detail.form.color).toBe('#ff8800');
   });
 
   it('starts a seeded create from the seed, which is what makes duplicate duplicate', async () => {

@@ -152,10 +152,7 @@ export class ShabbatRuleDialog extends LitElement {
     );
   }
 
-  private _text(
-    key: 'time' | 'name' | 'icon' | 'color',
-    label: string,
-  ) {
+  private _text(key: 'name', label: string) {
     return html`
       <div class="field">
         <label for=${key}>${label}</label>
@@ -167,6 +164,80 @@ export class ShabbatRuleDialog extends LitElement {
           @change=${(event: Event) => {
             const value = (event.target as HTMLInputElement).value;
             this._patch({ [key]: value === '' ? null : value } as Partial<RuleFormState>);
+          }}
+        />
+      </div>
+    `;
+  }
+
+  private _timeField() {
+    return html`
+      <div class="field">
+        <label for="time">${t(this.language, 'time')}</label>
+        <ha-selector
+          id="time"
+          class="time"
+          .hass=${this.hass}
+          .selector=${{ time: {} }}
+          .value=${this._form.time || null}
+          .disabled=${!this.canWrite}
+          @value-changed=${(event: CustomEvent) =>
+            this._patch({ time: (event.detail?.value as string) ?? '' })}
+        ></ha-selector>
+      </div>
+    `;
+  }
+
+  private _enabledField() {
+    return html`
+      <div class="field">
+        <label for="enabled">${t(this.language, 'enabled')}</label>
+        <ha-selector
+          id="enabled"
+          class="enabled"
+          .hass=${this.hass}
+          .selector=${{ boolean: {} }}
+          .value=${this._form.enabled}
+          .disabled=${!this.canWrite}
+          @value-changed=${(event: CustomEvent) =>
+            this._patch({ enabled: Boolean(event.detail?.value) })}
+        ></ha-selector>
+      </div>
+    `;
+  }
+
+  private _iconField() {
+    return html`
+      <div class="field">
+        <label for="icon">${t(this.language, 'icon')}</label>
+        <ha-selector
+          id="icon"
+          class="icon"
+          .hass=${this.hass}
+          .selector=${{ icon: {} }}
+          .value=${this._form.icon ?? ''}
+          .disabled=${!this.canWrite}
+          @value-changed=${(event: CustomEvent) => {
+            const value = (event.detail?.value as string) ?? '';
+            this._patch({ icon: value === '' ? null : value });
+          }}
+        ></ha-selector>
+      </div>
+    `;
+  }
+
+  private _colorField() {
+    return html`
+      <div class="field">
+        <label for="color">${t(this.language, 'colour')}</label>
+        <input
+          id="color"
+          class="color"
+          type="color"
+          .value=${this._form.color || '#000000'}
+          ?disabled=${!this.canWrite}
+          @change=${(event: Event) => {
+            this._patch({ color: (event.target as HTMLInputElement).value });
           }}
         />
       </div>
@@ -225,21 +296,10 @@ export class ShabbatRuleDialog extends LitElement {
             : nothing}
 
           <div class="form">
-            ${this._text('time', t(this.language, 'time'))}
+            ${this._timeField()}
             ${this._text('name', t(this.language, 'name'))}
 
-            <div class="field">
-              <label for="enabled">${t(this.language, 'enabled')}</label>
-              <input
-                id="enabled"
-                class="enabled"
-                type="checkbox"
-                .checked=${this._form.enabled}
-                ?disabled=${!this.canWrite}
-                @change=${(event: Event) =>
-                  this._patch({ enabled: (event.target as HTMLInputElement).checked })}
-              />
-            </div>
+            ${this._enabledField()}
 
             <!-- \`data: … ?? {}\` below is on purpose, and it must NOT
                  become "preserve the old data" the way the defaults
@@ -288,6 +348,7 @@ export class ShabbatRuleDialog extends LitElement {
             ></shabbat-condition-editor>
 
             <shabbat-replay-editor
+              .hass=${this.hass}
               .value=${this._form.replay}
               .disabled=${!this.canWrite}
               .language=${this.language}
@@ -304,8 +365,8 @@ export class ShabbatRuleDialog extends LitElement {
             ${this._advanced
               ? html`
                   <div class="advanced">
-                    ${this._text('icon', t(this.language, 'icon'))}
-                    ${this._text('color', t(this.language, 'colour'))}
+                    ${this._iconField()}
+                    ${this._colorField()}
                   </div>
                 `
               : nothing}

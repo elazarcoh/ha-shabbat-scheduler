@@ -142,15 +142,14 @@ async def test_the_call_carries_our_context_so_changes_attribute_to_us(
     assert engine.is_our_context(state.context)
 
 
-async def test_dry_run_calls_nothing(hass, test_booleans):
+async def test_simulate_calls_nothing(hass, test_booleans):
     engine = await _engine(hass)
-    await engine.store.async_set_dry_run(True)
     rule = Rule(
         id="r", profile=1, day="1", time=time(11, 0),
         action="input_boolean.turn_on",
         target={"entity_id": ["input_boolean.salon"]},
     )
-    results = await engine.async_apply_rule(rule)
+    results = await engine.async_apply_rule(rule, simulate=True)
 
     assert hass.states.get("input_boolean.salon").state == "off"
     assert results[0]["outcome"] == "would_call"

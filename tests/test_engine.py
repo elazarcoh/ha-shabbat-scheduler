@@ -444,50 +444,46 @@ async def test_the_all_wildcard_is_not_reported_as_a_misspelt_entity(hass, engin
     assert result["outcome"] == "called"
 
 
-async def test_a_dry_run_still_reports_an_unknown_target(
+async def test_a_simulated_run_still_reports_an_unknown_target(
     hass, jerusalem, test_booleans, _rule
 ):
-    """A dry run is where you WANT to find the typo."""
-    store = RuleStore(hass)
-    await store.async_load()
-    await store.async_set_dry_run(True)
-    engine = ShabbatEngine(hass, store)
+    """A simulated run is where you WANT to find the typo."""
+    engine = ShabbatEngine(hass, RuleStore(hass))
+    await engine.store.async_load()
 
     rule = _rule(action=_ON, entities=("input_boolean.nope",))
-    [result] = await engine.async_apply_rule(rule)
+    [result] = await engine.async_apply_rule(rule, simulate=True)
 
     assert result["outcome"] == "would_call"
     assert result["unknown_targets"] == ["input_boolean.nope"]
 
 
-async def test_dry_run_makes_no_service_calls(hass, jerusalem, test_booleans, _rule ):
-    store = RuleStore(hass)
-    await store.async_load()
-    await store.async_set_dry_run(True)
-    engine = ShabbatEngine(hass, store)
+async def test_simulate_makes_no_service_calls(hass, jerusalem, test_booleans, _rule):
+    engine = ShabbatEngine(hass, RuleStore(hass))
+    await engine.store.async_load()
 
     hass.states.async_set("input_boolean.t", "off")
-    results = await engine.async_apply_rule(_rule())
+    results = await engine.async_apply_rule(_rule(), simulate=True)
     await hass.async_block_till_done()
 
     assert hass.states.get("input_boolean.t").state == "off"
-    assert results[0]["outcome"] == "would_call"  # reports what WOULD happen
+    assert results[0]["outcome"] == "would_call"
 
 
-async def test_a_dry_run_still_reports_reaching_nothing_live(hass, engine, _rule):
-    """The sibling of test_a_dry_run_still_reports_an_unknown_target.
+async def test_a_simulated_run_still_reports_reaching_nothing_live(hass, engine, _rule):
+    """The sibling of test_a_simulated_run_still_reports_an_unknown_target.
 
     A target that resolves to nothing live (every member of an existing
-    group unavailable, say) must still carry the diagnostic under a dry
-    run, exactly as an unknown target already does - a dry run is where
-    you WANT to find out a rule would not have done anything real.
+    group unavailable, say) must still carry the diagnostic under a
+    simulated run, exactly as an unknown target already does - a
+    simulated run is where you WANT to find out a rule would not have
+    done anything real.
     """
     await hass.async_block_till_done()
     hass.states.async_set("group.g", "unknown", {"entity_id": ["input_boolean.member"]})
-    await engine.store.async_set_dry_run(True)
     rule = _rule(action="input_boolean.turn_on", entities=("group.g",))
 
-    [result] = await engine.async_apply_rule(rule)
+    [result] = await engine.async_apply_rule(rule, simulate=True)
 
     assert result["outcome"] == "would_call"
     assert result["no_live_targets"] is True
@@ -1695,15 +1691,131 @@ async def test_a_rule_that_ran_records_that_it_ran(hass, engine, _rule):
     assert dt_util.parse_datetime(outcome["at"]) is not None
 
 
-async def test_a_dry_run_records_that_it_would_have_run(hass, engine, _rule):
-    """`would_call` is not `called`, and the card must not conflate them."""
+async def test_simulate_never_records_a_durable_outcome(hass, engine, _rule):
+    """`would_call` is not `called`, and it must never overwrite a real
+    verdict, because the run it describes did not really happen."""
     hass.states.async_set("input_boolean.t", "off")
-    await engine.store.async_set_dry_run(True)
     rule = await _seeded(engine, _rule())
 
-    await engine.async_apply_rule(rule)
+    await engine.async_apply_rule(rule, simulate=True)
 
-    assert engine.store.last_outcome(rule.id)["outcome"] == "would_call"
+    assert engine.store.last_outcome(rule.id) is None
+
+
+async def test_simulate_does_not_record_even_when_the_rule_is_blocked(hass, engine, _rule):
+    """Ablate this and a simulated but blocked rule leaves a real verdict
+    behind - the exact thing 'never persisted' forbids."""
+    hass.states.async_set("input_boolean.kids", "off")
+    rule = await _seeded(engine, _rule(condition=(
+        {"condition": "state", "entity_id": "input_boolean.kids", "state": "on"},
+    )))
+
+    results = await engine.async_apply_rule(rule, simulate=True)
+
+    assert results[0]["outcome"] == "blocked"
+    assert engine.store.last_outcome(rule.id) is None
+
+
+async def test_simulate_does_not_signal_rules_changed(hass, engine, _rule):
+    hass.states.async_set("input_boolean.t", "off")
+    rule = await _seeded(engine, _rule())
+    calls = []
+    async_dispatcher_connect(hass, SIGNAL_RULES_CHANGED, lambda: calls.append(1))
+
+    await engine.async_apply_rule(rule, simulate=True)
+    await hass.async_block_till_done()
+
+    assert calls == []
+
+
+async def test_a_real_run_still_records_and_signals(hass, engine, _rule):
+    """The two tests above ablated: a REAL run (simulate defaults False)
+    must still record and signal, or the guard above proves nothing."""
+    hass.states.async_set("input_boolean.t", "off")
+    rule = await _seeded(engine, _rule())
+    calls = []
+    async_dispatcher_connect(hass, SIGNAL_RULES_CHANGED, lambda: calls.append(1))
+
+    await engine.async_apply_rule(rule)
+    await hass.async_block_till_done()
+
+    assert engine.store.last_outcome(rule.id) is not None
+    assert calls == [1]
+
+
+async def test_force_conditions_skips_evaluation_entirely(hass, engine, _rule):
+    hass.states.async_set("input_boolean.kids", "off")  # would normally block
+    hass.states.async_set("input_boolean.t", "off")
+    rule = await _seeded(engine, _rule(condition=(
+        {"condition": "state", "entity_id": "input_boolean.kids", "state": "on"},
+    )))
+
+    results = await engine.async_apply_rule(rule, simulate=True, force_conditions=True)
+
+    assert results[0]["outcome"] == "would_call"  # not "blocked"
+
+
+async def test_at_evaluates_a_time_condition_against_a_hypothetical_moment(
+    hass, jerusalem, engine, _rule
+):
+    from datetime import datetime
+
+    hass.states.async_set("input_boolean.t", "off")
+    # after 20:00 local - false right now (test runs at an arbitrary real
+    # time), true at the `at` below.
+    rule = await _seeded(engine, _rule(condition=(
+        {"condition": "time", "after": "20:00:00"},
+    )))
+
+    at = datetime(2026, 8, 15, 21, 0, tzinfo=dt_util.get_time_zone(jerusalem.config.time_zone))
+    results = await engine.async_apply_rule(rule, simulate=True, at=at)
+
+    assert results[0]["outcome"] == "would_call"
+
+
+async def test_at_does_not_affect_a_state_condition(hass, jerusalem, engine, _rule):
+    """`at` is scoped to `sun`/`time` only - a `state` condition still
+    reads the real state, not something keyed off `at`."""
+    from datetime import datetime
+
+    hass.states.async_set("input_boolean.kids", "off")
+    hass.states.async_set("input_boolean.t", "off")
+    rule = await _seeded(engine, _rule(condition=(
+        {"condition": "state", "entity_id": "input_boolean.kids", "state": "on"},
+    )))
+
+    at = datetime(2026, 8, 15, 21, 0, tzinfo=dt_util.get_time_zone(jerusalem.config.time_zone))
+    results = await engine.async_apply_rule(rule, simulate=True, at=at)
+
+    assert results[0]["outcome"] == "blocked"
+
+
+async def test_check_at_scoped_restores_dt_util_even_if_the_checker_raises(
+    jerusalem, engine
+):
+    """The monkeypatch on dt_util.now/utcnow MUST be restored even when the
+    wrapped checker call raises. A leaked patch here would corrupt every
+    other timing decision in the whole integration - this is the single
+    most dangerous class of bug this feature could introduce.
+    """
+    from datetime import datetime
+
+    original_now = dt_util.now
+    original_utcnow = dt_util.utcnow
+
+    def _boom(hass_arg, variables):
+        raise RuntimeError("boom")
+
+    at = datetime(2026, 8, 15, 21, 0, tzinfo=dt_util.get_time_zone(jerusalem.config.time_zone))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        engine._check_at_scoped(_boom, at)
+
+    # Identity, not just "returns a plausible time": a replacement lambda
+    # that happens to compute the real time would still pass a looser
+    # check while leaving the patch in place.
+    assert dt_util.now is original_now
+    assert dt_util.utcnow is original_utcnow
 
 
 async def test_a_blocked_rule_records_which_condition_held_it_back(

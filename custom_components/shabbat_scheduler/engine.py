@@ -278,7 +278,14 @@ class ShabbatEngine:
         # effect rather than harmlessly no-op.
         self._caught_up_for: Block | None = None
 
-    async def async_apply_rule(self, rule: Rule, force: bool = False) -> list[dict]:
+    async def async_apply_rule(
+        self,
+        rule: Rule,
+        *,
+        simulate: bool = False,
+        at: datetime | None = None,
+        force_conditions: bool = False,
+    ) -> list[dict]:
         """Apply one rule, returning a per-attribute outcome report.
 
         The event is fired BEFORE the calls and carries everything needed to
@@ -286,6 +293,35 @@ class ShabbatEngine:
         function cannot look the rule up - it may have been renamed or deleted
         by then. Firing first is also what lets Home Assistant attribute each
         device's own change back to this rule, the same way automations do.
+
+        `simulate`: behaves exactly as the old `store.dry_run` flag used to
+        at the point of the real service call (`_call` returns `would_call`
+        instead of calling) - but, unlike that flag, a simulated run never
+        calls `_async_record_outcome` and never fires SIGNAL_RULES_CHANGED
+        (the only place that signal fires from here), on every path
+        including a blocked one: it did not really happen, and the rest of
+        the system must not be told otherwise. The event bus still fires
+        (EVENT_RULE_APPLIED / EVENT_RULE_COMPLETED), carrying the same
+        `dry_run`-named key for backward compatibility with anything
+        listening - renaming it would be a breaking change to an external
+        contract this codebase does not control the readers of.
+
+        `force_conditions`: when true, every condition is treated as passed
+        and `_condition_block_reason` is not consulted at all. Its only
+        effect; it does not interact with `at` - forcing pass is "ignore
+        conditions", evaluating against `at` is "evaluate conditions
+        honestly against a different moment", and a caller gets one or the
+        other, or neither, never both combined into a third meaning.
+
+        `at`: passed through to `_condition_block_reason` so a `sun`/`time`
+        condition is evaluated as though `at` were now - see that method's
+        docstring for the mechanism and its limits. Has no effect when
+        `force_conditions` is true, since no condition is evaluated then.
+
+        Both default to today's behaviour when omitted, so the two real
+        call sites (`_make_callback`'s real callback and
+        `async_catch_up`'s replay path) are unaffected and untested
+        differently.
         """
         context = Context()
         self._our_contexts.append(context.id)
@@ -297,41 +333,45 @@ class ShabbatEngine:
                 "name": rule.name,
                 "action": rule.action,
                 "target": dict(rule.target),
-                "dry_run": self.store.dry_run,
+                "dry_run": simulate,
             },
             context=context,
         )
 
-        if rule.condition:
-            blocked_by = await self._condition_block_reason(rule)
+        if rule.condition and not force_conditions:
+            blocked_by = await self._condition_block_reason(rule, at)
             if blocked_by is not None:
                 results = [{"outcome": "blocked", "reason": blocked_by}]
                 self.last_run = results
                 self.last_run_at = dt_util.utcnow()
-                self._fire_completed(rule, results)
+                self._fire_completed(rule, results, simulate=simulate)
                 # The same words the logbook row carries, deliberately:
                 # the person reading the card and the person reading the
                 # logbook must not be told two different things about why
                 # one rule did nothing.
-                await self._async_record_outcome(
-                    rule,
-                    build_outcome("blocked", self.last_run_at, blocked_by),
-                )
+                if not simulate:
+                    await self._async_record_outcome(
+                        rule,
+                        build_outcome("blocked", self.last_run_at, blocked_by),
+                    )
                 return results
 
         async with self._locks[rule.id]:
             results = []
             for action, data in expand_action(rule.action, dict(rule.data)):
                 results.append(
-                    await self._call(rule, action, rule.target, data, context)
+                    await self._call(
+                        rule, action, rule.target, data, context, simulate=simulate
+                    )
                 )
 
         self.last_run = results
         self.last_run_at = dt_util.utcnow()
-        self._fire_completed(rule, results)
-        await self._async_record_outcome(
-            rule, outcome_from_results(results, self.last_run_at)
-        )
+        self._fire_completed(rule, results, simulate=simulate)
+        if not simulate:
+            await self._async_record_outcome(
+                rule, outcome_from_results(results, self.last_run_at)
+            )
         return results
 
     async def _async_record_outcome(self, rule: Rule, record: dict | None) -> None:
@@ -364,7 +404,9 @@ class ShabbatEngine:
         await self.store.async_record_outcome(rule.id, record)
         async_dispatcher_send(self.hass, SIGNAL_RULES_CHANGED)
 
-    def _fire_completed(self, rule: Rule, results: list[dict]) -> None:
+    def _fire_completed(
+        self, rule: Rule, results: list[dict], *, simulate: bool = False
+    ) -> None:
         """Announce the outcome, carrying enough to describe itself.
 
         Fired after the results exist, for consumers that need them.
@@ -377,6 +419,11 @@ class ShabbatEngine:
         - it may have been renamed or deleted by then. Without these the
         outcome row could not say which rule or which device it was about,
         and an outcome nobody can attribute is barely an outcome.
+
+        `dry_run` in the payload is `simulate`, not `self.store.dry_run` -
+        the persisted flag is gone (see docs/known-behaviours.md); the key
+        NAME stays `dry_run` for backward compatibility with anything
+        listening on the event bus.
         """
         self.hass.bus.async_fire(
             EVENT_RULE_COMPLETED,
@@ -385,12 +432,19 @@ class ShabbatEngine:
                 "name": rule.name,
                 "action": rule.action,
                 "target": dict(rule.target),
-                "dry_run": self.store.dry_run,
+                "dry_run": simulate,
                 "results": results,
             },
         )
 
-    async def _condition_block_reason(self, rule: Rule) -> str | None:
+    # The only two condition types HA's own helpers read the clock for
+    # without accepting any override argument at all - see
+    # `_check_at_scoped`.
+    _AT_SCOPED_CONDITIONS = frozenset({"sun", "time"})
+
+    async def _condition_block_reason(
+        self, rule: Rule, at: datetime | None = None
+    ) -> str | None:
         """None if every condition passes, else WHY the rule is blocked.
 
         Every condition must pass. An error counts as not passing: erring
@@ -411,17 +465,32 @@ class ShabbatEngine:
         `cv.CONDITION_SCHEMA` + `async_validate_condition_config` is what
         does that normalising, same as `ha_validation.py` does at
         authoring time for the identical reason.
+
+        `at`: when given, a condition of type `sun` or `time` is evaluated
+        as though `at` were "now" - verified against the installed
+        2026.8.2, `homeassistant.helpers.condition.time` and
+        `homeassistant.components.sun.condition.sun` both call
+        `dt_util.now()`/`dt_util.utcnow()` directly and accept no `now`
+        parameter of their own. `at` for any OTHER condition type is a
+        documented no-op, not silently pretended to work, since HA gives
+        this module no hook to parameterise them at all. See
+        `_check_at_scoped` for the substitution mechanism.
         """
         total = len(rule.condition)
         for index, item in enumerate(rule.condition, start=1):
             label = _condition_label(index, total, item)
+            kind = item.get("condition") if isinstance(item, dict) else None
             try:
                 validated = cv.CONDITION_SCHEMA(dict(item))
                 validated = await condition.async_validate_condition_config(
                     self.hass, validated
                 )
                 checker = await condition.async_from_config(self.hass, validated)
-                if not checker(self.hass, {}):
+                if at is not None and kind in self._AT_SCOPED_CONDITIONS:
+                    passed = self._check_at_scoped(checker, at)
+                else:
+                    passed = checker(self.hass, {})
+                if not passed:
                     return f"{label} not met"
             except Exception as err:  # noqa: BLE001 - a broken condition blocks
                 _LOGGER.exception(
@@ -438,6 +507,41 @@ class ShabbatEngine:
                 )
                 return f"{label} could not be evaluated ({detail})"
         return None
+
+    def _check_at_scoped(self, checker, at: datetime) -> bool:
+        """Evaluate a sun/time condition checker as though `at` were now.
+
+        HA's `time`/`sun` condition helpers read `dt_util.now()`/
+        `dt_util.utcnow()` directly and accept no override parameter of
+        their own (see `_condition_block_reason`'s docstring). The only
+        honest way to evaluate one against a hypothetical moment is to
+        substitute what "now" means for the duration of this one call -
+        the same technique `freezegun` itself uses under the hood, done
+        here with plain attribute reassignment rather than adding a
+        test-only dependency (`freezegun` is not in `manifest.json`'s
+        `requirements`; see pyproject.toml) to a component Home Assistant
+        loads at runtime.
+
+        Safe from interleaving: `checker(...)` for `sun`/`time` is
+        synchronous and contains no `await`, so nothing else on the event
+        loop can run between the substitution and its `finally` restore.
+
+        The substitution is undone in `finally` unconditionally, including
+        when `checker(...)` raises - a leaked patch on `dt_util.now`/
+        `utcnow` would corrupt every other timing decision in the entire
+        integration for as long as the process lives.
+        """
+        at_local = at.astimezone(self._tz())
+        original_now, original_utcnow = dt_util.now, dt_util.utcnow
+        dt_util.now = lambda time_zone=None: (
+            at_local.astimezone(time_zone) if time_zone else at_local
+        )
+        dt_util.utcnow = lambda: at_local.astimezone(dt_util.UTC)
+        try:
+            return checker(self.hass, {})
+        finally:
+            dt_util.now = original_now
+            dt_util.utcnow = original_utcnow
 
     @property
     def current_block(self) -> Block | None:
@@ -925,7 +1029,14 @@ class ShabbatEngine:
         return unknown, nothing_real
 
     async def _call(
-        self, rule: Rule, action: str, target: dict, data: dict, context: Context
+        self,
+        rule: Rule,
+        action: str,
+        target: dict,
+        data: dict,
+        context: Context,
+        *,
+        simulate: bool,
     ) -> dict:
         """One service call, retried, reported either way.
 
@@ -936,9 +1047,9 @@ class ShabbatEngine:
         """
         result = {"action": action, "target": dict(target), "data": dict(data)}
 
-        # Before the dry-run return, deliberately: a dry run is exactly
-        # where you want to be told about a misspelt entity id, and a dry
-        # run that reported "would_call" for a target that cannot resolve
+        # Before the simulate return, deliberately: a simulated run is
+        # exactly where you want to be told about a misspelt entity id, and
+        # one that reported "would_call" for a target that cannot resolve
         # would be the same quiet failure one step earlier.
         unknown, nothing_real = self._inspect_target(target)
         if unknown:
@@ -963,7 +1074,7 @@ class ShabbatEngine:
                 rule.name or rule.id, target or "none", NO_LIVE_TARGETS_NOTE,
             )
 
-        if self.store.dry_run:
+        if simulate:
             result["outcome"] = "would_call"
             return result
 

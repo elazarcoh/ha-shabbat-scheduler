@@ -1,19 +1,58 @@
 # Shabbat Scheduler
 
-A Home Assistant integration that drives appliances across Shabbat and Chag,
-when they cannot be operated by hand.
+*Alpha. 763 tests passing (525 Python + end-to-end, 238 frontend), not yet
+installed on the maintainer's own production instance.*
 
-## What it does
+Shabbat Scheduler schedules Home Assistant to do anything — turn a light on,
+run a scene, send a notification, adjust a thermostat — at specific times
+across Shabbat and Chag, without you touching a switch. It's for anyone who
+currently either does this by hand or cobbles it together with plain
+time-based automations, and wants two guarantees an ordinary automation does
+not give you: a rule **fires once and leaves the device alone** afterward
+(no re-asserting state every time something else changes it), and
+**overlapping rules are reported, never silently and arbitrarily resolved**
+in whichever order the automation engine happens to run them.
 
-A **block** is one contiguous Shabbat/Chag period, derived entirely from the
-Jewish Calendar integration's candle-lighting and havdalah sensors. Its length
-in days — 1 for a regular Shabbat, 2 or 3 when a Chag abuts one — selects which
-**profile** of rules applies. Rules are authored explicitly per block length,
-so a rule always reads exactly as it will run.
+![The card showing a resolved Shabbat block](docs/images/card-screenshot.png)
 
-Rules are deliberately **not** clamped to the zmanim: an erev rule at 17:00
-fires before Shabbat begins, which is how you pre-cool; a last-day rule at
-23:00 fires after havdalah. A rule is a clock time on a resolved date.
+*(The "Dry run" toggle — report what a rule would do without actually
+calling anything — is turned on for this screenshot, so the header shows
+something lit up. The master switch itself starts off on every fresh
+install; see step 3 below for why.)*
+
+## Quick start
+
+1. **Install via HACS.** Add this repository to HACS as a custom repository
+   of type *Integration*, download it, and restart Home Assistant.
+2. **Add the integration.** Settings → Devices & Services → Add Integration
+   → **Shabbat Scheduler**. If the [Jewish Calendar][jewish-calendar]
+   integration is already installed, its candle-lighting and havdalah
+   sensors are offered as the defaults — accept them unless you have a
+   reason not to.
+3. **The master switch starts off.** Nothing can happen yet: installing (and
+   even authoring rules) cannot touch a single appliance until you
+   deliberately turn `switch.shabbat_scheduler` on. This is deliberate —
+   safe by default — so you can set everything up at your own pace before
+   anything is live.
+4. **Open the card.** It's a Lovelace card and it registers itself the
+   moment the integration is added — there is nothing to add to your
+   dashboard's resources. Add it to a dashboard:
+
+   ```yaml
+   type: custom:shabbat-scheduler-card
+   title: שעון שבת
+   ```
+
+   Tap **+ Add rule** under a day and author your first one. A safe first
+   rule to try: action `input_boolean.turn_on`, target one `input_boolean`
+   entity — nothing about getting this wrong is dangerous, since it's just
+   a toggle. Give the **action** (which service to call — `domain.service`,
+   e.g. `input_boolean.turn_on`), a **target** (which entity, area, device
+   or label it acts on), a **time**, and save.
+5. **Turn the master switch on when you're ready.** Everything you've
+   authored starts running on the next Shabbat or Chag it applies to.
+
+[jewish-calendar]: https://www.home-assistant.io/integrations/jewish_calendar/
 
 ## Design commitments
 
@@ -28,11 +67,17 @@ fires before Shabbat begins, which is how you pre-cool; a last-day rule at
 - **Restart-aware.** A restart part-way through a block re-applies the current
   desired state once, rather than losing the rules that already passed.
 
-## Installation
+## Terminology
 
-Add this repository to HACS as a custom repository of type *Integration*,
-download it, restart Home Assistant, then add **Shabbat Scheduler** from
-Settings → Devices & Services.
+A **block** is one contiguous Shabbat/Chag period, derived entirely from the
+Jewish Calendar integration's candle-lighting and havdalah sensors. Its length
+in days — 1 for a regular Shabbat, 2 or 3 when a Chag abuts one — selects which
+**profile** of rules applies. Rules are authored explicitly per block length,
+so a rule always reads exactly as it will run.
+
+Rules are deliberately **not** clamped to the zmanim: an erev rule at 17:00
+fires before Shabbat begins, which is how you pre-cool; a last-day rule at
+23:00 fires after havdalah. A rule is a clock time on a resolved date.
 
 ## Entities
 
@@ -67,15 +112,15 @@ The card shows only the rules matching the coming block's length, because
 rules are authored per profile — a 3-day chag's rules are not shown on a
 plain Shabbat.
 
-Tap any rule to edit it, or use the **+ add** button under a day to create one
-there — the day and block length are taken from where you tapped. **The card
-is read-mostly for now**: `target`, `data`, `condition` and `replay` are shown
-verbatim but cannot be changed here — there is no honest way to render an
-arbitrary Home Assistant target selector and service payload with a form, so
-the dialog shows them plainly instead of pretending to edit them. You can
-still edit a rule's time, action string, name and enabled flag, and delete or
-duplicate it. Authoring `target`/`data`/`condition` is done via YAML export/
-import (see Services, below) until Plan 2 builds the real editors.
+Tap any rule to edit it, or use the **+ add** button under a day to create
+one there — the day and block length are taken from where you tapped. The
+dialog has a full editor for every field: **action** (a service picker),
+**target** (Home Assistant's own target selector — entity, device, area or
+label), **data** (the service's own payload form), **condition**, and
+**replay**, alongside time, name, icon, color and the enabled flag — nothing
+is shown read-only. YAML export/import (see Services, below) is still there
+too, for bulk edits across the whole rule set at once; either path writes
+the same rule shape, so use whichever is faster for what you're doing.
 
 The **1d / 2d / 3d** chips switch which block length you are looking at, so a
 3-day Chag can be set up long before one arrives. Any length other than the
@@ -83,9 +128,8 @@ coming one is shown as a preview: no dates, no candle-lighting or havdalah
 markers, and a banner saying so. Editing works exactly the same there.
 
 The gear opens the **shared defaults** — the target and data every rule
-inherits unless it sets its own. This dialog is also read-only until Plan 2:
-it shows what the defaults actually are and says where to change them (the
-same YAML round trip).
+inherits unless it sets its own — with the same target and data editors the
+rule dialog uses.
 
 ## Services
 
@@ -191,3 +235,12 @@ an edited file keeps each rule's entity, history and customisation.
 Non-obvious behaviours and accepted trade-offs — the havdalah sensor rollover,
 refresh serialisation, and what restart catch-up does across havdalah — are
 documented in [docs/known-behaviours.md](docs/known-behaviours.md).
+
+## Upgrading
+
+Coming from v1? Rule shapes changed — a v1 `on`/`off`/`custom` rule against a
+fixed device list is now any Home Assistant service call — and the upgrade
+happens automatically the first time you restart with this version
+installed. See [`docs/upgrading-from-v1.md`](docs/upgrading-from-v1.md) for
+exactly what migrates, what gets flagged for your attention instead of
+silently dropped, and what to check afterward.

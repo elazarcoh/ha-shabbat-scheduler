@@ -10,10 +10,11 @@ import {
   warningsForRule,
 } from './format';
 import { t } from './strings';
-import type { Defaults, RuleData, WarningData } from './types';
+import type { Defaults, Hass, RuleData, WarningData } from './types';
 
 @customElement('shabbat-rule-row')
 export class ShabbatRuleRow extends LitElement {
+  @property({ attribute: false }) hass: Hass | null = null;
   @property({ attribute: false }) rule!: RuleData;
   @property({ attribute: false }) defaults: Defaults = {};
   @property({ attribute: false }) warnings: WarningData[] = [];
@@ -138,6 +139,7 @@ export class ShabbatRuleRow extends LitElement {
         ${this.canWrite
           ? html`<ha-selector
               class="row-toggle"
+              .hass=${this.hass}
               .selector=${{ boolean: {} }}
               .value=${this.rule.enabled}
               @click=${(event: Event) => event.stopPropagation()}

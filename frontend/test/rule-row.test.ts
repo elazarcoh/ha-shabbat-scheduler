@@ -429,6 +429,14 @@ describe('the row-level enable/disable toggle', () => {
     expect(el.shadowRoot!.querySelector('ha-selector.row-toggle')).toBeNull();
   });
 
+  it('hands the row-toggle ha-selector the row\'s hass, like every other selector in this codebase', async () => {
+    const hass = {};
+    const el = await render({ rule: rule({}), canWrite: true, hass }) as any;
+    const sel = el.shadowRoot!.querySelector('ha-selector.row-toggle') as any;
+    expect(sel).not.toBeNull();
+    expect(sel.hass).toBe(el.hass);
+  });
+
   it('fires rule-toggle-enabled naming the whole rule, not just its id', async () => {
     const el = await render({ rule: rule({ id: 'a', enabled: true }), canWrite: true });
     let detail: any = null;

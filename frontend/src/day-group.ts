@@ -2,7 +2,7 @@ import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import './rule-row';
 import { t } from './strings';
-import type { DayGroup, Defaults, WarningData } from './types';
+import type { DayGroup, Defaults, Hass, WarningData } from './types';
 
 /**
  * '2026-08-15T20:01:00+03:00' -> '20:01', without a timezone library.
@@ -17,6 +17,7 @@ function clock(iso: string): string {
 
 @customElement('shabbat-day-group')
 export class ShabbatDayGroup extends LitElement {
+  @property({ attribute: false }) hass: Hass | null = null;
   @property({ attribute: false }) group!: DayGroup;
   @property({ attribute: false }) defaults: Defaults = {};
   @property({ attribute: false }) warnings: WarningData[] = [];
@@ -90,6 +91,7 @@ export class ShabbatDayGroup extends LitElement {
           ? rules.map(
               (rule) => html`
                 <shabbat-rule-row
+                  .hass=${this.hass}
                   .rule=${rule}
                   .defaults=${this.defaults}
                   .warnings=${this.warnings}

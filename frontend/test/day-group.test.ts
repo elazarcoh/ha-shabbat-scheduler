@@ -89,7 +89,8 @@ describe('shabbat-day-group', () => {
     expect(el.shadowRoot!.querySelector('.add')).not.toBeNull();
   });
 
-  it('threads canWrite and the matching toggle error down to each row', async () => {
+  it('threads canWrite, hass, and the matching toggle error down to each row', async () => {
+    const hass = {};
     const el = await render({
       group: group({
         rules: [
@@ -100,10 +101,12 @@ describe('shabbat-day-group', () => {
         ],
       }),
       canWrite: true,
+      hass,
       toggleErrors: { a: 'That did not go through.' },
-    });
+    }) as any;
     const row = el.shadowRoot!.querySelector('shabbat-rule-row') as any;
     expect(row.canWrite).toBe(true);
     expect(row.toggleError).toBe('That did not go through.');
+    expect(row.hass).toBe(el.hass);
   });
 });

@@ -493,6 +493,7 @@ export class ShabbatSchedulerCard extends LitElement {
         ${groups.map(
           (group) => html`
             <shabbat-day-group
+              .hass=${this._hass}
               .group=${group}
               .defaults=${this._state!.defaults}
               .warnings=${this._state!.warnings}

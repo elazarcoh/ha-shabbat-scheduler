@@ -1709,11 +1709,23 @@ async def test_simulate_does_not_record_even_when_the_rule_is_blocked(hass, engi
     rule = await _seeded(engine, _rule(condition=(
         {"condition": "state", "entity_id": "input_boolean.kids", "state": "on"},
     )))
+    calls = []
+    async_dispatcher_connect(hass, SIGNAL_RULES_CHANGED, lambda: calls.append(1))
 
     results = await engine.async_apply_rule(rule, simulate=True)
+    await hass.async_block_till_done()
 
     assert results[0]["outcome"] == "blocked"
     assert engine.store.last_outcome(rule.id) is None
+    # Same guarantee as the non-blocked path
+    # (test_simulate_does_not_signal_rules_changed), proven independently
+    # here rather than left to follow from code-reading: SIGNAL_RULES_CHANGED
+    # only ever fires from inside _async_record_outcome, and the blocked
+    # branch guards that call with the identical `if not simulate:` the
+    # non-blocked branch uses - but that identity is exactly the kind of
+    # thing a future edit could accidentally break on one branch and not
+    # the other.
+    assert calls == []
 
 
 async def test_simulate_does_not_signal_rules_changed(hass, engine, _rule):

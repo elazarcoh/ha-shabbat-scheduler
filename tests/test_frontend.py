@@ -353,13 +353,22 @@ def test_the_bundle_defines_the_card_element():
 
 def test_the_bundle_version_matches_the_url_stamp():
     """Otherwise the resource URL never changes and browsers keep serving
-    a stale card out of cache after an update. Ties the check to the actual
-    `const CARD_VERSION = '...'` declaration rollup carries over verbatim
-    from frontend/src/version.ts, so a drift between that file and this
-    module's CARD_VERSION is caught - and requires the real registration
-    call too, so a stub that merely echoes the version string cannot pass."""
+    a stale card out of cache after an update.
+
+    Used to assert the literal `const CARD_VERSION = '...'` declaration
+    rollup carried over verbatim from frontend/src/version.ts - but
+    minification (Task 6, alpha packaging) legitimately renames that local
+    identifier, so the exact declaration text is no longer a stable anchor
+    in the shipped bundle. The template-literal console.info call at the
+    end of card.ts survives instead: it is a runtime call with a STRING
+    ARGUMENT, which terser's default settings never touch (see
+    rollup.config.js's comment - only local variable/function names are
+    mangled, not string literals), so the interpolated version number
+    appears verbatim in the output regardless of what the source-level
+    constant got renamed to. Still requires the real registration call
+    too, so a stub that merely echoes the version string cannot pass."""
     text = (WWW / CARD_FILENAME).read_text(encoding="utf-8")
-    assert f"const CARD_VERSION = '{CARD_VERSION}';" in text
+    assert f"shabbat-scheduler-card {CARD_VERSION}" in text
     assert "customElements.define" in text
 
 

@@ -20,11 +20,42 @@ from .const import DOMAIN
 from .models import Block, Rule
 
 
-def _rule_shape(rule: Rule) -> dict[str, Any]:
-    """A rule's shape, not its content: what kind of thing it is, not
-    which entities or rooms it names."""
+def _outcome_shape(outcome: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A rule's last outcome, shape not content.
+
+    `outcome`/`at` are safe: one of a fixed small vocabulary and an ISO
+    timestamp, neither naming an entity or a room. `detail` is free text
+    that can and does embed entity ids (e.g. "condition 1 of 1 (state on
+    input_boolean.kids) not met"), so only whether one exists is reported,
+    never the string itself - the same shape-not-content split every other
+    field in this file already makes.
+    """
+    if outcome is None:
+        return None
     return {
-        "id": rule.id,
+        "outcome": outcome.get("outcome"),
+        "at": outcome.get("at"),
+        "has_detail": bool(outcome.get("detail")),
+        "unknown_target_count": len(outcome.get("unknown_targets") or []),
+        "no_live_targets": bool(outcome.get("no_live_targets")),
+    }
+
+
+def _rule_shape(
+    rule: Rule, index: int, last_outcome: dict[str, Any] | None
+) -> dict[str, Any]:
+    """A rule's shape, not its content: what kind of thing it is, not
+    which entities or rooms it names.
+
+    `id` is reported as a positionally-stable `rule_{index}`, not the real
+    id: ids are not always integration-generated - a hand-edited YAML
+    import (`yaml_io.py`) or a migrated v1 rule can carry a user-authored
+    id - so the real one could name something personal, narrowly
+    contradicting this file's "nothing that identifies a person's home"
+    promise for the sake of a field nothing here actually needs.
+    """
+    return {
+        "id": f"rule_{index}",
         "profile": rule.profile,
         "day": rule.day,
         "action": rule.action,
@@ -34,6 +65,7 @@ def _rule_shape(rule: Rule) -> dict[str, Any]:
         "replay_enabled": rule.replay.enabled,
         "enabled": rule.enabled,
         "migration_error": rule.migration_error,
+        "last_outcome": _outcome_shape(last_outcome),
     }
 
 
@@ -69,5 +101,8 @@ async def async_get_config_entry_diagnostics(
         "migration_failures": store.migration_failures,
         "current_block": _block_shape(engine.current_block),
         "upcoming_count": len(engine.upcoming()),
-        "rules": [_rule_shape(rule) for rule in store.rules],
+        "rules": [
+            _rule_shape(rule, index, store.last_outcome(rule.id))
+            for index, rule in enumerate(store.rules)
+        ],
     }

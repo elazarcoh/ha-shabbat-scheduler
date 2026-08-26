@@ -25,6 +25,30 @@ def _is_e2e(report) -> bool:
     return os.path.dirname(path) == _HERE
 
 
+def _e2e_all_skipped(terminalreporter) -> tuple[bool, list]:
+    """Every e2e test skipped, and none of them actually ran - plus the
+    skip reports themselves, for callers that want to say why.
+
+    Shared by `pytest_terminal_summary` (prints the loud banner) and
+    `pytest_sessionfinish` (fails the run in CI) so the two hooks cannot
+    disagree about what "all skipped" means.
+    """
+    stats = terminalreporter.stats
+    skipped = [r for r in stats.get("skipped", []) if _is_e2e(r)]
+    if not skipped:
+        return False, skipped
+    # A test that actually ran has a `call` report; a test skipped during
+    # setup never gets one. So "no call reports at all" is exactly "every
+    # e2e test skipped", regardless of pass or fail.
+    ran = [
+        report
+        for outcome in ("passed", "failed", "error")
+        for report in stats.get(outcome, [])
+        if _is_e2e(report) and getattr(report, "when", None) == "call"
+    ]
+    return not ran, skipped
+
+
 def pytest_terminal_summary(terminalreporter) -> None:
     """Say out loud when e2e verified nothing.
 
@@ -39,20 +63,8 @@ def pytest_terminal_summary(terminalreporter) -> None:
     because a down container and an EXPIRED token skip for different
     reasons and the fix differs. See the `token` fixture.
     """
-    stats = terminalreporter.stats
-    skipped = [r for r in stats.get("skipped", []) if _is_e2e(r)]
-    if not skipped:
-        return
-    # A test that actually ran has a `call` report; a test skipped during
-    # setup never gets one. So "no call reports at all" is exactly "every
-    # e2e test skipped", regardless of pass or fail.
-    ran = [
-        report
-        for outcome in ("passed", "failed", "error")
-        for report in stats.get(outcome, [])
-        if _is_e2e(report) and getattr(report, "when", None) == "call"
-    ]
-    if ran:
+    all_skipped, skipped = _e2e_all_skipped(terminalreporter)
+    if not all_skipped:
         return
 
     terminalreporter.write_sep(
@@ -72,6 +84,38 @@ def pytest_terminal_summary(terminalreporter) -> None:
     terminalreporter.write_line(
         f"e2e: {len(skipped)} test(s) skipped. See dev/README.md.", red=True
     )
+
+
+def pytest_sessionfinish(session) -> None:
+    """In CI ONLY, fail the run outright when e2e verified nothing.
+
+    `pytest_terminal_summary` above already SAYS this out loud, but a
+    loud banner is not a failure - the exact gap that let this suite stay
+    RED, unnoticed, through an entire plan: every CI run still exited 0
+    and reported "N passed" for the Python suite while the only tests
+    that exercise the card in a real browser silently skipped. Printing
+    was necessary but not sufficient; this makes it load-bearing.
+
+    Gated on `CI` (which GitHub Actions sets for every job, and nothing
+    else does) rather than applying unconditionally, because outside CI
+    this is the correct, EXPECTED outcome: a developer running `uv run
+    pytest` locally with no dev container up and no `HA_DEV_TOKEN` set
+    should get a clean skip with the banner above, not a failing test
+    run for a container they never intended to start.
+
+    `terminalreporter.stats` is populated by `pytest_runtest_logreport`
+    as each test finishes running - well before any `sessionfinish` hook
+    fires - so reading it here is safe regardless of hook ordering
+    between this and the terminal reporter's own summary.
+    """
+    if not os.environ.get("CI"):
+        return
+    terminalreporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if terminalreporter is None:
+        return
+    all_skipped, _ = _e2e_all_skipped(terminalreporter)
+    if all_skipped:
+        session.exitstatus = 1
 
 
 @pytest.fixture(autouse=True)

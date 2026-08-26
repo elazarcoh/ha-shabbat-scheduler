@@ -70,14 +70,24 @@ fires before Shabbat begins, which is how you pre-cool; a last-day rule at
 
 - **Fire once, never re-assert.** A rule acts at its moment and then leaves the
   device alone. Turn something off by hand afterwards and it stays off.
-- **Idempotent.** Each rule compares current state to desired and sends only
-  what genuinely differs, reporting `changed` / `ok` / `failed` per attribute.
+- **Reports what happened, honestly.** A rule is an opaque service call, not
+  a state to compare against — there is nothing to read back and check. Each
+  call reports `called`, `would_call`, `failed`, `blocked`, or `skipped`,
+  plus two diagnostics for a call that succeeded but reached nothing real:
+  `unknown_targets` (a typo) and `no_live_targets` (a target that resolved
+  to nothing that exists). The integration hands the call to Home Assistant
+  and tells you exactly what happened — it does not pretend to know what
+  changed.
 - **No precedence.** Overlapping rules are reported as conflicts, never
   silently resolved — there is no defined winner, so the choice stays yours.
 - **Safe by default.** The master switch is **off** on a fresh install, so
   installing cannot touch an appliance until you deliberately enable it.
-- **Restart-aware.** A restart part-way through a block re-applies the current
-  desired state once, rather than losing the rules that already passed.
+- **Replay is opt-in, off by default.** After a restart, a rule that already
+  passed does **not** re-fire — even one that was due minutes before the
+  restart — unless you explicitly opt it in per rule (`replay: enabled`),
+  with an optional staleness window past which it is skipped rather than
+  replayed late. Nothing unexpected fires just because Home Assistant
+  restarted.
 
 ## Entities
 
@@ -116,11 +126,13 @@ Tap any rule to edit it, or use the **+ add** button under a day to create
 one there — the day and block length are taken from where you tapped. The
 dialog has a full editor for every field: **action** (a service picker),
 **target** (Home Assistant's own target selector — entity, device, area or
-label), **data** (the service's own payload form), **condition**, and
-**replay**, alongside time, name, icon, color and the enabled flag — nothing
-is shown read-only. YAML export/import (see Services, below) is still there
-too, for bulk edits across the whole rule set at once; either path writes
-the same rule shape, so use whichever is faster for what you're doing.
+label), **data** (the service's own payload form), **condition** (a
+guard the rule must pass to fire), and **replay** (whether it re-fires
+after a restart), alongside time, name, icon, color and the enabled flag —
+nothing is shown read-only. Both are detailed in full under "Rule format"
+below. YAML export/import (see Services, below) is still there too, for
+bulk edits across the whole rule set at once; either path writes the same
+rule shape, so use whichever is faster for what you're doing.
 
 The **1d / 2d / 3d** chips switch which block length you are looking at, so a
 3-day Chag can be set up long before one arrives. Any length other than the

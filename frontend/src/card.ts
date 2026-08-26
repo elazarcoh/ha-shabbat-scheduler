@@ -434,6 +434,7 @@ export class ShabbatSchedulerCard extends LitElement {
           ? html`<div class="message notice">${t(this._language, error)}</div>`
           : nothing}
         <shabbat-block-header
+          .hass=${this._hass}
           .block=${this._state.block}
           .enabled=${this._state.enabled}
           .dryRun=${this._state.dry_run}

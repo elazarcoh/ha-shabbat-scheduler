@@ -2,10 +2,11 @@ import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { orderedDates } from './format';
 import { t } from './strings';
-import type { BlockData } from './types';
+import type { BlockData, Hass } from './types';
 
 @customElement('shabbat-block-header')
 export class ShabbatBlockHeader extends LitElement {
+  @property({ attribute: false }) hass: Hass | null = null;
   @property({ attribute: false }) block: BlockData | null = null;
   @property({ type: Boolean }) enabled = false;
   @property({ type: Boolean }) dryRun = false;
@@ -60,6 +61,8 @@ export class ShabbatBlockHeader extends LitElement {
       border-color: transparent;
     }
     .gear { border: none; background: none; cursor: pointer; font-size: 1.1em; }
+    .master-wrap { display: flex; align-items: center; gap: 6px; }
+    .master-label { font-size: 0.9em; }
     @media (max-width: 599px) {
       .header { flex-wrap: wrap; }
       .label { flex-basis: 100%; }
@@ -77,13 +80,13 @@ export class ShabbatBlockHeader extends LitElement {
 
   // No optimistic update anywhere here: the control reports intent and
   // keeps rendering the pushed state until the server confirms.
-  private _toggleMaster() {
+  private _onMasterChanged = (event: CustomEvent) => {
     this.dispatchEvent(
       new CustomEvent('shabbat-master-toggle', {
-        detail: { enabled: !this.enabled },
+        detail: { enabled: Boolean(event.detail?.value) },
       }),
     );
-  }
+  };
 
   private _toggleDryRun() {
     this.dispatchEvent(
@@ -127,13 +130,17 @@ export class ShabbatBlockHeader extends LitElement {
               ⚙
             </button>`
           : nothing}
-        <button
-          class="master ${this.enabled ? 'active' : ''}"
-          ?disabled=${!this.canWrite || this.masterEntityId === null}
-          @click=${this._toggleMaster}
-        >
-          ${t(this.language, 'master')}
-        </button>
+        <div class="master-wrap">
+          <span class="master-label">${t(this.language, 'master')}</span>
+          <ha-selector
+            class="master"
+            .hass=${this.hass}
+            .selector=${{ boolean: {} }}
+            .value=${this.enabled}
+            .disabled=${!this.canWrite || this.masterEntityId === null}
+            @value-changed=${this._onMasterChanged}
+          ></ha-selector>
+        </div>
         <button
           class="dry-run ${this.dryRun ? 'active' : ''}"
           ?disabled=${!this.canWrite}

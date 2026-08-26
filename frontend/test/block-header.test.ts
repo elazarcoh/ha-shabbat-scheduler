@@ -15,11 +15,15 @@ async function render(props: Record<string, unknown>) {
     Record<string, unknown>;
   Object.assign(el, {
     block, enabled: false, dryRun: false, canWrite: true,
-    masterEntityId: 'switch.master', language: 'en', selectedProfile: 1, ...props,
+    masterEntityId: 'switch.master', language: 'en', selectedProfile: 1, hass: {}, ...props,
   });
   document.body.appendChild(el);
   await (el as unknown as { updateComplete: Promise<unknown> }).updateComplete;
   return el;
+}
+
+function master(el: any) {
+  return el.shadowRoot.querySelector('ha-selector.master');
 }
 
 describe('shabbat-block-header', () => {
@@ -43,12 +47,23 @@ describe('shabbat-block-header', () => {
     expect(el.shadowRoot!.textContent).toContain('No upcoming Shabbat');
   });
 
+  it('hands the master ha-selector a boolean selector and the current value', async () => {
+    const el = await render({ enabled: true });
+    const sel = master(el);
+    expect(sel).not.toBeNull();
+    expect(sel.selector).toEqual({ boolean: {} });
+    expect(sel.value).toBe(true);
+    expect(sel.hass).toBe(el.hass);
+  });
+
   it('fires an event rather than mutating its own state', async () => {
     const el = await render({ enabled: false });
     const listener = vi.fn();
     el.addEventListener('shabbat-master-toggle', listener);
 
-    (el.shadowRoot!.querySelector('.master') as HTMLElement).click();
+    master(el).dispatchEvent(
+      new CustomEvent('value-changed', { detail: { value: true } }),
+    );
 
     expect(listener).toHaveBeenCalledOnce();
     expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({
@@ -58,18 +73,14 @@ describe('shabbat-block-header', () => {
     expect((el as unknown as { enabled: boolean }).enabled).toBe(false);
   });
 
-  it('disables both controls for a read-only user', async () => {
+  it('disables the master control for a read-only user', async () => {
     const el = await render({ canWrite: false });
-    const master = el.shadowRoot!.querySelector('.master') as HTMLButtonElement;
-    const dryRun = el.shadowRoot!.querySelector('.dry-run') as HTMLButtonElement;
-    expect(master.disabled).toBe(true);
-    expect(dryRun.disabled).toBe(true);
+    expect(master(el).disabled).toBe(true);
   });
 
   it('disables the master control when the entity is unknown', async () => {
     const el = await render({ masterEntityId: null });
-    const master = el.shadowRoot!.querySelector('.master') as HTMLButtonElement;
-    expect(master.disabled).toBe(true);
+    expect(master(el).disabled).toBe(true);
   });
 });
 

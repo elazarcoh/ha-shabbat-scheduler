@@ -836,6 +836,7 @@ MUTATIONS = [
         "type": "shabbat_scheduler/defaults/update",
         "defaults": {"target": {"entity_id": ["x.y"]}},
     },
+    {"type": "shabbat_scheduler/rules/run_now", "rule_id": "r1"},
 ]
 
 
@@ -991,6 +992,103 @@ async def test_delete_of_unknown_rule_errors(hass, hass_ws_client, setup_schedul
 
     assert not msg["success"]
     assert msg["error"]["code"] == "not_found"
+
+
+# --- Task 7: rules/run_now applies through the real fire path ------------
+
+
+async def test_run_now_defaults_to_simulate(hass, hass_ws_client, setup_scheduler):
+    await setup_scheduler([
+        Rule(id="r1", profile=1, day="1", time=time(11, 0),
+             action="input_boolean.turn_on", target={"entity_id": ["input_boolean.t"]}),
+    ])
+    hass.states.async_set("input_boolean.t", "off")
+    client = await hass_ws_client(hass)
+
+    await client.send_json(
+        {"id": 1, "type": "shabbat_scheduler/rules/run_now", "rule_id": "r1"}
+    )
+    msg = await client.receive_json()
+
+    assert msg["success"]
+    assert msg["result"]["results"][0]["outcome"] == "would_call"
+    assert hass.states.get("input_boolean.t").state == "off"
+
+
+async def test_run_now_with_simulate_false_really_calls(
+    hass, hass_ws_client, setup_scheduler, test_booleans
+):
+    await setup_scheduler([
+        Rule(id="r1", profile=1, day="1", time=time(11, 0),
+             action="input_boolean.turn_on", target={"entity_id": ["input_boolean.t"]}),
+    ])
+    hass.states.async_set("input_boolean.t", "off")
+    client = await hass_ws_client(hass)
+
+    await client.send_json({
+        "id": 1, "type": "shabbat_scheduler/rules/run_now",
+        "rule_id": "r1", "simulate": False,
+    })
+    msg = await client.receive_json()
+    await hass.async_block_till_done()
+
+    assert msg["success"]
+    assert msg["result"]["results"][0]["outcome"] == "called"
+    assert hass.states.get("input_boolean.t").state == "on"
+
+
+async def test_run_now_of_an_unknown_rule_errors_cleanly(
+    hass, hass_ws_client, setup_scheduler
+):
+    await setup_scheduler()
+    client = await hass_ws_client(hass)
+
+    await client.send_json(
+        {"id": 1, "type": "shabbat_scheduler/rules/run_now", "rule_id": "nope"}
+    )
+    msg = await client.receive_json()
+
+    assert not msg["success"]
+    assert msg["error"]["code"] == "not_found"
+
+
+async def test_run_now_merges_shared_defaults(
+    hass, hass_ws_client, setup_scheduler, test_booleans
+):
+    """A rule with no target of its own must still resolve through the
+    shared defaults - the same merge every real fire applies."""
+    await setup_scheduler(
+        [Rule(id="r1", profile=1, day="1", time=time(11, 0), action="input_boolean.turn_on")],
+        defaults={"target": {"entity_id": ["input_boolean.t"]}},
+    )
+    hass.states.async_set("input_boolean.t", "off")
+    client = await hass_ws_client(hass)
+
+    await client.send_json({
+        "id": 1, "type": "shabbat_scheduler/rules/run_now",
+        "rule_id": "r1", "simulate": False,
+    })
+    msg = await client.receive_json()
+    await hass.async_block_till_done()
+
+    assert msg["success"]
+    assert msg["result"]["results"][0]["outcome"] == "called"
+    assert hass.states.get("input_boolean.t").state == "on"
+
+
+async def test_run_now_rejects_a_malformed_at(hass, hass_ws_client, setup_scheduler):
+    await setup_scheduler([
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="input_boolean.turn_on"),
+    ])
+    client = await hass_ws_client(hass)
+
+    await client.send_json({
+        "id": 1, "type": "shabbat_scheduler/rules/run_now",
+        "rule_id": "r1", "at": "not-a-datetime",
+    })
+    msg = await client.receive_json()
+
+    assert not msg["success"]
 
 
 # --- Final review I4: a subscription must follow the live store ----------

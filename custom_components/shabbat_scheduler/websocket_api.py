@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import replace
+from datetime import datetime
 from typing import Any
 
 import voluptuous as vol
@@ -15,7 +16,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.util import dt as dt_util
 
 from . import ha_validation
-from .block import block_payload, conflict_warnings, preview_payload
+from .block import block_payload, conflict_warnings, merge_defaults, preview_payload
 from .const import DOMAIN, MAX_PROFILE, MIN_PROFILE, SIGNAL_RULES_CHANGED
 from .rule_schema import (
     RuleValidationError,
@@ -255,6 +256,52 @@ async def ws_delete(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
+        vol.Required("type"): "shabbat_scheduler/rules/run_now",
+        vol.Required("rule_id"): str,
+        vol.Optional("simulate", default=True): bool,
+        vol.Optional("at"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_run_now(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    """Apply one rule right now, through the exact path a real fire uses.
+
+    `simulate` defaults to True so an accidental or malformed call from a
+    future client version cannot silently make a real call.
+    """
+    data = _entry_data(hass)
+    if data is None:
+        connection.send_error(msg["id"], "not_set_up", "Integration is not set up")
+        return
+    store, engine = data["store"], data["engine"]
+
+    existing = next((r for r in store.rules if r.id == msg["rule_id"]), None)
+    if existing is None:
+        connection.send_error(msg["id"], "not_found", f"No rule {msg['rule_id']}")
+        return
+
+    at: datetime | None = None
+    if "at" in msg:
+        at = dt_util.parse_datetime(msg["at"])
+        if at is None:
+            connection.send_error(
+                msg["id"], "invalid_rule",
+                f"at is not a valid ISO 8601 datetime: {msg['at']!r}",
+            )
+            return
+
+    # Merged with the shared defaults first, exactly as every real fire
+    # does (`engine._merged_rules()`) - a rule whose target/data come from
+    # the defaults must run_now the same way it would really fire, not
+    # against its own bare, possibly-empty target.
+    rule = merge_defaults(store.defaults, existing)
+    results = await engine.async_apply_rule(rule, simulate=msg["simulate"], at=at)
+    connection.send_result(msg["id"], {"results": results})
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
         vol.Required("type"): "shabbat_scheduler/defaults/update",
         vol.Required("defaults"): dict,
     }
@@ -327,5 +374,6 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_create)
     websocket_api.async_register_command(hass, ws_update)
     websocket_api.async_register_command(hass, ws_delete)
+    websocket_api.async_register_command(hass, ws_run_now)
     websocket_api.async_register_command(hass, ws_defaults)
     websocket_api.async_register_command(hass, ws_subscribe)

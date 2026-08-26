@@ -837,6 +837,7 @@ MUTATIONS = [
         "defaults": {"target": {"entity_id": ["x.y"]}},
     },
     {"type": "shabbat_scheduler/rules/run_now", "rule_id": "r1"},
+    {"type": "shabbat_scheduler/rules/run_day", "profile": 1, "day": "1"},
 ]
 
 
@@ -1089,6 +1090,130 @@ async def test_run_now_rejects_a_malformed_at(hass, hass_ws_client, setup_schedu
     msg = await client.receive_json()
 
     assert not msg["success"]
+
+
+# --- Task 8: rules/run_day resolves and applies a whole day's schedule ---
+
+
+async def test_run_day_simulates_the_real_current_block_by_default(
+    hass, hass_ws_client, setup_scheduler
+):
+    await setup_scheduler([
+        Rule(id="r1", profile=1, day="1", time=time(11, 0),
+             action="input_boolean.turn_on", target={"entity_id": ["input_boolean.t"]}),
+        Rule(id="erev1", profile=1, day="erev", time=time(9, 0),
+             action="input_boolean.turn_on", target={"entity_id": ["input_boolean.t"]}),
+    ])
+    hass.states.async_set("input_boolean.t", "off")
+    client = await hass_ws_client(hass)
+
+    await client.send_json({
+        "id": 1, "type": "shabbat_scheduler/rules/run_day",
+        "profile": 1, "day": "1",
+    })
+    msg = await client.receive_json()
+
+    assert msg["success"]
+    ids = [item["rule_id"] for item in msg["result"]["results"]]
+    assert ids == ["r1"]  # only day '1', not 'erev'
+    assert msg["result"]["results"][0]["results"][0]["outcome"] == "would_call"
+    assert hass.states.get("input_boolean.t").state == "off"
+
+
+async def test_run_day_preserves_resolve_rules_order(
+    hass, hass_ws_client, setup_scheduler
+):
+    await setup_scheduler([
+        Rule(id="late", profile=1, day="1", time=time(20, 0), action="input_boolean.turn_on"),
+        Rule(id="early", profile=1, day="1", time=time(8, 0), action="input_boolean.turn_on"),
+    ])
+    client = await hass_ws_client(hass)
+
+    await client.send_json({
+        "id": 1, "type": "shabbat_scheduler/rules/run_day",
+        "profile": 1, "day": "1",
+    })
+    msg = await client.receive_json()
+
+    assert [item["rule_id"] for item in msg["result"]["results"]] == ["early", "late"]
+
+
+async def test_run_day_can_simulate_a_hypothetical_profile(
+    hass, hass_ws_client, setup_scheduler
+):
+    """profile=3 while the real block is 1 day: a hypothetical block,
+    anchored on the real candle lighting - same construction preview_payload
+    uses for block_length."""
+    await setup_scheduler([
+        Rule(id="p3", profile=3, day="2", time=time(11, 0), action="input_boolean.turn_on"),
+    ])
+    client = await hass_ws_client(hass)
+
+    await client.send_json({
+        "id": 1, "type": "shabbat_scheduler/rules/run_day",
+        "profile": 3, "day": "2",
+    })
+    msg = await client.receive_json()
+
+    assert msg["success"]
+    assert [item["rule_id"] for item in msg["result"]["results"]] == ["p3"]
+
+
+async def test_run_day_force_conditions_bypasses_a_blocking_condition(
+    hass, hass_ws_client, setup_scheduler
+):
+    await setup_scheduler([
+        Rule(id="r1", profile=1, day="1", time=time(11, 0),
+             action="input_boolean.turn_on",
+             condition=({"condition": "state", "entity_id": "input_boolean.kids", "state": "on"},)),
+    ])
+    hass.states.async_set("input_boolean.kids", "off")
+    client = await hass_ws_client(hass)
+
+    await client.send_json({
+        "id": 1, "type": "shabbat_scheduler/rules/run_day",
+        "profile": 1, "day": "1", "force_conditions": True,
+    })
+    msg = await client.receive_json()
+
+    assert msg["result"]["results"][0]["results"][0]["outcome"] == "would_call"
+
+
+async def test_run_day_without_force_conditions_still_blocks(
+    hass, hass_ws_client, setup_scheduler
+):
+    await setup_scheduler([
+        Rule(id="r1", profile=1, day="1", time=time(11, 0),
+             action="input_boolean.turn_on",
+             condition=({"condition": "state", "entity_id": "input_boolean.kids", "state": "on"},)),
+    ])
+    hass.states.async_set("input_boolean.kids", "off")
+    client = await hass_ws_client(hass)
+
+    await client.send_json({
+        "id": 1, "type": "shabbat_scheduler/rules/run_day",
+        "profile": 1, "day": "1",
+    })
+    msg = await client.receive_json()
+
+    assert msg["result"]["results"][0]["results"][0]["outcome"] == "blocked"
+
+
+async def test_run_day_errors_cleanly_with_no_known_block(hass, hass_ws_client):
+    entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    client = await hass_ws_client(hass)
+
+    await client.send_json({
+        "id": 1, "type": "shabbat_scheduler/rules/run_day",
+        "profile": 1, "day": "1",
+    })
+    msg = await client.receive_json()
+
+    assert not msg["success"]
+    assert msg["error"]["code"] == "no_block"
 
 
 # --- Final review I4: a subscription must follow the live store ----------

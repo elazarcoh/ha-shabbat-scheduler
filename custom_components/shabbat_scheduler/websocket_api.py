@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import voluptuous as vol
@@ -16,7 +16,14 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.util import dt as dt_util
 
 from . import ha_validation
-from .block import block_payload, conflict_warnings, merge_defaults, preview_payload
+from .block import (
+    block_payload,
+    compute_block,
+    conflict_warnings,
+    merge_defaults,
+    preview_payload,
+    resolve_rules,
+)
 from .const import DOMAIN, MAX_PROFILE, MIN_PROFILE, SIGNAL_RULES_CHANGED
 from .rule_schema import (
     RuleValidationError,
@@ -302,6 +309,71 @@ async def ws_run_now(hass: HomeAssistant, connection, msg: dict[str, Any]) -> No
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
+        vol.Required("type"): "shabbat_scheduler/rules/run_day",
+        vol.Required("profile"): int,
+        vol.Required("day"): str,
+        vol.Optional("simulate", default=True): bool,
+        vol.Optional("force_conditions", default=False): bool,
+    }
+)
+@websocket_api.async_response
+async def ws_run_day(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    """Run a whole day's resolved schedule right now.
+
+    This is `resolve_rules()` - the exact function `async_refresh` calls to
+    build the real schedule - followed by a loop over `async_apply_rule()` -
+    the exact function `_make_callback`'s real timer closure calls. No
+    parallel implementation of either decision; the only thing this command
+    owns is *when* to call `async_apply_rule`: a plain sequential loop,
+    right now, instead of HA's real point-in-time timer waiting for the
+    real clock.
+    """
+    data = _entry_data(hass)
+    if data is None:
+        connection.send_error(msg["id"], "not_set_up", "Integration is not set up")
+        return
+    store, engine = data["store"], data["engine"]
+
+    current = engine.current_block
+    if current is None:
+        connection.send_error(
+            msg["id"], "no_block",
+            "No block could be derived from the Jewish Calendar sensors; "
+            "nothing to run.",
+        )
+        return
+
+    profile = msg["profile"]
+    if current.length == profile:
+        block = current
+    else:
+        # A hypothetical block of the requested length, anchored on the
+        # real candle lighting - exactly preview_payload's own
+        # `block_length` branch (block.py), reused rather than
+        # reimplemented so the two can never disagree about what a
+        # hypothetical block of a given length looks like.
+        block = compute_block(
+            current.candle_lighting,
+            current.candle_lighting.replace(hour=20, minute=0)
+            + timedelta(days=int(profile)),
+        )
+
+    merged = engine._merged_rules()  # same call async_refresh already makes
+    resolved = resolve_rules(merged, block, engine._tz())
+    day_items = [item for item in resolved if item.rule.day == msg["day"]]
+
+    results = []
+    for item in day_items:  # in resolve_rules' own order - unchanged
+        result = await engine.async_apply_rule(
+            item.rule, simulate=msg["simulate"], force_conditions=msg["force_conditions"],
+        )
+        results.append({"rule_id": item.rule.id, "results": result})
+    connection.send_result(msg["id"], {"results": results})
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
         vol.Required("type"): "shabbat_scheduler/defaults/update",
         vol.Required("defaults"): dict,
     }
@@ -375,5 +447,6 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_update)
     websocket_api.async_register_command(hass, ws_delete)
     websocket_api.async_register_command(hass, ws_run_now)
+    websocket_api.async_register_command(hass, ws_run_day)
     websocket_api.async_register_command(hass, ws_defaults)
     websocket_api.async_register_command(hass, ws_subscribe)

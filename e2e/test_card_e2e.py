@@ -574,24 +574,46 @@ def test_replay_can_be_switched_on_with_a_window(page, base_url):
     default on reload" - the two produce the same screen.
 
     Uses the erev 23:00 rule, which no other test in this file touches.
+
+    Verified against the real dev container (HA 2026.8.2). Two DOM facts
+    that are NOT how they would naively be guessed:
+
+    - `ha-selector`'s boolean selector renders `ha-selector-boolean` ->
+      `ha-formfield` -> a slotted `<ha-switch>`, whose own internal
+      `<input type="checkbox" role="switch">` reflects the checked state
+      for assertions - but CLICKING that inner input directly does
+      nothing; only a click on `ha-switch` itself fires its toggle
+      handler and the selector's `value-changed`.
+    - `ha-selector`'s duration selector renders exactly one
+      `ha-base-time-input` with three `input[type=number]` fields in
+      hour/minute/second order (named `hours`/`minutes`/`seconds`).
+      Minutes and seconds are always zero-padded to two digits
+      ("00", "30"), but hours are NOT padded - `{hours: 1, ...}` renders
+      as literal "1", not "01" (and `{hours: 36, ...}` renders as "36",
+      unclamped, confirming replay-editor.ts's DurationValue comment).
     """
     card = _card(page, base_url)
     try:
         dialog = _open_rule(card, "23:00")
         replay = dialog.locator("shabbat-replay-editor")
         replay.wait_for(timeout=10_000)
-        enabled = replay.locator("input.replay-enabled")
+        enabled = replay.locator("ha-selector.replay-enabled")
+        enabled_switch = enabled.locator("ha-switch")
         # Baseline: replay is off, and the window field does not exist
         # while it is. Replay being OFF by default is this integration's
         # defining behaviour, so it is worth pinning here too.
-        expect(enabled).not_to_be_checked()
-        expect(replay.locator("input.replay-within")).to_have_count(0)
+        expect(enabled_switch.locator("input")).not_to_be_checked()
+        expect(replay.locator("ha-selector.replay-within")).to_have_count(0)
 
-        enabled.check()
-        within = replay.locator("input.replay-within")
-        expect(within).to_have_count(1)
-        expect(within).to_have_value("01:00:00")  # the offered default
-        within.fill("02:30:00")
+        enabled_switch.click()
+        within = replay.locator("ha-selector.replay-within")
+        within.wait_for(timeout=10_000)
+        hour = within.locator("ha-base-time-input input").nth(0)
+        minute = within.locator("ha-base-time-input input").nth(1)
+        expect(hour).to_have_value("1")  # the offered default, 01:00:00
+        expect(minute).to_have_value("00")
+        hour.fill("02")
+        minute.fill("30")
 
         dialog.locator("button.save").click()
         dialog.wait_for(state="detached", timeout=15_000)
@@ -599,15 +621,23 @@ def test_replay_can_be_switched_on_with_a_window(page, base_url):
         card = _card(page, base_url)
         dialog = _open_rule(card, "23:00")
         replay = dialog.locator("shabbat-replay-editor")
-        expect(replay.locator("input.replay-enabled")).to_be_checked()
-        expect(replay.locator("input.replay-within")).to_have_value("02:30:00")
+        expect(
+            replay.locator("ha-selector.replay-enabled ha-switch input")
+        ).to_be_checked()
+        within = replay.locator("ha-selector.replay-within")
+        within.wait_for(timeout=10_000)
+        expect(within.locator("ha-base-time-input input").nth(0)).to_have_value("2")
+        expect(within.locator("ha-base-time-input input").nth(1)).to_have_value("30")
         dialog.locator(CANCEL).click()
     finally:
         card = _card(page, base_url)
         dialog = _open_rule(card, "23:00")
-        enabled = dialog.locator("shabbat-replay-editor input.replay-enabled")
-        if enabled.is_checked():
-            enabled.uncheck()
+        enabled_switch = dialog.locator(
+            "shabbat-replay-editor ha-selector.replay-enabled ha-switch"
+        )
+        enabled_switch.wait_for(timeout=10_000)
+        if enabled_switch.locator("input").is_checked():
+            enabled_switch.click()
             dialog.locator("button.save").click()
             dialog.wait_for(state="detached", timeout=15_000)
 

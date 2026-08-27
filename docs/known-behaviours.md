@@ -174,7 +174,7 @@ deterministically and how to get the guarantee back (a lock keyed on the
 headed "A GUARANTEE v2 GAVE UP" in
 `.superpowers/sdd/2026-08-24-shabbat-scheduler-v2-model/progress.md`.
 
-## The shared defaults are domain-blind, and v1's were not
+## The shared defaults are domain-blind
 
 `block.merge_defaults` folds `defaults["data"]` into **every** rule, whatever
 domain it targets, and `defaults["target"]` into every rule that has none of
@@ -232,8 +232,8 @@ v1 carried a `FAN_SYNONYMS` table (`5192d4c:const.py:17-21`, mapping
 (`5192d4c:device_ops.py:44-51`) picked the first synonym the device actually
 listed in its `fan_modes` attribute. If none was supported it emitted a
 `Skip`: that one sub-call was dropped and reported, and the rest of the rule
-still ran. v2 has neither — `const.py` has no synonym table — so the migrated
-rule sends the authored `fan_mode` string verbatim.
+still ran. v2 has neither — `const.py` has no synonym table — so a rule
+sends the authored `fan_mode` string verbatim.
 
 So a v1 rule saying `fan_mode: quiet`, aimed at the unit that only takes
 `silent`, **worked in v1** — v1 looked at that unit's `fan_modes`, saw
@@ -251,12 +251,11 @@ most likely to notice and least likely to connect to an upgrade. The v1
 README's documented example config uses exactly `fan_mode: quiet`, so this is
 not a corner case for this install.
 
-The honest fix is to restore the resolution at
-fire time in the engine, which already reads each entity's state and
-attributes, together with v1's `Skip` behaviour so an unsupported mode drops
-one sub-call and reports it rather than failing the whole rule. That is a
-change to the fire path, not to the upgrade path, so it is recorded rather
-than smuggled into a migration fix.
+The honest fix is to restore the resolution at fire time in the engine,
+which already reads each entity's state and attributes, together with v1's
+`Skip` behaviour so an unsupported mode drops one sub-call and reports it
+rather than failing the whole rule. That is a change to the fire path, and
+is recorded here rather than fixed as part of this pass.
 
 ## The zmanim sensors roll forward at havdalah
 

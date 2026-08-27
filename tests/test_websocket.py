@@ -473,6 +473,57 @@ ORIGINAL = Rule(
 )
 
 
+async def test_a_rule_read_from_the_api_can_be_written_straight_back(
+    hass, hass_ws_client, setup_scheduler
+):
+    """A read-modify-write must not be refused for a field the server added.
+
+    `rule_to_dict`/`_state_payload` - what every websocket response returns
+    - carry `last_outcome`, which is not a client-authored rule field. A
+    naive client reads a rule, changes one field and sends the WHOLE thing
+    back as `changes`; that must not be refused for echoing back a field it
+    never chose to send. `id` is the one field that must be dropped by hand
+    first, because it is never updatable at all - and sending it back
+    unmodified must still be refused.
+    """
+    await setup_scheduler([ORIGINAL])
+    client = await hass_ws_client(hass)
+
+    await client.send_json({"id": 1, "type": "shabbat_scheduler/rules/list"})
+    listed = (await client.receive_json())["result"]["rules"][0]
+    assert "last_outcome" in listed  # the payload really does carry it
+
+    await client.send_json(
+        {
+            "id": 2,
+            "type": "shabbat_scheduler/rules/update",
+            "rule_id": "r1",
+            "changes": {**listed, "name": "renamed"},
+        }
+    )
+    # `id` is never updatable; present here because it was never dropped.
+    msg = await client.receive_json()
+    assert not msg["success"]
+
+    del listed["id"]
+    await client.send_json(
+        {
+            "id": 3,
+            "type": "shabbat_scheduler/rules/update",
+            "rule_id": "r1",
+            "changes": {**listed, "name": "renamed"},
+        }
+    )
+    msg = await client.receive_json()
+    assert msg["success"], msg.get("error")
+    assert msg["result"]["rule"]["name"] == "renamed"
+
+    reloaded = RuleStore(hass)
+    await reloaded.async_load()
+    assert reloaded.rules[0].name == "renamed"
+    assert reloaded.rules[0].target == ORIGINAL.target
+
+
 async def test_update_to_an_invalid_condition_is_rejected_and_persists_nothing(
     hass, hass_ws_client, setup_scheduler
 ):

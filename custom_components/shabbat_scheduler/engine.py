@@ -99,8 +99,8 @@ def _entity_id_values(target: dict) -> list:
     """This target's `entity_id`, normalised to a list of whatever it held.
 
     `entity_id` may be a bare string or a list; Home Assistant accepts
-    both, and a migrated v1 rule or an imported YAML rule can carry
-    either. Iterating a bare string without normalising it would yield its
+    both, and an authored rule or an imported YAML rule can carry either.
+    Iterating a bare string without normalising it would yield its
     CHARACTERS. Values that are neither are passed through as a single
     item rather than dropped, so a malformed rule reaches Home Assistant's
     own validator with its shape intact instead of being quietly emptied.

@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import datetime, time, timedelta
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -166,8 +167,20 @@ def last_outcomes_from_dict(data) -> dict[str, dict]:
 class _MigratingStore(Store):
     """Home Assistant calls this when the stored version is behind.
 
-    Whatever it returns is saved automatically, so the conversion happens
-    exactly once per upgrade.
+    There is currently nothing to migrate: v1 -> v2 migration support has
+    been removed entirely (v1 was never shipped to a real user), and no
+    version past 2 exists yet. The override is kept anyway, not deleted,
+    because it is Home Assistant's own hook for a FUTURE version bump - the
+    next one to actually need a migration adds its own branch here, ahead
+    of the refusal below.
+
+    Silently accepting an old, unmigrated store here would be exactly the
+    silent-no-op defect class this project treats as its primary concern:
+    a v1-shaped rule would load as syntactically valid v2 data - a bare
+    `action: "on"` with an empty `target`/`data` and `enabled: True` - and
+    then get written back out at the current version, discarding the
+    original data permanently and with no trace. Refusing outright is the
+    honest failure.
     """
 
     def __init__(self, hass: HomeAssistant) -> None:
@@ -176,6 +189,14 @@ class _MigratingStore(Store):
     async def _async_migrate_func(
         self, old_major_version: int, old_minor_version: int, old_data: dict
     ) -> dict:
+        if old_major_version < STORAGE_VERSION:
+            raise HomeAssistantError(
+                f"{STORAGE_KEY} is at version {old_major_version}."
+                f"{old_minor_version}, which shabbat_scheduler no longer has "
+                "migration support for (v1 was never shipped to a real user, "
+                "so the v1 -> v2 conversion has been removed). Delete the "
+                "stored file and set the integration up again from scratch."
+            )
         return old_data
 
 

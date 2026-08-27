@@ -70,11 +70,10 @@ def expand_action(action: str, data: dict) -> list[tuple[str, dict]]:
     call is no better, because `SET_TEMPERATURE_SCHEMA` coerces it through
     `vol.Coerce(HVACMode)`, which a null fails, taking the temperature down
     with it. So a null mode neither splits nor rides along: it is dropped,
-    and logged, because v1's `Skip` channel for "asked for, cannot be done"
-    has no v2 equivalent. This is not only a v2 author's typo - v1 gated all
-    three of its settings keys on `is not None`
-    (`5192d4c:device_ops.py:126`, `:140`, `:153`), so a valid v1 store could
-    hold one and the migration used to carry it through.
+    and logged, because there is no v2 equivalent to v1's `Skip` channel for
+    "asked for, cannot be done". This is not only a hypothetical author
+    typo - a rule authored directly against the API or via YAML import can
+    carry a null `hvac_mode`/`fan_mode` just as easily.
 
     An author writes the one natural action; this makes it work. Every
     other action passes through untouched, and no other domain knowledge

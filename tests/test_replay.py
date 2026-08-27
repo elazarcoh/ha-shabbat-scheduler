@@ -299,7 +299,8 @@ async def test_a_rule_inside_its_window_is_replayed(hass, engine, test_booleans)
 
 
 async def test_no_window_means_no_bound(hass, engine, test_booleans):
-    """v1 behaviour, preserved for migrated rules."""
+    """Omitting `within` means no bound at all on how late a replay may
+    fire."""
     calls = async_mock_service(hass, "input_boolean", "turn_on")
     await _prepare(engine, hass, [
         _rule("on11", time(11, 0), "input_boolean.t", Replay(enabled=True, within=None)),

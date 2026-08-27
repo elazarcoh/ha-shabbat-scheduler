@@ -411,7 +411,7 @@ async def test_a_bare_string_entity_id_is_one_id_not_eighteen_characters(
 ):
     """Home Assistant accepts `entity_id` as a string or a list.
 
-    A migrated v1 rule or an imported YAML rule can carry either, and the
+    An authored rule or an imported YAML rule can carry either, and the
     named-id count is what decides "was EVERY named entity unknown?". A
     bare string iterated without normalising yields its characters, so the
     count would be 18, never 1, and this total miss would report "called".

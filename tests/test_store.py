@@ -1,5 +1,8 @@
 from datetime import UTC, datetime, time, timedelta, timezone
 
+import pytest
+from homeassistant.exceptions import HomeAssistantError
+
 from custom_components.shabbat_scheduler.const import STORAGE_KEY, STORAGE_VERSION
 from custom_components.shabbat_scheduler.models import EREV, Replay, Rule
 from custom_components.shabbat_scheduler.store import (
@@ -102,6 +105,36 @@ async def test_a_store_without_an_active_block_keeps_its_old_shape(
         Rule(id="r1", profile=1, day="1", time=time(11, 0), action="input_boolean.turn_on")
     )
     assert set(_stored(hass_storage)) == {"rules", "defaults", "enabled"}
+
+
+async def test_a_v1_store_is_refused_rather_than_silently_accepted(
+    hass, hass_storage
+):
+    """v1 -> v2 migration support has been removed entirely, so a store at
+    version 1 must not load as if it were valid v2 data.
+
+    Before this refusal existed, a v1-shaped rule like this one loaded
+    silently as `action: "on"` with an empty `target`/`data` and
+    `enabled: True` - a rule that does nothing, looks healthy, and would
+    have overwritten the original v1 data on the very next save. That is
+    exactly the silent-no-op defect class this project treats as its
+    primary concern, so loading now raises instead.
+    """
+    hass_storage[STORAGE_KEY] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": STORAGE_KEY,
+        "data": {
+            "rules": [
+                {"id": "r1", "profile": 1, "day": "1", "time": "11:00:00",
+                 "action": "on", "devices": ["switch.boiler"], "settings": {}},
+            ],
+            "defaults": {},
+        },
+    }
+    store = RuleStore(hass)
+    with pytest.raises(HomeAssistantError):
+        await store.async_load()
 
 
 async def test_a_pre_upgrade_dry_run_key_is_ignored_not_migrated(hass, hass_storage):
@@ -377,9 +410,6 @@ async def test_replace_all_swaps_defaults_and_rules(hass):
     )
     assert store.defaults == {"temperature": 26}
     assert [r.id for r in store.rules] == ["x"]
-
-
-import pytest
 
 
 async def test_change_listener_fires_on_add_update_delete(hass):

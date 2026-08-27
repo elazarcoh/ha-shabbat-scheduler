@@ -147,13 +147,12 @@ def test_resolve_keeps_post_havdalah_times():
 def test_resolve_skips_an_unparsable_day_without_aborting_the_others():
     """Task 5 round 4's hardening, exercised at the branch that matters.
 
-    Migration always keeps a bad-day rule DISABLED (see test_migration.py),
-    so a test built from migration output never reaches `int(rule.day)` at
-    all - `resolve_rules` filters disabled rules out first. Only an
-    ENABLED rule with an unparsable `day` reaches it - reachable today via
-    a hand-edited `.storage` file or a future YAML path. Before the
-    `try/except ValueError: continue` guard, this raised inside the loop
-    and aborted resolving every OTHER rule too, not just this one.
+    `resolve_rules` filters disabled rules out first, so a bad `day` only
+    ever reaches `int(rule.day)` on a rule that made it past that filter -
+    an ENABLED rule with an unparsable `day`, reachable via a hand-edited
+    `.storage` file or a YAML import. Before the `try/except ValueError:
+    continue` guard, this raised inside the loop and aborted resolving
+    every OTHER rule too, not just this one.
     """
     rules = [
         Rule(id="a", profile=1, day="1", time=time(11, 0), action="on"),

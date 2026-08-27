@@ -877,3 +877,56 @@ def test_run_day_for_real_actually_calls_the_real_services(page, base_url, token
     assert _rest_state(base_url, token, "input_boolean.salon") == "off"
 
     dialog.locator("button:has-text('Cancel')").click()
+
+
+def test_cloning_a_day_lands_a_new_rule_and_leaves_the_source_untouched(
+    page, base_url
+):
+    """Erev (profile 1, 2 real rules) cloned onto profile 2's erev - a
+    genuinely empty day, since dev/seed.py never seeds profile 2 or 3.
+    """
+    card = _card(page, base_url)
+    source_rows_before = card.locator("shabbat-day-group").first.locator(
+        "shabbat-rule-row"
+    )
+    assert source_rows_before.count() == 2
+    source_times_before = source_rows_before.locator(".time").all_inner_texts()
+
+    try:
+        card.locator("shabbat-day-group").first.locator("button.clone-menu").click()
+        dialog = card.locator("shabbat-clone-dialog")
+        dialog.wait_for(state="attached", timeout=10_000)
+
+        dialog.locator("select.target-profile").select_option("2")
+        dialog.locator("select.target-day").select_option("erev")
+        dialog.locator("button.mode.extend").click()
+        dialog.locator("button.confirm").click()
+        dialog.wait_for(state="detached", timeout=15_000)
+
+        # Switch to the 2d profile and find the clone.
+        card.locator("shabbat-block-header button.chip").nth(1).click()
+        target_group = card.locator("shabbat-day-group").first
+        target_group.locator("shabbat-rule-row").first.wait_for(timeout=15_000)
+        assert target_group.locator("shabbat-rule-row").count() == 2
+        target_times = target_group.locator(".time").all_inner_texts()
+        assert sorted(target_times) == sorted(source_times_before)
+
+        # The source (profile 1) is untouched.
+        card.locator("shabbat-block-header button.chip").nth(0).click()
+        source_rows_after = card.locator("shabbat-day-group").first.locator(
+            "shabbat-rule-row"
+        )
+        assert source_rows_after.count() == 2
+        assert sorted(source_rows_after.locator(".time").all_inner_texts()) == \
+            sorted(source_times_before)
+    finally:
+        # Delete whatever landed on profile 2's erev day, so the dev
+        # fixture is unchanged for the next run.
+        card.locator("shabbat-block-header button.chip").nth(1).click()
+        target_group = card.locator("shabbat-day-group").first
+        while target_group.locator("shabbat-rule-row").count() > 0:
+            target_group.locator("shabbat-rule-row").first.click()
+            dialog = card.locator("shabbat-rule-dialog")
+            dialog.wait_for(state="attached", timeout=10_000)
+            dialog.locator("button.delete").click()
+            dialog.wait_for(state="detached", timeout=15_000)

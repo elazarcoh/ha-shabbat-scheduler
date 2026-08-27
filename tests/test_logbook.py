@@ -87,7 +87,12 @@ async def test_describe_handles_an_unnamed_rule(hass):
     assert "r1" in result["message"]
 
 
-async def test_describe_marks_a_dry_run(hass):
+async def test_describe_produces_no_entry_at_all_for_a_dry_run(hass):
+    """A simulated run "did not really happen, and the rest of the system
+    must not be told otherwise" - not even a `[dry run]`-labelled row that
+    still looks like a real one. `{}` is the "no row" answer here, not
+    `None` - see `_dry_run_entry`'s own docstring for why `None` would
+    crash the real logbook query this describer is called from."""
     described = _describers(hass)
 
     event = Event(
@@ -101,7 +106,7 @@ async def test_describe_marks_a_dry_run(hass):
         },
     )
     result = described[EVENT_RULE_APPLIED](event)
-    assert "dry run" in result["message"].lower()
+    assert result == {}
 
 
 def test_both_events_are_described(hass):
@@ -457,8 +462,12 @@ def test_a_fired_row_names_an_entity_that_does_not_exist(hass):
     assert "no such entity: climate.slaon" in message
 
 
-def test_a_dry_run_row_names_an_entity_that_does_not_exist(hass):
-    """A dry run is exactly where the user is hunting for the typo."""
+def test_a_dry_run_produces_no_logbook_row_even_with_an_unknown_entity(hass):
+    """A dry run is exactly where the user is hunting for a typo - but that
+    diagnostic reaches them live, in the Simulate result the card renders
+    inline (`formatOutcome` in format.ts), not through a persisted logbook
+    row. The logbook stays silent for a simulated event no matter what its
+    results say, per the "did not really happen" design decision."""
     described = _describers(hass)
     result = described[EVENT_RULE_COMPLETED](
         _completed(
@@ -475,9 +484,7 @@ def test_a_dry_run_row_names_an_entity_that_does_not_exist(hass):
             ],
         )
     )
-    message = result["message"]
-    assert "dry run" in message.lower()
-    assert "no such entity: climate.slaon" in message
+    assert result == {}
 
 
 def test_a_total_miss_says_no_such_entity_exactly_once(hass):
@@ -566,7 +573,7 @@ def test_a_fired_row_says_when_the_call_reached_nothing(hass):
     assert "did not run" not in message.lower()
 
 
-def test_a_dry_run_row_says_when_the_call_would_reach_nothing(hass):
+def test_a_dry_run_produces_no_logbook_row_even_with_no_live_targets(hass):
     described = _describers(hass)
     result = described[EVENT_RULE_COMPLETED](
         _completed(
@@ -583,9 +590,7 @@ def test_a_dry_run_row_says_when_the_call_would_reach_nothing(hass):
             ],
         )
     )
-    message = result["message"]
-    assert "dry run" in message.lower()
-    assert "reached no entity that exists" in message
+    assert result == {}
 
 
 def test_both_target_diagnostics_can_appear_on_one_row(hass):
@@ -726,7 +731,10 @@ def test_a_malformed_unknown_targets_value_does_not_break_the_row(hass):
     assert "no such entity" not in result["message"]
 
 
-def test_a_dry_run_completion_says_it_would_have_fired(hass):
+def test_a_dry_run_completion_produces_no_logbook_row(hass):
+    """A simulated run never reaches the logbook at all - the "would have
+    fired" wording lives only in the live Simulate result the card renders
+    (`format.ts`'s `formatOutcome`), never as a persisted row."""
     described = _describers(hass)
     result = described[EVENT_RULE_COMPLETED](
         _completed(
@@ -741,10 +749,7 @@ def test_a_dry_run_completion_says_it_would_have_fired(hass):
             ],
         )
     )
-    message = result["message"].lower()
-    assert "dry run" in message
-    # Distinguishable from a real fire, which is the whole point of dry run.
-    assert "would" in message
+    assert result == {}
 
 
 def test_a_catch_up_summary_renders_as_one_row(hass):

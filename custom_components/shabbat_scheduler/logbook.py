@@ -204,6 +204,34 @@ def _note_diagnostics(message: str, results: list[dict]) -> str:
     return _note_no_live_targets(_note_unknown(message, results), results)
 
 
+def _dry_run_entry(data) -> dict | None:
+    """`{}` when `data` is a simulated event, else `None`.
+
+    A simulated run "did not really happen, and the rest of the system
+    must not be told otherwise" (the design spec's own words) - not even
+    with a `[dry run]`-labelled row that still LOOKS like a real one. The
+    honest answer is no row at all.
+
+    `{}`, not `None`. `async_describe_events`'s own contract
+    (`Callable[[LazyEventPartialState], dict[str, Any]]` in HA core) is
+    typed to always return a dict, and its caller
+    (`logbook/processor.py`'s `_humanify`) unconditionally does
+    `data[LOGBOOK_ENTRY_DOMAIN] = domain` on whatever comes back, OUTSIDE
+    the `try` that wraps the call to this describer - exactly the
+    "describer that raises takes down the whole logbook page" failure this
+    module's own top docstring warns every read here must stay defensive
+    against. `None` would hit that line as `None["domain"] = ...` and raise
+    for the ENTIRE query, not just this one row - worse than the row this
+    replaces. `{}` carries no name, no message and no icon, so HA still
+    stamps its own `domain`/`when` onto it (harmless - both are true, a
+    Shabbat Scheduler event genuinely happened at that instant) but there
+    is nothing left for a reader to see or act on.
+    """
+    if data.get("dry_run"):
+        return {}
+    return None
+
+
 def _catch_up_message(results: list[dict]) -> str:
     """The one summary row for a whole catch-up pass.
 
@@ -254,14 +282,18 @@ def async_describe_events(
         This fires before the condition gate and before any call, so any
         wording here that implied success would be a claim it cannot back.
         The outcome is the completed event's row, below.
+
+        A simulated run gets no row at all here - see `_dry_run_entry`'s
+        own docstring for why that is `{}` rather than a `[dry run]`-labelled
+        row, and why it cannot be `None`.
         """
         data = event.data
+        if (empty := _dry_run_entry(data)) is not None:
+            return empty
         message = f"rule '{_rule_label(data)}' due"
         what = _what(data)
         if what:
             message = f"{message} — {what}"
-        if data.get("dry_run"):
-            message = f"{message} [dry run]"
 
         return {"name": _NAME, "message": message, "icon": _ICON_DUE}
 
@@ -275,8 +307,14 @@ def async_describe_events(
         how late), and due-but-replay-is-off. "did not run" appears in each
         of the four non-firing rows and in none of the firing ones, so it
         is greppable.
+
+        A simulated run gets no row here either - see `_dry_run_entry`.
+        `catch_up` events never carry `dry_run` (catch-up is never
+        simulated), so that branch below is never reached by this check.
         """
         data = event.data
+        if (empty := _dry_run_entry(data)) is not None:
+            return empty
         results = _results(data)
 
         # Catch-up fires one final aggregate event with `rule_id: None`,

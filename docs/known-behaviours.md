@@ -939,22 +939,49 @@ choice between **Simulate** and **Run for real** rather than picking one
 for you.
 
 The critical difference from the old flag: a simulated run is never
-recorded to a rule's `last_outcome`, never pushed to the logbook, and
-never fires `SIGNAL_RULES_CHANGED` — see
-`test_simulate_never_records_a_durable_outcome` and
+recorded to a rule's `last_outcome`, never mutates `engine.last_run`/
+`engine.last_run_at` (the pair `sensor.shabbat_scheduler_last_run` reads —
+a REAL entity), never produces a logbook row, and never fires
+`SIGNAL_RULES_CHANGED` — see `test_simulate_never_records_a_durable_outcome`,
+`test_simulate_does_not_change_last_run` and
 `test_simulate_does_not_signal_rules_changed` in `tests/test_engine.py`,
-plus `test_simulate_does_not_record_even_when_the_rule_is_blocked` for
-the blocked-condition path specifically. It did not really happen, and
-the rest of the system must not be told otherwise. The `would_call`
-outcome value itself, and everywhere it renders (`format.ts`,
-`rule-row.ts`, the logbook), is unchanged — only what triggers it
-changed, from a standing flag to an explicit per-call choice.
+plus `test_simulate_does_not_record_even_when_the_rule_is_blocked` and
+`test_simulate_does_not_change_last_run_even_when_blocked` for the
+blocked-condition path specifically, and
+`test_describe_produces_no_entry_at_all_for_a_dry_run` (and its siblings)
+in `tests/test_logbook.py`. It did not really happen, and the rest of the
+system must not be told otherwise. The `would_call` outcome value itself,
+and everywhere it renders LIVE (`format.ts`'s `formatOutcome`,
+`rule-row.ts`'s per-rule result, `simulate-dialog.ts`'s and
+`rule-dialog.ts`'s inline Run Now result), is unchanged — only what
+triggers it changed, from a standing flag to an explicit per-call choice.
+
+A final review round (2026-08-27) found that the FIRST cut of this work
+still left two real, persisted consequences behind a simulated run — the
+engine mutated `last_run`/`last_run_at` unconditionally, and the logbook
+rendered a `[dry run]`-labelled row that still looked like a real entry.
+Both are now guarded the identical `if not simulate:` way
+`_async_record_outcome`/`SIGNAL_RULES_CHANGED` already were, on both the
+blocked-condition path and the normal path.
 
 `EVENT_RULE_APPLIED`/`EVENT_RULE_COMPLETED` still carry a `dry_run` key in
-their payload, sourced from `simulate` rather than `self.store.dry_run` —
-the key name is kept for backward compatibility with anything already
-listening on the event bus, even though the internal flag it used to read
-is gone.
+their payload, sourced from `simulate` rather than `self.store.dry_run`,
+and — this is a deliberate decision, not an oversight — both events keep
+firing UNCONDITIONALLY, exactly as before this whole feature existed:
+external listeners may depend on receiving them even during a simulated
+run, distinguishing via `dry_run`. The key name is also kept for backward
+compatibility with anything already listening on the event bus, even
+though the internal flag it used to read is gone. `logbook.py`'s own
+describer reads that same `dry_run` key and returns `{}` — no name, no
+message, no icon — for either event when it is true, which is how "the
+event bus still fires" and "the logbook must not say it happened" both
+hold at once. It returns `{}`, never `None`: `async_describe_events`'s own
+contract requires a dict back, and the real logbook processor
+(`homeassistant.components.logbook.processor`) unconditionally indexes
+into whatever the describer returns, OUTSIDE the `try` that guards the
+call itself — `None` would crash that ENTIRE logbook query, not just
+suppress this one row. See `_dry_run_entry` in `logbook.py` for the full
+reasoning.
 
 `at`'s honest limit: HA's own `sun`/`time` condition helpers
 (`homeassistant.helpers.condition.time`,

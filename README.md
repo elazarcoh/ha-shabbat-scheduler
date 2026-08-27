@@ -60,13 +60,17 @@ fresh install; see step 3 below for why.)*
 
 You do not have to wait for a real Shabbat to find out whether a rule
 works. Open any rule and press **Run now** for an inline choice: Simulate
-(reports what would happen, calls nothing) or Run for real. To test a
-whole day's schedule at once — in order, exactly as it would really run —
-use the ▶ icon in the header, which also lets you force every condition
-to pass so you can see past a guard that is currently blocking. Neither
-path changes any real timer: they run the exact same
-`resolve_rules()` → `async_apply_rule()` path a real fire uses, on demand,
-any day of the week.
+(reports what would happen, calls nothing) or Run for real, each a
+deliberate second step rather than a single click. To test a whole day's
+schedule at once — in order, exactly as it would really run — use the ▶
+icon in the header, which also lets you force every condition to pass so
+you can see past a guard that is currently blocking; running that whole
+day for real asks the same kind of explicit confirmation, since it is a
+bigger action than running one rule. Neither path changes any real timer:
+they run the exact same `resolve_rules()` → `async_apply_rule()` path a
+real fire uses, on demand, any day of the week. Run Now is disabled while
+a rule has unsaved edits, so it can never report on a version of the rule
+that is not the one on screen.
 
 ## Terminology
 
@@ -105,11 +109,15 @@ fires before Shabbat begins, which is how you pre-cool; a last-day rule at
   because Home Assistant restarted.
 - **Testable on demand, without waiting for Shabbat.** Every rule has a
   Run Now button (Simulate, or run for real); every day's whole resolved
-  schedule can be run the same way from the header's ▶ icon. Both reuse
-  the exact code path a real fire uses — `resolve_rules()` then
-  `async_apply_rule()` — so what you see is what would really happen, not
-  a separate approximation of it. A simulated run is never recorded or
-  logged; it is a live-only answer to "would this actually work?".
+  schedule can be run the same way from the header's ▶ icon — running a
+  whole day for real asks for an explicit inline confirmation first, the
+  same way a single rule's Run for real already does. Both reuse the exact
+  code path a real fire uses — `resolve_rules()` then `async_apply_rule()`
+  — so what you see is what would really happen, not a separate
+  approximation of it. A simulated run is never recorded or logged, and
+  never moves `sensor.shabbat_scheduler_last_run` either — it is a
+  live-only answer to "would this actually work?", visible only in the
+  dialog that asked the question.
 
 ## Entities
 

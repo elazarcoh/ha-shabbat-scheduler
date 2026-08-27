@@ -297,14 +297,20 @@ class ShabbatEngine:
         `simulate`: behaves exactly as the old `store.dry_run` flag used to
         at the point of the real service call (`_call` returns `would_call`
         instead of calling) - but, unlike that flag, a simulated run never
-        calls `_async_record_outcome` and never fires SIGNAL_RULES_CHANGED
-        (the only place that signal fires from here), on every path
-        including a blocked one: it did not really happen, and the rest of
-        the system must not be told otherwise. The event bus still fires
+        calls `_async_record_outcome`, never fires SIGNAL_RULES_CHANGED
+        (the only place that signal fires from here) and never mutates
+        `self.last_run`/`self.last_run_at` - the transient pair
+        `sensor.shabbat_scheduler_last_run` reads - on every path including
+        a blocked one: it did not really happen, and the rest of the
+        system must not be told otherwise. The event bus still fires
         (EVENT_RULE_APPLIED / EVENT_RULE_COMPLETED), carrying the same
         `dry_run`-named key for backward compatibility with anything
         listening - renaming it would be a breaking change to an external
-        contract this codebase does not control the readers of.
+        contract this codebase does not control the readers of. Logbook's
+        own describer (`logbook.py`) reads that same key to render no row
+        at all for a simulated event, which is how "the event bus still
+        fires" and "the logbook must not say it happened" both stay true
+        at once.
 
         `force_conditions`: when true, every condition is treated as passed
         and `_condition_block_reason` is not consulted at all. Its only
@@ -342,8 +348,24 @@ class ShabbatEngine:
             blocked_by = await self._condition_block_reason(rule, at)
             if blocked_by is not None:
                 results = [{"outcome": "blocked", "reason": blocked_by}]
-                self.last_run = results
-                self.last_run_at = dt_util.utcnow()
+                # `last_run`/`last_run_at` are guarded here too, not only
+                # `_async_record_outcome` below - both back
+                # `sensor.shabbat_scheduler_last_run`, a REAL entity, and a
+                # simulated run that moved it would be exactly the lie
+                # "it did not really happen" forbids, just reached through
+                # the sensor instead of the per-rule outcome.
+                #
+                # Set BEFORE `_fire_completed`, deliberately: the sensor's
+                # own `EVENT_RULE_COMPLETED` listener
+                # (`LastRunSensor.async_added_to_hass`) is a synchronous
+                # `@callback` that reads `engine.last_run_at` the moment
+                # the event fires, not afterwards - firing first would
+                # have it read the PREVIOUS value and never notice this
+                # one at all, needing some later, unrelated push to catch
+                # up.
+                if not simulate:
+                    self.last_run = results
+                    self.last_run_at = dt_util.utcnow()
                 self._fire_completed(rule, results, simulate=simulate)
                 # The same words the logbook row carries, deliberately:
                 # the person reading the card and the person reading the
@@ -365,8 +387,11 @@ class ShabbatEngine:
                     )
                 )
 
-        self.last_run = results
-        self.last_run_at = dt_util.utcnow()
+        # Set BEFORE `_fire_completed` - see the identical note on the
+        # blocked-condition branch above for why the ordering matters.
+        if not simulate:
+            self.last_run = results
+            self.last_run_at = dt_util.utcnow()
         self._fire_completed(rule, results, simulate=simulate)
         if not simulate:
             await self._async_record_outcome(

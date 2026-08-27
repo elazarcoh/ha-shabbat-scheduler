@@ -1740,6 +1740,41 @@ async def test_simulate_does_not_signal_rules_changed(hass, engine, _rule):
     assert calls == []
 
 
+async def test_simulate_does_not_change_last_run(hass, engine, _rule):
+    """`last_run`/`last_run_at` back `sensor.shabbat_scheduler_last_run`, a
+    REAL entity - a simulated run moving it would be the exact lie "it did
+    not really happen" forbids, reached through the sensor instead of the
+    per-rule outcome the tests above already pin."""
+    hass.states.async_set("input_boolean.t", "off")
+    rule = await _seeded(engine, _rule())
+    before, before_at = engine.last_run, engine.last_run_at
+
+    results = await engine.async_apply_rule(rule, simulate=True)
+
+    assert results[0]["outcome"] == "would_call"  # the call did happen, simulated
+    assert engine.last_run is before
+    assert engine.last_run_at is before_at
+
+
+async def test_simulate_does_not_change_last_run_even_when_blocked(hass, engine, _rule):
+    """Ablate the guard on the blocked branch specifically and a simulated
+    but blocked rule still moves `last_run` - the same shape
+    `test_simulate_does_not_record_even_when_the_rule_is_blocked` pins for
+    the per-rule outcome, proven independently for the blocked path since
+    the guard had to be applied there separately."""
+    hass.states.async_set("input_boolean.kids", "off")
+    rule = await _seeded(engine, _rule(condition=(
+        {"condition": "state", "entity_id": "input_boolean.kids", "state": "on"},
+    )))
+    before, before_at = engine.last_run, engine.last_run_at
+
+    results = await engine.async_apply_rule(rule, simulate=True)
+
+    assert results[0]["outcome"] == "blocked"
+    assert engine.last_run is before
+    assert engine.last_run_at is before_at
+
+
 async def test_a_real_run_still_records_and_signals(hass, engine, _rule):
     """The two tests above ablated: a REAL run (simulate defaults False)
     must still record and signal, or the guard above proves nothing."""

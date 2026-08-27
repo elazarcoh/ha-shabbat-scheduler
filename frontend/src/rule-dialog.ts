@@ -1,6 +1,6 @@
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { foldCallResults, formatOutcome, ruleToForm } from './format';
+import { foldCallResults, formatOutcome, formToChanges, ruleToForm } from './format';
 import { t } from './strings';
 import type { Defaults, Hass, RuleData, RuleFormState } from './types';
 import './condition-editor';
@@ -162,6 +162,35 @@ export class ShabbatRuleDialog extends LitElement {
 
   private _patch(patch: Partial<RuleFormState>) {
     this._form = { ...this._form, ...patch };
+    // An edit mid-confirm would leave the Simulate/Run-for-real choice
+    // pointing at a rule that is no longer what is about to be saved -
+    // close it rather than let it fire against stale values. `_dirty`
+    // below keeps the button that reopens it disabled from this point on,
+    // until the edit is saved.
+    this._runConfirmOpen = false;
+  }
+
+  /**
+   * True once the form has diverged from the saved rule - the same
+   * per-field diff `_saveChanges` (card.ts) sends to the server, read here
+   * only to ask "is there anything unsaved at all", never to build a
+   * write.
+   *
+   * Run Now (`rule-dialog.ts`) is disabled while this is true: it
+   * dispatches `this.rule`, the SAVED copy, and the server looks a rule up
+   * by id from the store - so pressing it after editing but before saving
+   * would run and report on the OLD version while the new, unsaved values
+   * sit right above it in the form, which is exactly backwards for a
+   * feature whose whole point is "prove this rule works as I've set it up
+   * right now".
+   *
+   * `false` while creating (`this.rule === null`): Run Now (`canWrite &&
+   * editing`) never renders there at all, so there is nothing for this to
+   * gate.
+   */
+  private get _dirty(): boolean {
+    if (this.rule === null) return false;
+    return Object.keys(formToChanges(this._form, this.rule)).length > 0;
   }
 
   private _emit(type: string) {
@@ -422,7 +451,8 @@ export class ShabbatRuleDialog extends LitElement {
             ${this.canWrite && editing
               ? html`<button
                   class="run-now"
-                  ?disabled=${this.busy}
+                  ?disabled=${this.busy || this._dirty}
+                  title=${this._dirty ? t(this.language, 'run_now_disabled_dirty') : ''}
                   @click=${() => { this._runConfirmOpen = !this._runConfirmOpen; }}
                 >
                   ▶ ${t(this.language, 'run_now_button')}

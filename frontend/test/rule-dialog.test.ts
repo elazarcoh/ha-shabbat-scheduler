@@ -607,4 +607,46 @@ describe('Run Now', () => {
     });
     expect(el.shadowRoot!.textContent).not.toContain('Would have fired');
   });
+
+  describe('disabled while the form has unsaved edits', () => {
+    it('disables Run Now once a field is edited, with a title explaining why', async () => {
+      const el = await render();
+      const runNow = el.shadowRoot!.querySelector('.run-now') as HTMLButtonElement;
+      expect(runNow.disabled).toBe(false);
+
+      (el.shadowRoot!.querySelector('input.name') as HTMLInputElement).value = 'Renamed';
+      (el.shadowRoot!.querySelector('input.name') as HTMLInputElement).dispatchEvent(new Event('change'));
+      await el.updateComplete;
+
+      expect(runNow.disabled).toBe(true);
+      expect(runNow.title).toBeTruthy();
+    });
+
+    it('closes an already-open inline confirm the moment a field is edited', async () => {
+      const el = await render();
+      (el.shadowRoot!.querySelector('.run-now') as HTMLElement).click();
+      await el.updateComplete;
+      expect(el.shadowRoot!.querySelector('.run-simulate')).not.toBeNull();
+
+      (el.shadowRoot!.querySelector('input.name') as HTMLInputElement).value = 'Renamed';
+      (el.shadowRoot!.querySelector('input.name') as HTMLInputElement).dispatchEvent(new Event('change'));
+      await el.updateComplete;
+
+      expect(el.shadowRoot!.querySelector('.run-simulate')).toBeNull();
+    });
+
+    it('re-enables Run Now once the edit is reverted back to the saved value', async () => {
+      const el = await render();
+      const nameInput = () => el.shadowRoot!.querySelector('input.name') as HTMLInputElement;
+      nameInput().value = 'Renamed';
+      nameInput().dispatchEvent(new Event('change'));
+      await el.updateComplete;
+      expect((el.shadowRoot!.querySelector('.run-now') as HTMLButtonElement).disabled).toBe(true);
+
+      nameInput().value = existing.name as string;
+      nameInput().dispatchEvent(new Event('change'));
+      await el.updateComplete;
+      expect((el.shadowRoot!.querySelector('.run-now') as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
 });

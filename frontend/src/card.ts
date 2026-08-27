@@ -22,6 +22,22 @@ export interface CloneReport {
   landed: string[];
   failed: string[];
   error: string | null;
+  /**
+   * True once the target day's pre-existing rules have been deleted (in
+   * overwrite mode) - whether that happened on THIS call (`alreadyCleared`
+   * was false and the delete loop ran to completion) or on a prior one
+   * (`alreadyCleared` was passed in true). `false` after a delete itself
+   * fails partway (nothing here promises the target is clear) and always
+   * in extend mode, where nothing is ever deleted.
+   *
+   * Exists so a caller retrying a partial failure can pass this back in
+   * as `alreadyCleared` on the next call for the same target day.
+   * Without it, overwrite mode's delete-everything-currently-at-the-target
+   * step would sweep up whatever already landed from an earlier attempt
+   * on a retry, and then never recreate it - the rule lands once and is
+   * then silently deleted, which is worse than not retrying at all.
+   */
+  cleared: boolean;
 }
 
 /**
@@ -76,6 +92,15 @@ export class ShabbatSchedulerCard extends LitElement {
   @state() private _cloneSource: CloneOpenDetail | null = null;
   @state() private _cloneLanded: string[] | null = null;
   @state() private _cloneFailed: string[] | null = null;
+  /**
+   * `{targetProfile}:{day}` keys already cleared by an overwrite-mode
+   * `_cloneRules` call in the CURRENT clone session (since the dialog
+   * opened). Not `@state` - it never drives rendering, only which
+   * `_cloneRules` calls get `alreadyCleared: true`. Reset whenever a
+   * clone session starts or ends, so a later, unrelated clone against the
+   * same target still clears it first.
+   */
+  private _cloneClearedTargets = new Set<string>();
 
   private _hass: any;
   private _unsubscribe: (() => Promise<void>) | null = null;
@@ -308,6 +333,7 @@ export class ShabbatSchedulerCard extends LitElement {
     this._cloneSource = null;
     this._cloneLanded = null;
     this._cloneFailed = null;
+    this._cloneClearedTargets = new Set();
   };
 
   private _onRuleOpen = (event: Event) => {
@@ -453,14 +479,23 @@ export class ShabbatSchedulerCard extends LitElement {
    * profile onto every matching day of another) is composed by calling
    * this once per day name common to both profiles - see
    * `_cloneTargetDays`, which `_onCloneConfirm` uses.
+   *
+   * `alreadyCleared` (default `false`) skips the overwrite-mode delete
+   * step entirely - pass `true` when a PRIOR call already cleared this
+   * exact `{targetProfile, targetDay}` (see `CloneReport.cleared`).
+   * Without this, a retry that resends only the still-failed remainder
+   * of a source set would still delete-everything-currently-at-the-target
+   * before creating - including whatever landed on the earlier attempt.
    */
   private async _cloneRules(
     sourceRuleIds: string[],
     targetProfile: number,
     targetDay: string,
     mode: 'extend' | 'overwrite',
+    alreadyCleared = false,
   ): Promise<CloneReport> {
-    if (mode === 'overwrite') {
+    let cleared = alreadyCleared;
+    if (mode === 'overwrite' && !cleared) {
       const toDelete = (this._state?.rules ?? []).filter(
         (rule) => rule.profile === targetProfile && rule.day === targetDay,
       );
@@ -472,9 +507,11 @@ export class ShabbatSchedulerCard extends LitElement {
           return {
             landed: [], failed: sourceRuleIds,
             error: this._dialogError ?? 'Could not clear the target day.',
+            cleared: false,
           };
         }
       }
+      cleared = true;
     }
 
     const sourceRules = this._state?.rules ?? [];
@@ -491,11 +528,12 @@ export class ShabbatSchedulerCard extends LitElement {
           landed,
           failed: sourceRuleIds.slice(landed.length),
           error: this._dialogError,
+          cleared,
         };
       }
       landed.push(sourceId);
     }
-    return { landed, failed: [], error: null };
+    return { landed, failed: [], error: null, cleared };
   }
 
   /**
@@ -545,6 +583,7 @@ export class ShabbatSchedulerCard extends LitElement {
     this._cloneSource = (event as CustomEvent).detail as CloneOpenDetail;
     this._cloneLanded = null;
     this._cloneFailed = null;
+    this._cloneClearedTargets = new Set();
     this._dialogError = null;
   };
 
@@ -599,6 +638,15 @@ export class ShabbatSchedulerCard extends LitElement {
    * reported, and the dialog's retry path (`clone-dialog.ts`'s
    * `_idsToSend`) re-sends exactly `_cloneFailed` on the next confirm, so
    * anything left out here would never get retried.
+   *
+   * `_cloneClearedTargets` tracks which `{targetProfile, day}` pairs an
+   * overwrite-mode call has already cleared THIS clone session, and each
+   * `_cloneRules` call is told about it via `alreadyCleared`. This is
+   * what makes overwrite-mode retry safe: without it, retrying only the
+   * still-failed remainder from a prior round would still delete
+   * everything currently at the target - including whatever landed on
+   * that earlier round - and then only recreate the retried subset,
+   * silently losing the rest.
    */
   private _onCloneConfirm = async (event: Event) => {
     const detail = (event as CustomEvent).detail as {
@@ -614,7 +662,12 @@ export class ShabbatSchedulerCard extends LitElement {
         failed.push(...ruleIds); // never attempted - still missing from the target
         continue;
       }
-      const report = await this._cloneRules(ruleIds, detail.targetProfile, day, detail.mode);
+      const key = `${detail.targetProfile}:${day}`;
+      const report = await this._cloneRules(
+        ruleIds, detail.targetProfile, day, detail.mode,
+        this._cloneClearedTargets.has(key),
+      );
+      if (report.cleared) this._cloneClearedTargets.add(key);
       landed.push(...report.landed);
       if (report.error !== null) {
         failed.push(...report.failed);
@@ -625,6 +678,7 @@ export class ShabbatSchedulerCard extends LitElement {
     this._cloneFailed = failed;
     if (failed.length === 0 && this._dialogError === null) {
       this._cloneSource = null; // full success closes the dialog
+      this._cloneClearedTargets = new Set();
     }
   };
 
@@ -762,7 +816,10 @@ export class ShabbatSchedulerCard extends LitElement {
               .failed=${this._cloneFailed}
               .language=${this._language}
               @dialog-clone-confirm=${this._onCloneConfirm}
-              @dialog-close=${() => { this._cloneSource = null; }}
+              @dialog-close=${() => {
+                this._cloneSource = null;
+                this._cloneClearedTargets = new Set();
+              }}
             ></shabbat-clone-dialog>`
           : nothing}
       </ha-card>

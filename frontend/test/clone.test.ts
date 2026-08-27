@@ -118,10 +118,53 @@ describe('_cloneRules', () => {
 
     expect(report.landed).toEqual([]);
     expect(report.failed).toEqual(['a']);
+    expect(report.cleared).toBe(false);
     const creates = hass.callWS.mock.calls.filter(
       (c: any) => c[0].type === 'shabbat_scheduler/rules/create',
     );
     expect(creates).toHaveLength(0);
+  });
+
+  it('reports cleared:true once the delete phase completes, even if a later create then fails', async () => {
+    const { hass, send } = fakeHass();
+    let creates = 0;
+    hass.callWS = vi.fn(async (message: any) => {
+      if (message.type === 'shabbat_scheduler/rules/create') {
+        creates += 1;
+        if (creates === 1) throw { message: 'rejected' };
+      }
+      return {};
+    });
+    const el = await mount(hass);
+    send(state({
+      rules: [rule({ id: 'a' }), rule({ id: 'existing', profile: 2, day: '1' })],
+    }));
+    await el.updateComplete;
+
+    const report = await (el as any)._cloneRules(['a'], 2, '1', 'overwrite');
+
+    expect(report.error).not.toBeNull();
+    // The delete step itself succeeded before the create failed - the
+    // target IS clear, even though nothing landed on it yet.
+    expect(report.cleared).toBe(true);
+  });
+
+  it('does not delete anything when alreadyCleared is passed, even in overwrite mode', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(state({
+      rules: [rule({ id: 'a' }), rule({ id: 'existing', profile: 2, day: '1' })],
+    }));
+    await el.updateComplete;
+
+    const report = await (el as any)._cloneRules(['a'], 2, '1', 'overwrite', true);
+
+    const deletes = hass.callWS.mock.calls.filter(
+      (c: any) => c[0].type === 'shabbat_scheduler/rules/delete',
+    );
+    expect(deletes).toHaveLength(0);
+    expect(report.cleared).toBe(true);
+    expect(report.landed).toEqual(['a']);
   });
 });
 
@@ -317,6 +360,99 @@ describe('clone dialog wiring in card.ts', () => {
       '11:00:00', '12:00:00', '12:00:00',
     ]);
     // Fully landed on retry - the dialog closes.
+    expect(el.shadowRoot!.querySelector('shabbat-clone-dialog')).toBeNull();
+  });
+
+  it('overwrite-mode retry never deletes a rule that already landed on an earlier round', async () => {
+    // Regression test for a data-loss bug: overwrite mode's delete step
+    // used to run again on every retry, sweeping up whatever landed on
+    // the previous round (since it deletes EVERYTHING currently at the
+    // target) and never recreating it - the retried rule alone survived.
+    const { hass, send } = fakeHass();
+    let createCalls = 0;
+    hass.callWS = vi.fn(async (message: any) => {
+      if (message.type === 'shabbat_scheduler/rules/create') {
+        createCalls += 1;
+        if (createCalls === 2) throw { message: 'rejected' }; // src-b's clone fails round 1
+      }
+      return {};
+    });
+    const el = await mount(hass);
+    send(state({
+      rules: [
+        rule({ id: 'src-a', profile: 1, day: 'erev', time: '11:00:00' }),
+        rule({ id: 'src-b', profile: 1, day: 'erev', time: '12:00:00' }),
+        // Pre-existing rule at the target - overwrite mode must clear
+        // this once, and only once.
+        rule({ id: 'existing', profile: 2, day: 'erev', time: '09:00:00' }),
+      ],
+    }));
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-day-group')!.dispatchEvent(
+      new CustomEvent('clone-open', {
+        detail: { scope: 'day', profile: 1, day: 'erev' }, bubbles: true, composed: true,
+      }),
+    );
+    await el.updateComplete;
+
+    let dialog = el.shadowRoot!.querySelector('shabbat-clone-dialog') as any;
+    dialog.dispatchEvent(new CustomEvent('dialog-clone-confirm', {
+      detail: {
+        sourceRuleIds: ['src-a', 'src-b'], sourceScope: 'day', sourceProfile: 1,
+        targetProfile: 2, targetDay: 'erev', mode: 'overwrite',
+      },
+    }));
+    await flush();
+    await el.updateComplete;
+
+    dialog = el.shadowRoot!.querySelector('shabbat-clone-dialog') as any;
+    expect(dialog.landed).toEqual(['src-a']);
+    expect(dialog.failed).toEqual(['src-b']);
+
+    // The server now reflects round 1's real outcome: 'existing' is gone,
+    // src-a's clone ('landed-a') is present, src-b never landed. Pushing
+    // this is what makes the bug reproducible - without a state update
+    // the card would not yet know 'landed-a' exists at the target.
+    send(state({
+      rules: [
+        rule({ id: 'src-a', profile: 1, day: 'erev', time: '11:00:00' }),
+        rule({ id: 'src-b', profile: 1, day: 'erev', time: '12:00:00' }),
+        rule({ id: 'landed-a', profile: 2, day: 'erev', time: '11:00:00' }),
+      ],
+    }));
+    await el.updateComplete;
+
+    // Retry, same as a real click on the dialog's own confirm button
+    // would send: only the still-missing remainder.
+    dialog = el.shadowRoot!.querySelector('shabbat-clone-dialog') as any;
+    dialog.dispatchEvent(new CustomEvent('dialog-clone-confirm', {
+      detail: {
+        sourceRuleIds: ['src-b'], sourceScope: 'day', sourceProfile: 1,
+        targetProfile: 2, targetDay: 'erev', mode: 'overwrite',
+      },
+    }));
+    await flush();
+    await el.updateComplete;
+
+    const deletes = hass.callWS.mock.calls
+      .map((c: any) => c[0])
+      .filter((c: any) => c.type === 'shabbat_scheduler/rules/delete');
+    // Exactly one delete phase across BOTH rounds - the pre-existing
+    // 'existing' rule in round 1, and NOTHING on retry. Critically,
+    // 'landed-a' (round 1's own clone) is never targeted for deletion.
+    expect(deletes.map((d: any) => d.rule_id)).toEqual(['existing']);
+
+    const creates = hass.callWS.mock.calls
+      .map((c: any) => c[0])
+      .filter((c: any) => c.type === 'shabbat_scheduler/rules/create');
+    // src-a (round 1, lands) + src-b (round 1, rejected) + src-b (retry,
+    // lands) - three attempts total, never a re-creation of src-a.
+    expect(creates).toHaveLength(3);
+    expect(creates.filter((c: any) => c.rule.time === '11:00:00')).toHaveLength(1);
+
+    // Retry fully succeeded - the dialog closes, confirming the fix
+    // holds end to end, not just that the delete call was skipped.
     expect(el.shadowRoot!.querySelector('shabbat-clone-dialog')).toBeNull();
   });
 });

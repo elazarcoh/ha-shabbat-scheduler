@@ -32,7 +32,7 @@ const rule = (over: Partial<RuleData> = {}): RuleData => ({
 });
 
 const state = (over: Partial<CardState> = {}): CardState => ({
-  defaults: {}, rules: [], enabled: false, dry_run: false, warnings: [],
+  defaults: {}, rules: [], enabled: false, warnings: [],
   master_entity_id: 'switch.master',
   block: {
     length: 1,
@@ -1117,5 +1117,18 @@ describe('authoring', () => {
     const dialog = el.shadowRoot!.querySelector('shabbat-defaults-dialog') as any;
     expect(dialog).not.toBeNull();
     expect(dialog.hass).toBe(el.hass);
+  });
+
+  it('no longer offers a dry-run control at all', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(state());
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('shabbat-block-header')!
+      .shadowRoot).toBeTruthy(); // sanity: header rendered
+    const header = el.shadowRoot!.querySelector('shabbat-block-header') as any;
+    await header.updateComplete;
+    expect(header.shadowRoot!.querySelector('.dry-run')).toBeNull();
+    expect('dryRun' in header).toBe(false);
   });
 });

@@ -20,7 +20,7 @@ const rule = (over: Partial<RuleData>): RuleData => ({
 });
 
 const state = (over: Partial<CardState>): CardState => ({
-  defaults: {}, rules: [], enabled: true, dry_run: false, warnings: [],
+  defaults: {}, rules: [], enabled: true, warnings: [],
   master_entity_id: 'switch.master',
   block: {
     length: 1,

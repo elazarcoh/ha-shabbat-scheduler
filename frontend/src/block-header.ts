@@ -9,7 +9,6 @@ export class ShabbatBlockHeader extends LitElement {
   @property({ attribute: false }) hass: Hass | null = null;
   @property({ attribute: false }) block: BlockData | null = null;
   @property({ type: Boolean }) enabled = false;
-  @property({ type: Boolean }) dryRun = false;
   @property({ type: Boolean }) canWrite = false;
   @property() masterEntityId: string | null = null;
   @property() language = 'en';
@@ -37,11 +36,6 @@ export class ShabbatBlockHeader extends LitElement {
       cursor: pointer;
     }
     button[disabled] { opacity: 0.5; cursor: not-allowed; }
-    button.active {
-      background: var(--primary-color, #03a9f4);
-      color: var(--text-primary-color, #fff);
-      border-color: transparent;
-    }
     .none { color: var(--secondary-text-color, #666); }
     .chips { display: flex; gap: 4px; }
     .chip {
@@ -88,14 +82,6 @@ export class ShabbatBlockHeader extends LitElement {
     );
   };
 
-  private _toggleDryRun() {
-    this.dispatchEvent(
-      new CustomEvent('shabbat-dry-run-toggle', {
-        detail: { dryRun: !this.dryRun },
-      }),
-    );
-  }
-
   override render() {
     return html`
       <div class="header">
@@ -141,13 +127,6 @@ export class ShabbatBlockHeader extends LitElement {
             @value-changed=${this._onMasterChanged}
           ></ha-selector>
         </div>
-        <button
-          class="dry-run ${this.dryRun ? 'active' : ''}"
-          ?disabled=${!this.canWrite}
-          @click=${this._toggleDryRun}
-        >
-          ${t(this.language, 'dry_run')}
-        </button>
       </div>
     `;
   }

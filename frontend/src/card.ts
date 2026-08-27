@@ -237,11 +237,6 @@ export class ShabbatSchedulerCard extends LitElement {
     });
   };
 
-  private _onDryRun = (event: Event) => {
-    const { dryRun } = (event as CustomEvent).detail;
-    void this._call('shabbat_scheduler', 'set_dry_run', { enabled: dryRun });
-  };
-
   /**
    * A write that fails has to say so. Nothing here is optimistic - the
    * controls only ever show what the server pushed - so a swallowed
@@ -470,13 +465,11 @@ export class ShabbatSchedulerCard extends LitElement {
           .hass=${this._hass}
           .block=${this._state.block}
           .enabled=${this._state.enabled}
-          .dryRun=${this._state.dry_run}
           .canWrite=${this._canWrite}
           .masterEntityId=${this._state.master_entity_id}
           .selectedProfile=${this._profile}
           .language=${this._language}
           @shabbat-master-toggle=${this._onMaster}
-          @shabbat-dry-run-toggle=${this._onDryRun}
           @profile-selected=${(event: Event) => {
             this._selectedProfile = (event as CustomEvent).detail.profile;
           }}

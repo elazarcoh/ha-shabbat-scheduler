@@ -158,7 +158,6 @@ export interface CardState {
   defaults: Defaults;
   rules: RuleData[];
   enabled: boolean;
-  dry_run: boolean;
   warnings: WarningData[];
   block: BlockData | null;
   master_entity_id: string | null;

@@ -14,7 +14,7 @@ async function render(props: Record<string, unknown>) {
   const el = document.createElement('shabbat-block-header') as HTMLElement &
     Record<string, unknown>;
   Object.assign(el, {
-    block, enabled: false, dryRun: false, canWrite: true,
+    block, enabled: false, canWrite: true,
     masterEntityId: 'switch.master', language: 'en', selectedProfile: 1, hass: {}, ...props,
   });
   document.body.appendChild(el);

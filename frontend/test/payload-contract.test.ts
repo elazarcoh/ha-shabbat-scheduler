@@ -217,7 +217,6 @@ describe('the card, against a real server payload', () => {
     expect(state.master_entity_id).not.toBe('switch.master');
     expect(header.masterEntityId).toBe(state.master_entity_id);
     expect(header.enabled).toBe(state.enabled);
-    expect(header.dryRun).toBe(state.dry_run);
   });
 
   it('carries one recorded outcome and one rule that never ran', () => {

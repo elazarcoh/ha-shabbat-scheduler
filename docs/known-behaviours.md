@@ -833,8 +833,11 @@ it by editing the JSON — `payload-contract.test.ts` would then be rendering a
 shape the server does not send, which is the original failure exactly.
 
 **Its clock is frozen, and that is not incidental.** The generator runs with
-`enabled=True, dry_run=True`, so restart catch-up really runs and the one
-replay-enabled rule in the fixture really records a `last_outcome`. That
+`enabled=True`, so restart catch-up really runs and the one replay-enabled
+rule in the fixture really records a `last_outcome` (`skipped_stale`, since
+it lands outside its own replay window — dry-run no longer exists to make
+this safe, see "Dry run is gone", above; the rule is simply never close
+enough to fire for real). That
 outcome carries `at`, and a stale skip's `detail` says *how late* the rule was
 — both read from the clock. Against the real clock the regenerated fixture
 therefore differs on every run, down to the microsecond, and a guard that fails
@@ -905,6 +908,77 @@ Four things worth knowing about it:
   server-owned: `rule_schema.py` drops it on the way in (unconditionally, not
   under `keep_server_fields`), so a client can echo a rule it read without
   being refused and still cannot forge a verdict.
+
+## Dry run is gone; verification is now on-demand
+
+The persisted `store.dry_run` flag — a standing toggle that made every
+REAL scheduled fire report `would_call` instead of calling — is removed.
+Two reasons, both from actually trying to use it: it only ever exercised
+a real Shabbat (there was no way to prove a rule worked except living
+through one with the toggle on), and it produced no visible proof
+anything had worked even then — just an absence of real side effects,
+indistinguishable from a rule that silently did nothing at all.
+
+In its place: `engine.async_apply_rule` takes an optional `simulate`
+keyword (behaving exactly as the old flag did at the point of the real
+service call), plus `at` (evaluate `sun`/`time` conditions as though a
+given moment were now) and `force_conditions` (skip condition evaluation
+entirely). Two new websocket commands — `rules/run_now` (one rule) and
+`rules/run_day` (a whole day, in `resolve_rules()`'s own order) — expose
+these on demand, from the rule dialog's **Run Now** button and the
+header's new simulate dialog respectively; both are `require_admin`. Both
+reuse the exact code path a real fire uses; neither is a second, parallel
+implementation of "what would this rule do".
+
+`ws_run_now` defaults `simulate` to `True` server-side — an accidental or
+malformed call from a future client version cannot silently make a real
+call. The card's own choice is more deliberate than that default
+suggests: `rule-dialog.ts`'s Run Now button only appears while editing an
+existing rule (`canWrite && editing`) and, when pressed, opens an inline
+choice between **Simulate** and **Run for real** rather than picking one
+for you.
+
+The critical difference from the old flag: a simulated run is never
+recorded to a rule's `last_outcome`, never pushed to the logbook, and
+never fires `SIGNAL_RULES_CHANGED` — see
+`test_simulate_never_records_a_durable_outcome` and
+`test_simulate_does_not_signal_rules_changed` in `tests/test_engine.py`,
+plus `test_simulate_does_not_record_even_when_the_rule_is_blocked` for
+the blocked-condition path specifically. It did not really happen, and
+the rest of the system must not be told otherwise. The `would_call`
+outcome value itself, and everywhere it renders (`format.ts`,
+`rule-row.ts`, the logbook), is unchanged — only what triggers it
+changed, from a standing flag to an explicit per-call choice.
+
+`EVENT_RULE_APPLIED`/`EVENT_RULE_COMPLETED` still carry a `dry_run` key in
+their payload, sourced from `simulate` rather than `self.store.dry_run` —
+the key name is kept for backward compatibility with anything already
+listening on the event bus, even though the internal flag it used to read
+is gone.
+
+`at`'s honest limit: HA's own `sun`/`time` condition helpers
+(`homeassistant.helpers.condition.time`,
+`homeassistant.components.sun.condition.sun`) read the real clock
+directly and accept no override argument of their own — verified against
+the installed 2026.8.2. `engine._check_at_scoped` works around this by
+substituting `dt_util.now`/`dt_util.utcnow` for the duration of one
+synchronous condition check, restored immediately after — the same
+technique `freezegun` uses, without adding it as a runtime dependency.
+Every other condition type (`state`, `numeric_state`, `template`, ...)
+still reads real state when `at` is given: `at` only ever affects
+`sun`/`time`, and is a documented no-op for anything else, not a silent
+pretence of universality. The card does not expose `at` at all yet —
+`ws_run_now` accepts it and `ws_run_day` does not — so today it is
+reachable only by calling the websocket command directly, not from
+either dialog.
+
+`ws_run_day`'s header entry point (`shabbat-simulate-dialog`) previews the
+selected block length's whole resolved schedule via the existing
+`shabbat_scheduler/preview` command, lets you pick which day within it to
+run, and exposes `force_conditions` as its own toggle — but its Simulate
+and Run for real buttons, like the ▶ icon that opens it, only render for
+`canWrite`; a non-admin can open nothing that fires a real (or simulated)
+call.
 
 ## Deployment note
 

@@ -15,10 +15,12 @@ in whichever order the automation engine happens to run them.
 
 ![The card showing a real, resolved schedule](docs/images/card-screenshot.png)
 
-*(The "Dry run" toggle — report what a rule would do without actually
-calling anything — is turned on for this screenshot, so the header shows
-something lit up. The master switch itself starts off on every fresh
-install; see step 3 below for why.)*
+*(This screenshot predates the Run Now / Simulate work below and still
+shows the header's old "Dry run" toggle — removed since; the current
+header instead carries a gear for shared defaults and a ▶ icon for
+testing a whole day's schedule. Stale, and due for recapturing rather
+than a corrected caption. The master switch itself starts off on every
+fresh install; see step 3 below for why.)*
 
 ## Quick start
 
@@ -53,6 +55,18 @@ install; see step 3 below for why.)*
    authored starts running on the next Shabbat or Chag it applies to.
 
 [jewish-calendar]: https://www.home-assistant.io/integrations/jewish_calendar/
+
+### Testing your rules
+
+You do not have to wait for a real Shabbat to find out whether a rule
+works. Open any rule and press **Run now** for an inline choice: Simulate
+(reports what would happen, calls nothing) or Run for real. To test a
+whole day's schedule at once — in order, exactly as it would really run —
+use the ▶ icon in the header, which also lets you force every condition
+to pass so you can see past a guard that is currently blocking. Neither
+path changes any real timer: they run the exact same
+`resolve_rules()` → `async_apply_rule()` path a real fire uses, on demand,
+any day of the week.
 
 ## Terminology
 
@@ -89,6 +103,13 @@ fires before Shabbat begins, which is how you pre-cool; a last-day rule at
   with `enabled: true`), with an optional staleness window past which it
   is skipped rather than replayed late. Nothing unexpected fires just
   because Home Assistant restarted.
+- **Testable on demand, without waiting for Shabbat.** Every rule has a
+  Run Now button (Simulate, or run for real); every day's whole resolved
+  schedule can be run the same way from the header's ▶ icon. Both reuse
+  the exact code path a real fire uses — `resolve_rules()` then
+  `async_apply_rule()` — so what you see is what would really happen, not
+  a separate approximation of it. A simulated run is never recorded or
+  logged; it is a live-only answer to "would this actually work?".
 
 ## Entities
 
@@ -116,8 +137,11 @@ target and data. Conflicts appear on the rows they affect; a conflict whose rule
 are not currently on screen appears in the banner instead, so it cannot go
 unseen. Conflicts are only ever warned about, never auto-resolved — the same
 "no precedence" commitment above applies here too. The header carries the
-master switch and the dry-run toggle; both are disabled for non-admin users,
-who can still read the whole schedule.
+master switch, the shared-defaults gear, and a ▶ icon that opens a dialog
+for testing a whole day's schedule at once. All three are admin-only: the
+master switch is shown but disabled for a non-admin user, while the gear
+and the ▶ icon are not rendered for one at all — a non-admin can still
+read the whole schedule either way.
 
 The card shows only the rules matching the coming block's length, because
 rules are authored per profile — a 3-day chag's rules are not shown on a
@@ -148,7 +172,6 @@ rule dialog uses.
 
 - `shabbat_scheduler.simulate` — resolve a block with no side effects. Answers
   "what happens this Shabbat?" and "what happens on a 3-day chag?".
-- `shabbat_scheduler.set_dry_run` — report what would change, call nothing.
 - `shabbat_scheduler.export_yaml` — dump the whole rule set.
 - `shabbat_scheduler.import_yaml` — replace the whole rule set.
 

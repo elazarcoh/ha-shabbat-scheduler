@@ -23,7 +23,23 @@ export class ShabbatBlockHeader extends LitElement {
       padding-block-end: 8px;
       border-block-end: 1px solid var(--divider-color, #e0e0e0);
     }
-    .label { flex: 1; min-inline-size: 0; font-weight: 600; }
+    .label {
+      flex: 1;
+      min-inline-size: 0;
+      font-weight: 600;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      column-gap: 8px;
+    }
+    /* The title ("Day ×1") is one unbreakable unit; .dates wraps normally
+       (at the arrow, between dates) but each individual .date span does
+       not, so a narrow header wraps at a sensible point instead of
+       breaking a date's own digits across two lines - hyphens in
+       "2026-08-14" are otherwise a normal CSS soft-wrap point, which is
+       what used to split it into "2026-08-" and "14". */
+    .label > span:first-child { white-space: nowrap; }
+    .dates .date { white-space: nowrap; }
     .dates { color: var(--secondary-text-color, #666); font-weight: 400; }
     button {
       font: inherit;
@@ -68,9 +84,25 @@ export class ShabbatBlockHeader extends LitElement {
     }
   `;
 
-  private _dates(): string {
-    if (this.block === null) return '';
-    return orderedDates(this.block).join(' → ');
+  // Each date rendered as its own atomic (non-wrapping) span, joined by a
+  // plain arrow the browser CAN wrap at. A single joined string here (the
+  // old shape) let the browser treat every hyphen in "2026-08-14" as an
+  // ordinary soft-wrap point, which is how a narrow header used to split
+  // a date across two lines mid-number instead of wrapping at the arrow.
+  private _dates() {
+    if (this.block === null) return nothing;
+    const dates = orderedDates(this.block);
+    // Each map item is wrapped in a single top-level <span>, not a bare
+    // string alongside a separate element: under this repo's pinned
+    // lit-html + happy-dom, a template with more than one top-level
+    // dynamic part fails to render (see day-group.ts/rule-dialog.ts's
+    // own comments on the same constraint) - a template literal here
+    // combining a top-level `${prefix}` text part with a sibling <span>
+    // rendered the arrow but silently dropped the date text.
+    return dates.map(
+      (date, index) =>
+        html`<span>${index > 0 ? ' → ' : ''}<span class="date">${date}</span></span>`,
+    );
   }
 
   // No optimistic update anywhere here: the control reports intent and

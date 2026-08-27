@@ -1,44 +1,61 @@
 # Shabbat Scheduler
 
-*Alpha. 763 tests passing (525 Python + end-to-end, 238 frontend), not yet
-installed on the maintainer's own production instance.*
+*Alpha. 897 tests passing (549 Python + 15 end-to-end, 333 frontend).*
 
-Shabbat Scheduler schedules Home Assistant to do anything — turn a light on,
-run a scene, send a notification, adjust a thermostat — at specific times
-across Shabbat and Chag, without you touching a switch. It's for anyone who
-currently either does this by hand or cobbles it together with plain
-time-based automations, and wants two guarantees an ordinary automation does
-not give you: a rule **fires once and leaves the device alone** afterward
-(no re-asserting state every time something else changes it), and
-**overlapping rules are reported, never silently and arbitrarily resolved**
-in whichever order the automation engine happens to run them.
+I built this because Shabbat and Chag are the one time nobody in the house
+is going to walk over and adjust a thermostat, and I was tired of choosing
+between doing that by hand and cobbling it together with plain time-based
+automations that quietly re-fight each other all day. Shabbat Scheduler
+schedules Home Assistant to do anything — turn a light on, run a scene,
+send a notification, adjust a thermostat — at specific times across
+Shabbat and Chag, and then it gets out of the way. Nothing about it is
+specific to climate control or lighting; if Home Assistant can call the
+service, a rule can schedule it.
+
+It gives you two things an ordinary automation doesn't: a rule **fires
+once and leaves the device alone** afterward — nothing keeps nudging it
+back to "on" every time something else changes it — and **overlapping
+rules are reported, never silently and arbitrarily resolved** in whichever
+order the automation engine happens to run them.
 
 ![The card showing a real, resolved schedule](docs/images/card-screenshot.png)
 
-*(This screenshot predates the Run Now / Simulate work below and still
-shows the header's old "Dry run" toggle — removed since; the current
-header instead carries a gear for shared defaults and a ▶ icon for
-testing a whole day's schedule. Stale, and due for recapturing rather
-than a corrected caption. The master switch itself starts off on every
-fresh install; see step 3 below for why.)*
+## Why "fires once" is a guarantee, not a slogan
+
+I didn't start here. I started with a popular third-party `scheduler`
+component, and abandoned it after it kept re-asserting "on" against
+whatever had turned a device off, and — separately, and worse — silently
+mutated its own stored timeslots. Losing trust in a scheduler is a bad
+time to discover it, so this project's whole shape follows from refusing
+to repeat that: a rule acts at its one moment and is done. Turn something
+off by hand five minutes later and it stays off. That's not a nice-to-have
+here — it's the entire reason this exists instead of the thing I was using
+before.
 
 ## Quick start
 
-1. **Install via HACS.** Add this repository to HACS as a custom repository
-   of type *Integration*, download it, and restart Home Assistant.
-2. **Add the integration.** Settings → Devices & Services → Add Integration
-   → **Shabbat Scheduler**. If the [Jewish Calendar][jewish-calendar]
-   integration is already installed, its candle-lighting and havdalah
-   sensors are offered as the defaults — accept them unless you have a
-   reason not to.
-3. **The master switch starts off.** Nothing can happen yet: installing (and
-   even authoring rules) cannot touch a single appliance until you
+1. **Install the [Jewish Calendar][jewish-calendar] integration first, if
+   you don't already have it.** This isn't optional — every block this
+   scheduler runs is derived from its candle-lighting and havdalah
+   sensors, and setup can't complete without two sensors to point at.
+2. **Check your Home Assistant version.** This needs `2026.8.0` or newer;
+   HACS will refuse the install otherwise.
+3. **Install via HACS.** Add this repository as a custom repository of
+   type *Integration*, download it, and restart Home Assistant.
+4. **Add the integration.** Settings → Devices & Services → Add
+   Integration → **Shabbat Scheduler**. Jewish Calendar's candle-lighting
+   and havdalah sensors are offered as the defaults — accept them unless
+   you have a reason not to.
+5. **The master switch starts off.** Nothing can happen yet: installing
+   (and even authoring rules) cannot touch a single appliance until you
    deliberately turn `switch.shabbat_scheduler` on. This is deliberate —
    safe by default — so you can set everything up at your own pace before
    anything is live.
-4. **Open the card.** It's a Lovelace card and it registers itself the
+6. **Open the card.** It's a Lovelace card and it registers itself the
    moment the integration is added — there is nothing to add to your
-   dashboard's resources. Add it to a dashboard:
+   dashboard's resources (unless your Lovelace is in YAML resource mode,
+   in which case check the log for the one line to add). Add it to a
+   dashboard:
 
    ```yaml
    type: custom:shabbat-scheduler-card
@@ -51,7 +68,11 @@ fresh install; see step 3 below for why.)*
    a toggle. Give the **action** (which service to call — `domain.service`,
    e.g. `input_boolean.turn_on`), a **target** (which entity, area, device
    or label it acts on), a **time**, and save.
-5. **Turn the master switch on when you're ready.** Everything you've
+7. **Prove it works before you trust it.** Open the rule you just wrote
+   and tap **Run now** — see "Testing your rules" below for what that does
+   and how to test a whole day at once, so you're never waiting for the
+   next real Shabbat to find out whether you set something up correctly.
+8. **Turn the master switch on when you're ready.** Everything you've
    authored starts running on the next Shabbat or Chag it applies to.
 
 [jewish-calendar]: https://www.home-assistant.io/integrations/jewish_calendar/
@@ -141,15 +162,18 @@ title: שעון שבת
 
 It shows the coming block as a timeline: one group per day with its date,
 the candle-lighting and havdalah markers, and each rule's time, action,
-target and data. Conflicts appear on the rows they affect; a conflict whose rules
-are not currently on screen appears in the banner instead, so it cannot go
-unseen. Conflicts are only ever warned about, never auto-resolved — the same
-"no precedence" commitment above applies here too. The header carries the
-master switch, the shared-defaults gear, and a ▶ icon that opens a dialog
-for testing a whole day's schedule at once. All three are admin-only: the
-master switch is shown but disabled for a non-admin user, while the gear
-and the ▶ icon are not rendered for one at all — a non-admin can still
-read the whole schedule either way.
+target and data. Every rule has its own quick on/off toggle right on the
+row — no need to open it just to disable it for a week — and a disabled
+rule dims so the schedule still reads correctly at a glance. Conflicts
+appear on the rows they affect; a conflict whose rules are not currently on
+screen appears in the banner instead, so it cannot go unseen. Conflicts are
+only ever warned about, never auto-resolved — the same "no precedence"
+commitment above applies here too. The header carries the master switch,
+the shared-defaults gear, and a ▶ icon that opens a dialog for testing a
+whole day's schedule at once. All three are admin-only: the master switch
+is shown but disabled for a non-admin user, while the gear and the ▶ icon
+are not rendered for one at all — a non-admin can still read the whole
+schedule either way.
 
 The card shows only the rules matching the coming block's length, because
 rules are authored per profile — a 3-day chag's rules are not shown on a
@@ -175,6 +199,20 @@ markers, and a banner saying so. Editing works exactly the same there.
 The gear opens the **shared defaults** — the target and data every rule
 inherits unless it sets its own — with the same target and data editors the
 rule dialog uses.
+
+### Cloning a day or a whole profile
+
+Setting up a 3-day Chag from scratch when you already have a working
+Shabbat profile is exactly the kind of thing that shouldn't require
+retyping every rule. The **⋮** menu next to each day's heading clones that
+one day onto another day (in the same or a different profile); the **⋮**
+next to the 1d/2d/3d chips clones the whole profile — every day it has —
+onto another profile, matching day names across profiles and leaving any
+day the source doesn't have untouched. Either way you choose **extend**
+(add the cloned rules alongside whatever's already on the target day) or
+**overwrite** (replace the target day's rules with the clone). Cloned
+rules get their own fresh identity — editing one never touches the rule it
+was cloned from.
 
 ## Services
 

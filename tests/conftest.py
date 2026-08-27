@@ -86,7 +86,7 @@ def setup_scheduler(hass):
     to prevent.
     """
 
-    async def _setup(rules=(), defaults=None, enabled=False, dry_run=False):
+    async def _setup(rules=(), defaults=None, enabled=False):
         await hass.config.async_set_time_zone("Asia/Jerusalem")
         for entity_id, state in ZMANIM.items():
             hass.states.async_set(entity_id, state)
@@ -96,8 +96,6 @@ def setup_scheduler(hass):
         if enabled:
             # Timers are only armed while the master switch is on.
             await store.async_set_enabled(True)
-        if dry_run:
-            await store.async_set_dry_run(True)
         entry = MockConfigEntry(domain=DOMAIN, title="Shabbat Scheduler")
         entry.add_to_hass(hass)
         await hass.config_entries.async_setup(entry.entry_id)

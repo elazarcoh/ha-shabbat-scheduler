@@ -203,7 +203,6 @@ class RuleStore:
         self._rules: list[Rule] = []
         self._defaults: dict = {}
         self._enabled: bool = False
-        self._dry_run: bool = False
         self._active_block: tuple[datetime, datetime] | None = None
         # Keyed by rule id. NOT a field on Rule: an outcome is what
         # happened TO a rule, not part of what the rule is - putting it on
@@ -224,10 +223,6 @@ class RuleStore:
     @property
     def enabled(self) -> bool:
         return self._enabled
-
-    @property
-    def dry_run(self) -> bool:
-        return self._dry_run
 
     @property
     def migration_failures(self) -> list[str]:
@@ -309,7 +304,6 @@ class RuleStore:
         self._defaults = data.get("defaults", {})
         # Master switch defaults OFF so a fresh install cannot act.
         self._enabled = data.get("enabled", False)
-        self._dry_run = data.get("dry_run", False)
         # Added after v1 shipped; absent in every store written before it.
         self._active_block = active_block_from_dict(data.get("active_block"))
         # Absent in every store written before Task 11; see
@@ -322,7 +316,6 @@ class RuleStore:
             "rules": [rule_to_dict(rule) for rule in self._rules],
             "defaults": self._defaults,
             "enabled": self._enabled,
-            "dry_run": self._dry_run,
         }
         # Written only when there is one, so a store that never has an
         # active block keeps exactly the shape it has always had.
@@ -356,11 +349,6 @@ class RuleStore:
 
     async def async_set_enabled(self, value: bool) -> None:
         self._enabled = value
-        await self.async_save()
-        self._notify_change()
-
-    async def async_set_dry_run(self, value: bool) -> None:
-        self._dry_run = value
         await self.async_save()
         self._notify_change()
 

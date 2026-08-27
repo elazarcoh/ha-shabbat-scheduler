@@ -96,7 +96,6 @@ async def async_get_config_entry_diagnostics(
             "options_keys": sorted(config_entry.options.keys()),
         },
         "enabled": store.enabled,
-        "dry_run": store.dry_run,
         "rule_count": len(store.rules),
         "migration_failures": store.migration_failures,
         "current_block": _block_shape(engine.current_block),

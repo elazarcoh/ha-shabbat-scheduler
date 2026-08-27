@@ -35,7 +35,6 @@ async def test_store_starts_empty_and_disabled(hass):
     await store.async_load()
     assert store.rules == []
     assert store.enabled is False  # master switch defaults OFF
-    assert store.dry_run is False
 
 
 async def test_add_and_persist(hass):
@@ -102,9 +101,24 @@ async def test_a_store_without_an_active_block_keeps_its_old_shape(
     await store.async_add(
         Rule(id="r1", profile=1, day="1", time=time(11, 0), action="input_boolean.turn_on")
     )
-    assert set(_stored(hass_storage)) == {
-        "rules", "defaults", "enabled", "dry_run"
+    assert set(_stored(hass_storage)) == {"rules", "defaults", "enabled"}
+
+
+async def test_a_pre_upgrade_dry_run_key_is_ignored_not_migrated(hass, hass_storage):
+    """The key carried no information worth preserving - it is simply
+    absent from a freshly-loaded store, never read back out."""
+    hass_storage[STORAGE_KEY] = {
+        "version": STORAGE_VERSION,
+        "key": STORAGE_KEY,
+        "data": {
+            "rules": [], "defaults": {}, "enabled": True, "dry_run": True,
+        },
     }
+    store = RuleStore(hass)
+    await store.async_load()
+
+    assert store.enabled is True
+    assert not hasattr(store, "dry_run") or "dry_run" not in vars(store)
 
 
 async def test_load_tolerates_storage_written_before_active_block_existed(
@@ -123,7 +137,6 @@ async def test_load_tolerates_storage_written_before_active_block_existed(
             ],
             "defaults": {"temperature": 26},
             "enabled": True,
-            "dry_run": False,
         },
     }
     store = RuleStore(hass)
@@ -143,7 +156,6 @@ async def test_a_malformed_active_block_is_ignored_not_fatal(hass, hass_storage)
             "rules": [],
             "defaults": {},
             "enabled": True,
-            "dry_run": False,
             "active_block": {"candle_lighting": "not-a-datetime"},
         },
     }
@@ -224,7 +236,6 @@ async def test_a_store_written_before_last_outcome_existed_still_loads(
             # defaults would pass against a loader that read nothing.
             "defaults": {"temperature": 26},
             "enabled": True,
-            "dry_run": True,
         },
     }
     store = RuleStore(hass)
@@ -233,7 +244,6 @@ async def test_a_store_written_before_last_outcome_existed_still_loads(
     assert [r.id for r in store.rules] == ["r1"]
     assert store.defaults == {"temperature": 26}
     assert store.enabled is True
-    assert store.dry_run is True
     assert store.last_outcome("r1") is None
 
 
@@ -246,7 +256,6 @@ async def test_a_malformed_outcome_map_is_ignored_not_fatal(hass, hass_storage):
             "rules": [rule_to_dict(_stored_rule())],
             "defaults": {},
             "enabled": True,
-            "dry_run": False,
             "last_outcomes": ["not", "a", "map"],
         },
     }
@@ -388,16 +397,15 @@ async def test_change_listener_fires_on_add_update_delete(hass):
     assert len(calls) == 4
 
 
-async def test_change_listener_fires_for_enabled_and_dry_run(hass):
-    """The card renders both, so both must push."""
+async def test_change_listener_fires_for_enabled(hass):
+    """The card renders it, so it must push."""
     store = RuleStore(hass)
     await store.async_load()
     calls = []
     store.async_set_change_listener(lambda: calls.append(1))
 
     await store.async_set_enabled(True)
-    await store.async_set_dry_run(True)
-    assert len(calls) == 2
+    assert len(calls) == 1
 
 
 async def test_change_listener_does_not_fire_for_active_block(hass):

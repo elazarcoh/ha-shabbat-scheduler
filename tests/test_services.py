@@ -83,16 +83,6 @@ async def test_simulate_warns_when_profile_missing(hass):
     assert response["warnings"]
 
 
-async def test_set_dry_run(hass):
-    await _setup(hass)
-    await hass.services.async_call(
-        DOMAIN, "set_dry_run", {"enabled": True}, blocking=True
-    )
-    store = RuleStore(hass)
-    await store.async_load()
-    assert store.dry_run is True
-
-
 async def test_yaml_export_then_import(hass):
     await _setup(hass, [
         Rule(id="r1", profile=1, day="1", time=time(11, 0),
@@ -187,7 +177,6 @@ async def test_services_removed_on_unload(hass):
     await hass.async_block_till_done()
 
     assert hass.services.has_service(DOMAIN, "simulate") is False
-    assert hass.services.has_service(DOMAIN, "set_dry_run") is False
     assert hass.services.has_service(DOMAIN, "export_yaml") is False
     assert hass.services.has_service(DOMAIN, "import_yaml") is False
 

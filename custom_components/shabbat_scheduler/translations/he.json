@@ -55,13 +55,6 @@
         }
       }
     },
-    "set_dry_run": {
-      "name": "הרצה יבשה",
-      "description": "כשמופעל, הכללים מדווחים מה היו משנים אך אינם מבצעים דבר.",
-      "fields": {
-        "enabled": { "name": "מופעל", "description": "האם הרצה יבשה פעילה." }
-      }
-    },
     "export_yaml": {
       "name": "ייצוא YAML",
       "description": "מחזיר את כל מערך הכללים כ-YAML."

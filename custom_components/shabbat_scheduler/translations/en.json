@@ -55,13 +55,6 @@
         }
       }
     },
-    "set_dry_run": {
-      "name": "Set dry run",
-      "description": "When enabled, rules report what they would change but call no services.",
-      "fields": {
-        "enabled": { "name": "Enabled", "description": "Whether dry run is on." }
-      }
-    },
     "export_yaml": {
       "name": "Export YAML",
       "description": "Return the whole rule set as YAML."

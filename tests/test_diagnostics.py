@@ -34,7 +34,6 @@ async def test_diagnostics_report_the_rule_count_and_engine_state(
 
     assert result["rule_count"] == 1
     assert result["enabled"] is True
-    assert result["dry_run"] is False
     assert "migration_failures" in result
     assert result["migration_failures"] == []
 

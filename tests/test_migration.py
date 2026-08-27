@@ -119,11 +119,10 @@ def test_defaults_migrate_too():
 
 
 def test_the_other_store_keys_survive():
-    data = {"rules": [], "defaults": {}, "enabled": True, "dry_run": True,
+    data = {"rules": [], "defaults": {}, "enabled": True,
             "active_block": {"candle_lighting": "x", "havdalah": "y"}}
     out, _ = migrate_v1(data)
     assert out["enabled"] is True
-    assert out["dry_run"] is True
     assert out["active_block"] == {"candle_lighting": "x", "havdalah": "y"}
 
 

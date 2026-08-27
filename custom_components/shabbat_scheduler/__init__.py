@@ -237,9 +237,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             call.data.get("block_length"),
         )
 
-    async def _set_dry_run(call: ServiceCall) -> None:
-        await store.async_set_dry_run(bool(call.data["enabled"]))
-
     async def _export_yaml(_call: ServiceCall) -> ServiceResponse:
         return {"yaml": export_yaml(store.defaults, store.rules)}
 
@@ -278,10 +275,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
-        DOMAIN, "set_dry_run", _set_dry_run,
-        schema=vol.Schema({vol.Required("enabled"): bool}),
-    )
-    hass.services.async_register(
         DOMAIN, "export_yaml", _export_yaml,
         supports_response=SupportsResponse.ONLY,
     )
@@ -311,7 +304,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unloaded:
         data = hass.data[DOMAIN].pop(entry.entry_id)
         await data["engine"].async_shutdown()
-        for service in ("simulate", "set_dry_run", "export_yaml", "import_yaml"):
+        for service in ("simulate", "export_yaml", "import_yaml"):
             hass.services.async_remove(DOMAIN, service)
         await async_unregister_frontend(hass)
     return unloaded

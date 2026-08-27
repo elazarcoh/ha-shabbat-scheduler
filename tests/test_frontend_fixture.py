@@ -28,14 +28,13 @@ REGEN = "REGEN_FRONTEND_FIXTURE=1 uv run pytest tests/test_frontend_fixture.py"
 
 # WHY THE CLOCK IS FROZEN, and only around the setup call.
 #
-# This generator runs with `enabled=True, dry_run=True`, so the restart
-# catch-up really runs and `erev-salon` - the one rule that opts into replay
-# - really produces a `last_outcome`. That outcome carries `at`, and (for a
-# stale skip) a detail saying HOW LATE the rule was: both derived from the
-# clock. Against the real clock the regenerated fixture therefore differs
-# from the previous one on every single run, down to the microsecond, and a
-# guard that fails at random is a guard the next frustrated developer
-# disables.
+# This generator runs with `enabled=True`, so `erev-salon` - the one rule
+# that opts into replay - really produces a `last_outcome`. That outcome
+# carries `at`, and (for a stale skip) a detail saying HOW LATE the rule
+# was: both derived from the clock. Against the real clock the regenerated
+# fixture therefore differs from the previous one on every single run, down
+# to the microsecond, and a guard that fails at random is a guard the next
+# frustrated developer disables.
 #
 # Frozen to an instant INSIDE the block conftest's ZMANIM describe (17:00
 # local on day 1, before the 20:01 havdalah), chosen so that:
@@ -54,8 +53,8 @@ _FROZEN_NOW = "2026-08-15T14:00:00+00:00"
 
 # Every value here is deliberately NOT a default of anything on either
 # side. A fixture that happens to equal the card's own property defaults
-# proves nothing about the binding, and `enabled`/`dry_run` left False
-# would be indistinguishable from a card that never read them at all.
+# proves nothing about the binding, and `enabled` left False would be
+# indistinguishable from a card that never read it at all.
 DEFAULTS = {
     "target": {"entity_id": ["climate.salon"]},
     "data": {"temperature": 24},
@@ -165,7 +164,7 @@ async def test_the_committed_frontend_fixture_matches_a_real_payload(
     # The client is minted before the entry loads, exactly as the other
     # websocket tests do it.
     with freeze_time(_FROZEN_NOW):
-        await setup_scheduler(RULES, defaults=DEFAULTS, enabled=True, dry_run=True)
+        await setup_scheduler(RULES, defaults=DEFAULTS, enabled=True)
     client = await hass_ws_client(hass)
 
     # A real round trip over the socket, not a call to `_state_payload`:
@@ -202,7 +201,7 @@ async def test_the_committed_frontend_fixture_matches_a_real_payload(
     )
     # Guards against a fixture that would still pass while proving nothing
     # about the card's own bindings, per this plan's testing standards.
-    assert payload["enabled"] is True and payload["dry_run"] is True
+    assert payload["enabled"] is True
     assert payload["master_entity_id"], (
         "the card cannot toggle the master switch without this, and every "
         "hand-written fixture guessed it"

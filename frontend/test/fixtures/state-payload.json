@@ -18,7 +18,6 @@
       ]
     }
   },
-  "dry_run": true,
   "enabled": true,
   "master_entity_id": "switch.shabbat_scheduler",
   "rules": [

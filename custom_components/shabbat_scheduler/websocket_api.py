@@ -99,7 +99,6 @@ def _state_payload(hass: HomeAssistant, data: dict) -> dict:
             for rule in store.rules
         ],
         "enabled": store.enabled,
-        "dry_run": store.dry_run,
         "warnings": _conflict_warnings(hass, store),
         # The card draws dates and the zmanim markers from this, and picks
         # which profile to show from its length. None when the Jewish

@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 COMPONENT = Path("custom_components/shabbat_scheduler")
-SERVICES = ("simulate", "set_dry_run", "export_yaml", "import_yaml")
+SERVICES = ("simulate", "export_yaml", "import_yaml")
 
 
 def _load(path: Path) -> dict:

@@ -171,6 +171,21 @@ def test_preview_payload_finds_conflicts_through_the_defaults():
     assert payload["conflicts"][0]["profile"] == 1
 
 
+def test_preview_payload_carries_each_rule_own_day():
+    """`simulate-dialog.ts` filters its preview list to the selected day
+    using exactly this field - without it the day picker and the preview
+    list disagree about what a run would actually cover."""
+    payload = preview_payload(
+        {},
+        [rule(id="a", day="erev", time=T), rule(id="b", day="1", time=T2)],
+        BLOCK,
+        TZ,
+        _resolve,
+    )
+    by_id = {item["rule_id"]: item["day"] for item in payload["rules"]}
+    assert by_id == {"a": "erev", "b": "1"}
+
+
 def test_preview_payload_honours_a_hypothetical_block_length():
     """What a user actually opens preview to ask: "what would a 3-day chag
     do?" - anchored on the real candle lighting, not the real block length."""

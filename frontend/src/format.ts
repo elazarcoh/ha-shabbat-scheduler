@@ -15,7 +15,15 @@ function dayRank(day: string): number {
   return day === 'erev' ? -1 : Number(day);
 }
 
-function daysFor(length: number): string[] {
+/**
+ * `['erev', '1', '2', ..., String(length)]`.
+ *
+ * Exported: `clone-dialog.ts` and `simulate-dialog.ts` both need exactly
+ * this list for their own day pickers, and used to each carry a
+ * byte-identical private copy - three implementations of one rule that
+ * could silently drift apart. One export, three call sites.
+ */
+export function daysFor(length: number): string[] {
   const days = ['erev'];
   for (let i = 1; i <= length; i += 1) days.push(String(i));
   return days;

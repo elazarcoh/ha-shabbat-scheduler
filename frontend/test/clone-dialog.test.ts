@@ -15,7 +15,7 @@ async function render(props: Record<string, unknown> = {}) {
   Object.assign(el, {
     source: { scope: 'day', profile: 1, day: 'erev' },
     rules: [rule({ id: 'a' })],
-    busy: false, error: null, landed: null, failed: null, language: 'en',
+    canWrite: true, busy: false, error: null, landed: null, failed: null, language: 'en',
     ...props,
   });
   document.body.appendChild(el);
@@ -134,5 +134,79 @@ describe('shabbat-clone-dialog', () => {
   it('does not disable confirm when failed is an empty array (a clean full success report)', async () => {
     const el = await render({ failed: [] });
     expect((el.shadowRoot!.querySelector('.confirm') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  describe('read-only (canWrite: false)', () => {
+    it('shows no confirm button', async () => {
+      const el = await render({ canWrite: false });
+      expect(el.shadowRoot!.querySelector('.confirm')).toBeNull();
+    });
+
+    it('shows the read-only note', async () => {
+      const el = await render({ canWrite: false });
+      expect(el.shadowRoot!.textContent).toContain('permission');
+    });
+
+    it('disables the mode buttons and the target pickers', async () => {
+      const el = await render({ canWrite: false });
+      expect(
+        (el.shadowRoot!.querySelector('.mode.extend') as HTMLButtonElement).disabled,
+      ).toBe(true);
+      expect(
+        (el.shadowRoot!.querySelector('.mode.overwrite') as HTMLButtonElement).disabled,
+      ).toBe(true);
+      expect(
+        (el.shadowRoot!.querySelector('select.target-profile') as HTMLSelectElement).disabled,
+      ).toBe(true);
+      expect(
+        (el.shadowRoot!.querySelector('select.target-day') as HTMLSelectElement).disabled,
+      ).toBe(true);
+    });
+  });
+
+  describe('the landed/failed report names rules, never raw ids', () => {
+    it('shows the source rule\'s name in the report, not its id', async () => {
+      const el = await render({
+        source: { scope: 'day', profile: 1, day: 'erev' },
+        rules: [rule({ id: 'a', name: 'Lights on' })],
+      });
+      (el.shadowRoot!.querySelector('.confirm') as HTMLElement).click();
+      await el.updateComplete;
+      (el as any).landed = ['a'];
+      (el as any).failed = [];
+      await el.updateComplete;
+      const report = el.shadowRoot!.querySelector('.report')!.textContent!;
+      expect(report).toContain('Lights on');
+      expect(report).not.toContain('>a<');
+    });
+
+    it('falls back to the action when the rule has no name', async () => {
+      const el = await render({
+        source: { scope: 'day', profile: 1, day: 'erev' },
+        rules: [rule({ id: 'a', name: null, action: 'climate.turn_on' })],
+      });
+      (el.shadowRoot!.querySelector('.confirm') as HTMLElement).click();
+      await el.updateComplete;
+      (el as any).landed = ['a'];
+      (el as any).failed = [];
+      await el.updateComplete;
+      expect(el.shadowRoot!.querySelector('.report')!.textContent).toContain('climate.turn_on');
+    });
+
+    it('still names a failed rule by the name captured at confirm time, even if it is gone from `rules` by render time', async () => {
+      // Mirrors the critical clone bug's own shape: by the time the report
+      // renders, `rules` may no longer contain the id the report is about.
+      const el = await render({
+        source: { scope: 'day', profile: 1, day: 'erev' },
+        rules: [rule({ id: 'a', name: 'Lights on' })],
+      });
+      (el.shadowRoot!.querySelector('.confirm') as HTMLElement).click();
+      await el.updateComplete;
+      (el as any).rules = []; // the source is gone from the latest state push
+      (el as any).landed = [];
+      (el as any).failed = ['a'];
+      await el.updateComplete;
+      expect(el.shadowRoot!.querySelector('.report')!.textContent).toContain('Lights on');
+    });
   });
 });

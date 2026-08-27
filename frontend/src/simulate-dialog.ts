@@ -1,6 +1,6 @@
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { foldCallResults, formatOutcome } from './format';
+import { daysFor, foldCallResults, formatOutcome } from './format';
 import { t } from './strings';
 import type { Hass } from './types';
 
@@ -11,6 +11,14 @@ interface PreviewRule {
   action: string;
   target: Record<string, unknown>;
   data: Record<string, unknown>;
+  /**
+   * The day name ('erev' | '1' | '2' | '3') this rule resolved to, from
+   * `block.py`'s `preview_payload`. Absent on a server too old to send it
+   * - `_previewRules` treats that as "cannot be filtered", not "belongs to
+   * no day", so an old server's preview still shows something rather than
+   * silently emptying out.
+   */
+  day?: string;
 }
 
 interface PreviewResponse {
@@ -18,12 +26,6 @@ interface PreviewResponse {
   rules: PreviewRule[];
   conflicts: unknown[];
   warnings: { kind: string; message?: string }[];
-}
-
-function daysFor(length: number): string[] {
-  const days = ['erev'];
-  for (let i = 1; i <= length; i += 1) days.push(String(i));
-  return days;
 }
 
 @customElement('shabbat-simulate-dialog')
@@ -39,6 +41,14 @@ export class ShabbatSimulateDialog extends LitElement {
   @state() private _busy = false;
   @state() private _error: string | null = null;
   @state() private _results: { ruleId: string; results: unknown[] }[] | null = null;
+  /**
+   * True while the inline "are you sure" step for "Run this day for real"
+   * is showing - mirrors `rule-dialog.ts`'s own `_runConfirmOpen` for its
+   * single-rule Run Now. Running a whole day's schedule for real is a
+   * bigger action than running one rule, so it gets at least the same
+   * deliberate second step; Simulate needs none of this; it calls nothing.
+   */
+  @state() private _runRealConfirmOpen = false;
 
   static override styles = css`
     .sheet {
@@ -93,19 +103,45 @@ export class ShabbatSimulateDialog extends LitElement {
   }
 
   /**
-   * Every rule in the previewed block, in schedule order - NOT filtered to
-   * the selected day. `preview`'s `when` is a resolved datetime; mapping it
-   * back to a day NAME ('erev'/'1'/'2'...) is block.py's own logic, and is
-   * not re-derived here to avoid a second, possibly-drifting
-   * implementation of it. The separate day picker below only selects
-   * `run_day`'s own `day` argument.
+   * The previewed block's rules, filtered to the currently-selected day -
+   * the same day `run_day` (the adjacent Simulate/Run-for-real buttons)
+   * actually acts on. Unfiltered, this used to show the WHOLE block's
+   * rules while the day picker only ever selected one day's worth to run,
+   * so what was displayed did not correspond to what pressing the button
+   * next to it would do.
+   *
+   * `preview`'s `when` is a resolved datetime; mapping it back to a day
+   * NAME ('erev'/'1'/'2'...) is block.py's own logic (`preview_payload`'s
+   * own `day` field), not re-derived here to avoid a second,
+   * possibly-drifting implementation of it. A rule with no `day` at all
+   * (an older server that has not been upgraded alongside this card) is
+   * kept rather than dropped - filtering on a field that cannot be read is
+   * indistinguishable from silently emptying the preview.
    */
   private _previewRules(): PreviewRule[] {
-    return this._preview?.rules ?? [];
+    return (this._preview?.rules ?? []).filter(
+      (rule) => rule.day === undefined || rule.day === this._day,
+    );
+  }
+
+  /**
+   * Rule id -> display name, from the SAME preview payload the rows and
+   * the day filter above already read - `preview`'s per-rule dict already
+   * carries both `rule_id` and `name`, so `run_day`'s own result rows can
+   * be labelled without a second round trip. Built from the UNFILTERED
+   * preview list: a result belongs to whichever rule fired, and that rule
+   * is always among the previewed ones regardless of which day is
+   * currently selected in the picker.
+   */
+  private _label(ruleId: string): string {
+    const rule = (this._preview?.rules ?? []).find((r) => r.rule_id === ruleId);
+    if (rule === undefined) return ruleId;
+    return rule.name ?? rule.action;
   }
 
   private async _run(simulate: boolean) {
     if (this.hass === null) return;
+    this._runRealConfirmOpen = false;
     this._busy = true;
     this._error = null;
     try {
@@ -150,6 +186,7 @@ export class ShabbatSimulateDialog extends LitElement {
               @change=${(event: Event) => {
                 this._profile = Number((event.target as HTMLSelectElement).value);
                 if (!daysFor(this._profile).includes(this._day)) this._day = 'erev';
+                this._runRealConfirmOpen = false;
                 void this._loadPreview();
               }}
             >
@@ -163,6 +200,7 @@ export class ShabbatSimulateDialog extends LitElement {
               .value=${this._day}
               @change=${(event: Event) => {
                 this._day = (event.target as HTMLSelectElement).value;
+                this._runRealConfirmOpen = false;
               }}
             >
               ${daysFor(this._profile).map(
@@ -201,7 +239,7 @@ export class ShabbatSimulateDialog extends LitElement {
                     r.results as Record<string, unknown>[], new Date().toISOString(),
                   );
                   return html`<div class="row">
-                    ${r.ruleId}: ${formatOutcome(outcome, this.language)}
+                    ${this._label(r.ruleId)}: ${formatOutcome(outcome, this.language)}
                   </div>`;
                 })}
               </div>`
@@ -220,10 +258,28 @@ export class ShabbatSimulateDialog extends LitElement {
                 <button
                   class="run-real"
                   ?disabled=${this._busy}
-                  @click=${() => this._run(false)}
+                  @click=${() => {
+                    this._runRealConfirmOpen = !this._runRealConfirmOpen;
+                  }}
                 >${t(this.language, 'simulate_run_for_real')}</button>`
               : nothing}
           </div>
+          ${this._runRealConfirmOpen
+            ? html`<div class="run-real-confirm">
+                <div class="confirm-text">
+                  ${t(this.language, 'simulate_run_for_real_confirm')} ${this._dayLabel(this._day)}.
+                </div>
+                <button
+                  class="run-real-cancel"
+                  @click=${() => { this._runRealConfirmOpen = false; }}
+                >${t(this.language, 'cancel')}</button>
+                <button
+                  class="run-real-confirmed"
+                  ?disabled=${this._busy}
+                  @click=${() => this._run(false)}
+                >${t(this.language, 'run_now_real')}</button>
+              </div>`
+            : nothing}
         </div>
       </div>
     `;

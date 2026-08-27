@@ -868,7 +868,10 @@ def test_run_day_for_real_actually_calls_the_real_services(page, base_url, token
 
     dialog.locator("select.profile").select_option("1")
     dialog.locator("select.day").select_option("1")
+    # "Run this day for real" now opens an inline confirm first, mirroring
+    # the single-rule Run Now dialog - it does not fire on the first click.
     dialog.locator("button.run-real").click()
+    dialog.locator("button.run-real-confirmed").click()
 
     dialog.locator(".results .row").first.wait_for(timeout=15_000)
     results_text = dialog.locator(".results").inner_text()
@@ -930,3 +933,56 @@ def test_cloning_a_day_lands_a_new_rule_and_leaves_the_source_untouched(
             dialog.wait_for(state="attached", timeout=10_000)
             dialog.locator("button.delete").click()
             dialog.wait_for(state="detached", timeout=15_000)
+
+
+def test_overwrite_cloning_a_day_onto_itself_preserves_its_own_rules(page, base_url):
+    """CRITICAL regression, against a real Home Assistant.
+
+    `_cloneRules` (card.ts) used to delete the target day's rules FIRST
+    and only THEN re-read `_state.rules` to find the source rules to clone
+    from. When the target IS the source day - the clone dialog's own
+    DEFAULT target, reached with zero picker interaction - the delete
+    step removed the very rules being cloned from, the server's websocket
+    push for that delete landed before the delete's own reply, and the
+    create loop found nothing left to clone: a clean-looking success that
+    silently deleted the source and replaced it with nothing.
+
+    This is the exact zero-picker-interaction path the bug shipped with:
+    open the clone menu on erev (profile 1, 2 real rules), switch to
+    Overwrite, confirm - target profile and target day are left at their
+    seeded defaults, which are erev's own.
+    """
+    card = _card(page, base_url)
+    source_rows_before = card.locator("shabbat-day-group").first.locator(
+        "shabbat-rule-row"
+    )
+    assert source_rows_before.count() == 2
+    times_before = sorted(source_rows_before.locator(".time").all_inner_texts())
+
+    try:
+        card.locator("shabbat-day-group").first.locator("button.clone-menu").click()
+        dialog = card.locator("shabbat-clone-dialog")
+        dialog.wait_for(state="attached", timeout=10_000)
+
+        dialog.locator("button.mode.overwrite").click()
+        dialog.locator("button.confirm").click()
+        dialog.wait_for(state="detached", timeout=15_000)
+
+        rows_after = card.locator("shabbat-day-group").first.locator(
+            "shabbat-rule-row"
+        )
+        rows_after.first.wait_for(timeout=15_000)
+        assert rows_after.count() == 2
+        assert sorted(rows_after.locator(".time").all_inner_texts()) == times_before
+    finally:
+        # However many rules erev ends up with, leave it with exactly the
+        # two the fixture started with (their ids legitimately changed -
+        # overwrite mode deletes and recreates - so this cannot just
+        # assert; it has to actually restore the fixture for the next run).
+        rows = card.locator("shabbat-day-group").first.locator("shabbat-rule-row")
+        while rows.count() > 2:
+            rows.first.click()
+            rule_dialog = card.locator("shabbat-rule-dialog")
+            rule_dialog.wait_for(state="attached", timeout=10_000)
+            rule_dialog.locator("button.delete").click()
+            rule_dialog.wait_for(state="detached", timeout=15_000)

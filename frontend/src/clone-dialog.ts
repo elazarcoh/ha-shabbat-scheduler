@@ -1,5 +1,6 @@
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
+import { daysFor } from './format';
 import { t } from './strings';
 import type { RuleData } from './types';
 
@@ -9,16 +10,11 @@ export interface CloneOpenDetail {
   day?: string;
 }
 
-function daysFor(length: number): string[] {
-  const days = ['erev'];
-  for (let i = 1; i <= length; i += 1) days.push(String(i));
-  return days;
-}
-
 @customElement('shabbat-clone-dialog')
 export class ShabbatCloneDialog extends LitElement {
   @property({ attribute: false }) source: CloneOpenDetail | null = null;
   @property({ attribute: false }) rules: RuleData[] = [];
+  @property({ type: Boolean }) canWrite = false;
   @property({ type: Boolean }) busy = false;
   @property() error: string | null = null;
   @property({ attribute: false }) landed: string[] | null = null;
@@ -29,6 +25,21 @@ export class ShabbatCloneDialog extends LitElement {
   @state() private _targetDay = 'erev';
   @state() private _mode: 'extend' | 'overwrite' = 'extend';
   private _seeded: string | null = null;
+  /**
+   * Rule id -> display name, captured from `this.rules` the moment a
+   * confirm click actually sends its ids (see `_onConfirm`), NOT read
+   * again when the landed/failed report renders.
+   *
+   * By the time that report renders, `this.rules` reflects whatever the
+   * clone operation just did to the server - which, for an overwrite onto
+   * the SAME day, means the original source ids are already gone from it
+   * (deleted and replaced by fresh-id clones). Looking names up against
+   * the current `this.rules` at render time would then find nothing for
+   * exactly the ids the critical fix exists to keep. Merged across
+   * confirms (never cleared) so a retry's earlier landed ids still resolve
+   * to a name too.
+   */
+  private _nameById = new Map<string, string>();
 
   static override styles = css`
     .sheet {
@@ -45,6 +56,7 @@ export class ShabbatCloneDialog extends LitElement {
     .field { display: flex; align-items: center; gap: 12px; margin-block: 8px; }
     .field label { min-inline-size: 7em; }
     select { font: inherit; padding-block: 4px; padding-inline: 6px; flex: 1; }
+    .note { color: var(--secondary-text-color, #666); font-size: 0.85em; }
     .warning { color: var(--warning-color, #d9822b); margin-block: 8px; font-size: 0.9em; }
     .error { color: var(--error-color, #d64545); margin-block: 8px; font-size: 0.9em; }
     .report { font-size: 0.85em; margin-block: 8px; }
@@ -123,10 +135,32 @@ export class ShabbatCloneDialog extends LitElement {
     return `${t(this.language, 'clone_profile_prefix')} ${this.source.profile}${t(this.language, 'clone_profile_suffix')}`;
   }
 
+  /**
+   * A rule's display name, falling back the same way `simulate-dialog.ts`'s
+   * preview rows already do (`rule.name ?? rule.action`) - `name` is
+   * nullable, and the raw id is never shown for a rule this dialog ever
+   * actually sent. The final fallback to the raw id is defensive only, for
+   * an id `_onConfirm` could not resolve at all (e.g. the source rule was
+   * deleted by another client between opening this dialog and confirming).
+   */
+  private _label(id: string): string {
+    return this._nameById.get(id) ?? id;
+  }
+
   private _onConfirm() {
+    const sourceRuleIds = this._idsToSend();
+    // Captured from `this.rules` NOW, before the clone this dispatches can
+    // change what `this.rules` holds by the time the report renders - see
+    // `_nameById`'s own doc comment for why re-reading `this.rules` later
+    // would be wrong for exactly the case the critical clone fix exists
+    // to keep working.
+    for (const id of sourceRuleIds) {
+      const rule = this.rules.find((r) => r.id === id);
+      if (rule) this._nameById.set(id, rule.name ?? rule.action);
+    }
     this.dispatchEvent(new CustomEvent('dialog-clone-confirm', {
       detail: {
-        sourceRuleIds: this._idsToSend(),
+        sourceRuleIds,
         sourceProfile: this.source?.profile,
         sourceScope: this.source?.scope,
         targetProfile: this._targetProfile,
@@ -148,12 +182,22 @@ export class ShabbatCloneDialog extends LitElement {
       }}>
         <div class="panel">
           <h2>${this._title()}</h2>
+          ${this.canWrite
+            ? nothing
+            : html`<div class="note">${t(this.language, 'read_only')}</div>`}
           ${this.error !== null ? html`<div class="error">${this.error}</div>` : nothing}
           ${this.landed !== null
             ? html`<div class="report">
-                ${t(this.language, 'clone_landed')}: ${this.landed.join(', ') || t(this.language, 'clone_none')}
+                ${t(this.language, 'clone_landed')}: ${
+                  this.landed.map((id) => this._label(id)).join(', ')
+                  || t(this.language, 'clone_none')
+                }
                 ${this.failed && this.failed.length
-                  ? html`<br />${t(this.language, 'clone_failed')}: ${this.failed.join(', ')}`
+                  ? html`<div class="failed-line">
+                      ${t(this.language, 'clone_failed')}: ${
+                        this.failed.map((id) => this._label(id)).join(', ')
+                      }
+                    </div>`
                   : nothing}
               </div>`
             : nothing}
@@ -163,6 +207,7 @@ export class ShabbatCloneDialog extends LitElement {
             <select
               class="target-profile"
               .value=${String(this._targetProfile)}
+              ?disabled=${!this.canWrite}
               @change=${(event: Event) => {
                 this._targetProfile = Number((event.target as HTMLSelectElement).value);
                 // The previously-valid target day may no longer exist on a
@@ -183,6 +228,7 @@ export class ShabbatCloneDialog extends LitElement {
                 <select
                   class="target-day"
                   .value=${this._targetDay}
+                  ?disabled=${!this.canWrite}
                   @change=${(event: Event) => {
                     this._targetDay = (event.target as HTMLSelectElement).value;
                   }}
@@ -199,10 +245,12 @@ export class ShabbatCloneDialog extends LitElement {
           <div class="field">
             <button
               class="mode extend ${this._mode === 'extend' ? 'active' : ''}"
+              ?disabled=${!this.canWrite}
               @click=${() => { this._mode = 'extend'; }}
             >${t(this.language, 'clone_extend')}</button>
             <button
               class="mode overwrite ${this._mode === 'overwrite' ? 'active' : ''}"
+              ?disabled=${!this.canWrite}
               @click=${() => { this._mode = 'overwrite'; }}
             >${t(this.language, 'clone_overwrite')}</button>
           </div>
@@ -215,11 +263,13 @@ export class ShabbatCloneDialog extends LitElement {
             <button @click=${() => this.dispatchEvent(new CustomEvent('dialog-close'))}>
               ${t(this.language, 'cancel')}
             </button>
-            <button
-              class="confirm"
-              ?disabled=${this.busy || empty}
-              @click=${() => this._onConfirm()}
-            >${t(this.language, 'clone_confirm')}</button>
+            ${this.canWrite
+              ? html`<button
+                  class="confirm"
+                  ?disabled=${this.busy || empty}
+                  @click=${() => this._onConfirm()}
+                >${t(this.language, 'clone_confirm')}</button>`
+              : nothing}
           </div>
         </div>
       </div>

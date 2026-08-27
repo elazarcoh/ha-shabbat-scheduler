@@ -253,6 +253,13 @@ def preview_payload(
                 "action": item.rule.action,
                 "target": item.rule.target,
                 "data": item.rule.data,
+                # The day NAME ('erev' | '1' | '2' | '3') this rule
+                # resolved to. `simulate-dialog.ts`'s day picker only ever
+                # runs one day's worth via `rules/run_day`; without this
+                # the frontend had no way to filter its preview list down
+                # to match, and showed the whole block's rules next to a
+                # button that would only ever act on one day of them.
+                "day": item.rule.day,
             }
             for item in resolve_rules(merged, block, tz)
         ],

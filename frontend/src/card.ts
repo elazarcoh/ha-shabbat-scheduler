@@ -6,6 +6,8 @@ import './warnings';
 import './rule-dialog';
 import './defaults-dialog';
 import './simulate-dialog';
+import './clone-dialog';
+import type { CloneOpenDetail } from './clone-dialog';
 import { buildGroups, formToChanges, formToCreate, isPreview } from './format';
 import { t } from './strings';
 import type { CardState, DayGroup, RuleData, RuleFormState } from './types';
@@ -71,6 +73,9 @@ export class ShabbatSchedulerCard extends LitElement {
   @state() private _duplicateSeed: RuleFormState | null = null;
   @state() private _runNowResult:
     { ruleId: string; results: unknown[]; at: string } | null = null;
+  @state() private _cloneSource: CloneOpenDetail | null = null;
+  @state() private _cloneLanded: string[] | null = null;
+  @state() private _cloneFailed: string[] | null = null;
 
   private _hass: any;
   private _unsubscribe: (() => Promise<void>) | null = null;
@@ -300,6 +305,9 @@ export class ShabbatSchedulerCard extends LitElement {
     this._simulateOpen = false;
     this._dialogError = null;
     this._runNowResult = null;
+    this._cloneSource = null;
+    this._cloneLanded = null;
+    this._cloneFailed = null;
   };
 
   private _onRuleOpen = (event: Event) => {
@@ -445,15 +453,7 @@ export class ShabbatSchedulerCard extends LitElement {
    * profile onto every matching day of another) is composed by calling
    * this once per day name common to both profiles - see
    * `_cloneTargetDays`, which `_onCloneConfirm` uses.
-   *
-   * Not yet called from production code - Task 15 wires the first real
-   * caller in. Until then this is exercised only from `clone.test.ts`
-   * (via a private-member cast), so `noUnusedLocals` sees no reader; the
-   * `@ts-expect-error` below is self-cleaning - once Task 15 adds a real
-   * call site, the directive itself becomes an "unused" error, forcing
-   * its removal rather than letting it linger silently.
    */
-  // @ts-expect-error - unused until Task 15 wires in the first caller.
   private async _cloneRules(
     sourceRuleIds: string[],
     targetProfile: number,
@@ -541,6 +541,93 @@ export class ShabbatSchedulerCard extends LitElement {
     }
   };
 
+  private _onCloneOpen = (event: Event) => {
+    this._cloneSource = (event as CustomEvent).detail as CloneOpenDetail;
+    this._cloneLanded = null;
+    this._cloneFailed = null;
+    this._dialogError = null;
+  };
+
+  /**
+   * One or more (day, sourceRuleIds) pairs to hand to `_cloneRules`, one
+   * call per day - see Task 13's note on why a single `_cloneRules` call
+   * only covers one target day.
+   *
+   * For `sourceScope: 'day'` this is one `{day, ruleIds}` pair, using the
+   * target day the dialog picked. For `sourceScope: 'profile'`,
+   * `sourceRuleIds` is grouped by each rule's OWN day name (looked up in
+   * `_state.rules`, keyed by id) and only day names also valid on the
+   * TARGET profile are kept - a day the source profile has that the
+   * target does not (e.g. cloning a 3-day profile's day '3' onto a 1-day
+   * target) is silently skipped rather than cleared or reported as a
+   * failure, per the spec's day-name-matching rule. This applies in both
+   * extend and overwrite mode alike: overwrite only ever clears a day
+   * that is actually a clone target.
+   */
+  private _cloneTargetDays(detail: {
+    sourceRuleIds: string[];
+    sourceScope: 'day' | 'profile';
+    targetProfile: number;
+    targetDay?: string;
+  }): { day: string; ruleIds: string[] }[] {
+    if (detail.sourceScope === 'day') {
+      return [{ day: detail.targetDay!, ruleIds: detail.sourceRuleIds }];
+    }
+    // Profile scope: one call per day name common to both profiles.
+    const targetDayNames = new Set<string>(['erev']);
+    for (let i = 1; i <= detail.targetProfile; i += 1) targetDayNames.add(String(i));
+    const rules = this._state?.rules ?? [];
+    const byDay = new Map<string, string[]>();
+    for (const id of detail.sourceRuleIds) {
+      const rule = rules.find((r) => r.id === id);
+      if (rule && targetDayNames.has(rule.day)) {
+        byDay.set(rule.day, [...(byDay.get(rule.day) ?? []), id]);
+      }
+    }
+    return [...byDay.entries()].map(([day, ruleIds]) => ({ day, ruleIds }));
+  }
+
+  /**
+   * Runs `_cloneRules` once per target day `_cloneTargetDays` produces,
+   * in order, and stops issuing further clone calls the moment one day
+   * fails - matching `_cloneRules`' own contract of stopping at the first
+   * rejection.
+   *
+   * Every day not yet attempted when that happens still has its rules
+   * reported as `failed`, not silently dropped: those rules are just as
+   * much "still missing from the target" as the ones `_cloneRules` itself
+   * reported, and the dialog's retry path (`clone-dialog.ts`'s
+   * `_idsToSend`) re-sends exactly `_cloneFailed` on the next confirm, so
+   * anything left out here would never get retried.
+   */
+  private _onCloneConfirm = async (event: Event) => {
+    const detail = (event as CustomEvent).detail as {
+      sourceRuleIds: string[]; sourceScope: 'day' | 'profile'; sourceProfile: number;
+      targetProfile: number; targetDay?: string; mode: 'extend' | 'overwrite';
+    };
+    const targets = this._cloneTargetDays(detail);
+    const landed: string[] = [];
+    const failed: string[] = [];
+    let sawFailure = false;
+    for (const { day, ruleIds } of targets) {
+      if (sawFailure) {
+        failed.push(...ruleIds); // never attempted - still missing from the target
+        continue;
+      }
+      const report = await this._cloneRules(ruleIds, detail.targetProfile, day, detail.mode);
+      landed.push(...report.landed);
+      if (report.error !== null) {
+        failed.push(...report.failed);
+        sawFailure = true;
+      }
+    }
+    this._cloneLanded = landed;
+    this._cloneFailed = failed;
+    if (failed.length === 0 && this._dialogError === null) {
+      this._cloneSource = null; // full success closes the dialog
+    }
+  };
+
   override render() {
     // Read once into a local: `_error` is a field, and TypeScript's
     // narrowing of a property access does not survive the intervening
@@ -580,6 +667,7 @@ export class ShabbatSchedulerCard extends LitElement {
         @rule-open=${this._onRuleOpen}
         @rule-toggle-enabled=${this._onRuleToggleEnabled}
         @simulate-open=${() => { this._simulateOpen = true; }}
+        @clone-open=${this._onCloneOpen}
       >
         ${this._config.title
           ? html`<div class="title">${this._config.title}</div>`
@@ -663,6 +751,19 @@ export class ShabbatSchedulerCard extends LitElement {
               .canWrite=${this._canWrite}
               @dialog-close=${() => { this._simulateOpen = false; }}
             ></shabbat-simulate-dialog>`
+          : nothing}
+        ${this._cloneSource !== null
+          ? html`<shabbat-clone-dialog
+              .source=${this._cloneSource}
+              .rules=${this._state.rules}
+              .busy=${this._busy}
+              .error=${this._dialogError}
+              .landed=${this._cloneLanded}
+              .failed=${this._cloneFailed}
+              .language=${this._language}
+              @dialog-clone-confirm=${this._onCloneConfirm}
+              @dialog-close=${() => { this._cloneSource = null; }}
+            ></shabbat-clone-dialog>`
           : nothing}
       </ha-card>
     `;

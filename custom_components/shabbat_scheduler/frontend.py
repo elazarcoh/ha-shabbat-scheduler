@@ -22,7 +22,7 @@ CARD_FILENAME = "shabbat-scheduler-card.js"
 CARD_URL = f"/{DOMAIN}/{CARD_FILENAME}"
 # Must match frontend/src/version.ts. The bundle carries it, and
 # tests/test_frontend.py fails if the two ever drift apart.
-CARD_VERSION = "0.5.0"
+CARD_VERSION = "0.6.0"
 
 _STATIC_REGISTERED = f"{DOMAIN}_static_registered"
 

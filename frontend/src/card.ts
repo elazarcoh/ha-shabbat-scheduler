@@ -16,6 +16,12 @@ interface CardConfig {
   title?: string;
 }
 
+export interface CloneReport {
+  landed: string[];
+  failed: string[];
+  error: string | null;
+}
+
 /**
  * The only failure the server states as a fact: `ws_subscribe`
  * (websocket_api.py) answers exactly this code when no config entry is
@@ -407,6 +413,90 @@ export class ShabbatSchedulerCard extends LitElement {
     this._duplicateSeed = form;
     this._dialogError = null;
   };
+
+  /** Every field `rules/create` accepts for a clone, everything but `id`. */
+  private _cloneCreatePayload(
+    rule: RuleData, targetProfile: number, targetDay: string,
+  ): Record<string, unknown> {
+    return {
+      day: targetDay,
+      profile: targetProfile,
+      time: rule.time,
+      action: rule.action,
+      target: rule.target,
+      data: rule.data,
+      condition: rule.condition,
+      replay: rule.replay,
+      name: rule.name,
+      icon: rule.icon,
+      color: rule.color,
+      enabled: rule.enabled,
+    };
+  }
+
+  /**
+   * Composes a clone of `sourceRuleIds` onto `{targetProfile, targetDay}`
+   * from the existing `rules/create` + `rules/delete` commands - the
+   * server already assigns a fresh id on create, so there is no
+   * id-collision case to handle and no new backend command.
+   *
+   * This is a SINGLE-DAY primitive: every rule in `sourceRuleIds` lands on
+   * the ONE `targetDay` given. A profile-scope clone (every day of one
+   * profile onto every matching day of another) is composed by calling
+   * this once per day name common to both profiles - see
+   * `_cloneTargetDays`, which `_onCloneConfirm` uses.
+   *
+   * Not yet called from production code - Task 15 wires the first real
+   * caller in. Until then this is exercised only from `clone.test.ts`
+   * (via a private-member cast), so `noUnusedLocals` sees no reader; the
+   * `@ts-expect-error` below is self-cleaning - once Task 15 adds a real
+   * call site, the directive itself becomes an "unused" error, forcing
+   * its removal rather than letting it linger silently.
+   */
+  // @ts-expect-error - unused until Task 15 wires in the first caller.
+  private async _cloneRules(
+    sourceRuleIds: string[],
+    targetProfile: number,
+    targetDay: string,
+    mode: 'extend' | 'overwrite',
+  ): Promise<CloneReport> {
+    if (mode === 'overwrite') {
+      const toDelete = (this._state?.rules ?? []).filter(
+        (rule) => rule.profile === targetProfile && rule.day === targetDay,
+      );
+      for (const rule of toDelete) {
+        const ok = await this._send({
+          type: 'shabbat_scheduler/rules/delete', rule_id: rule.id,
+        });
+        if (!ok) {
+          return {
+            landed: [], failed: sourceRuleIds,
+            error: this._dialogError ?? 'Could not clear the target day.',
+          };
+        }
+      }
+    }
+
+    const sourceRules = this._state?.rules ?? [];
+    const landed: string[] = [];
+    for (const sourceId of sourceRuleIds) {
+      const source = sourceRules.find((rule) => rule.id === sourceId);
+      if (source === undefined) continue; // deleted since the dialog opened
+      const ok = await this._send({
+        type: 'shabbat_scheduler/rules/create',
+        rule: this._cloneCreatePayload(source, targetProfile, targetDay),
+      });
+      if (!ok) {
+        return {
+          landed,
+          failed: sourceRuleIds.slice(landed.length),
+          error: this._dialogError,
+        };
+      }
+      landed.push(sourceId);
+    }
+    return { landed, failed: [], error: null };
+  }
 
   /**
    * Same shape as `_onSave`: a plain websocket round trip, nothing

@@ -89,6 +89,23 @@ describe('shabbat-day-group', () => {
     expect(el.shadowRoot!.querySelector('.add')).not.toBeNull();
   });
 
+  it('offers a clone menu to a writer, naming this day and profile', async () => {
+    const el = await render({ group: group({ day: '1' }), profile: 3, canWrite: true });
+    const listener = vi.fn();
+    el.addEventListener('clone-open', listener);
+
+    (el.shadowRoot!.querySelector('.clone-menu') as HTMLElement).click();
+
+    expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({
+      scope: 'day', profile: 3, day: '1',
+    });
+  });
+
+  it('offers no clone menu to a read-only user', async () => {
+    const el = await render({ canWrite: false });
+    expect(el.shadowRoot!.querySelector('.clone-menu')).toBeNull();
+  });
+
   it('threads canWrite, hass, and the matching toggle error down to each row', async () => {
     const hass = {};
     const el = await render({

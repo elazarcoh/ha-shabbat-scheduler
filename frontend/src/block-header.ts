@@ -55,6 +55,7 @@ export class ShabbatBlockHeader extends LitElement {
       border-color: transparent;
     }
     .gear, .simulate-open { border: none; background: none; cursor: pointer; font-size: 1.1em; }
+    .clone-menu { font: inherit; background: none; border: none; cursor: pointer; font-size: 1.1em; }
     .master-wrap { display: flex; align-items: center; gap: 6px; }
     .master-label { font-size: 0.9em; }
     @media (max-width: 599px) {
@@ -107,6 +108,19 @@ export class ShabbatBlockHeader extends LitElement {
               </button>
             `,
           )}
+          ${this.canWrite
+            ? html`<button
+                class="clone-menu"
+                aria-label=${t(this.language, 'clone_profile_prefix')}
+                @click=${() =>
+                  this.dispatchEvent(
+                    new CustomEvent('clone-open', {
+                      detail: { scope: 'profile', profile: this.selectedProfile },
+                      bubbles: true, composed: true,
+                    }),
+                  )}
+              >⋮</button>`
+            : nothing}
         </div>
         ${this.canWrite
           ? html`<button

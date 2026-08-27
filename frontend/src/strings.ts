@@ -82,6 +82,9 @@ const STRINGS = {
     simulate_force_conditions: 'Force conditions to pass',
     simulate_this_day: 'Simulate this day',
     simulate_run_for_real: 'Run this day for real',
+    clone_day_prefix: 'Clone day',
+    clone_profile_prefix: 'Clone the',
+    clone_profile_suffix: '-day profile',
   },
   he: {
     erev: 'ערב',
@@ -145,6 +148,9 @@ const STRINGS = {
     simulate_force_conditions: 'לעקוף תנאים',
     simulate_this_day: 'סימולציה ליום זה',
     simulate_run_for_real: 'הרצה אמיתית ליום זה',
+    clone_day_prefix: 'שכפול יום',
+    clone_profile_prefix: 'שכפול פרופיל בן',
+    clone_profile_suffix: 'ימים',
   },
 } as const;
 

@@ -23,6 +23,7 @@ export class ShabbatDayGroup extends LitElement {
   @property({ attribute: false }) warnings: WarningData[] = [];
   @property() language = 'en';
   @property({ type: Boolean }) canWrite = false;
+  @property({ type: Number }) profile = 1;
   @property({ attribute: false }) toggleErrors: Record<string, string> = {};
 
   static override styles = css`
@@ -59,6 +60,10 @@ export class ShabbatDayGroup extends LitElement {
       padding-inline: 4px;
       cursor: pointer;
     }
+    .clone-menu {
+      font: inherit; background: none; border: none; cursor: pointer;
+      font-size: 1.1em; margin-inline-start: auto; padding-inline: 4px;
+    }
   `;
 
   private label(): string {
@@ -86,6 +91,19 @@ export class ShabbatDayGroup extends LitElement {
         <div class="heading">
           <span>${this.label()}</span>
           <span class="date">${this.group.date ?? ''}</span>
+          ${this.canWrite
+            ? html`<button
+                class="clone-menu"
+                aria-label=${t(this.language, 'clone_day_prefix')}
+                @click=${() =>
+                  this.dispatchEvent(
+                    new CustomEvent('clone-open', {
+                      detail: { scope: 'day', profile: this.profile, day: this.group.day },
+                      bubbles: true, composed: true,
+                    }),
+                  )}
+              >⋮</button>`
+            : nothing}
         </div>
         ${rules.length
           ? rules.map(

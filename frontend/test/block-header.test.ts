@@ -139,6 +139,23 @@ describe('profile chips', () => {
     (el.shadowRoot!.querySelector('.simulate-open') as HTMLElement).click();
     expect(listener).toHaveBeenCalledOnce();
   });
+
+  it('offers a clone menu to a writer, naming the selected profile', async () => {
+    const el = await render({ canWrite: true, selectedProfile: 2 });
+    const listener = vi.fn();
+    el.addEventListener('clone-open', listener);
+
+    (el.shadowRoot!.querySelector('.clone-menu') as HTMLElement).click();
+
+    expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({
+      scope: 'profile', profile: 2,
+    });
+  });
+
+  it('offers no clone menu to a read-only user', async () => {
+    const el = await render({ canWrite: false });
+    expect(el.shadowRoot!.querySelector('.clone-menu')).toBeNull();
+  });
 });
 
 describe('shabbat-block-header mobile layout', () => {

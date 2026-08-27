@@ -614,6 +614,7 @@ export class ShabbatSchedulerCard extends LitElement {
             <shabbat-day-group
               .hass=${this._hass}
               .group=${group}
+              .profile=${this._profile}
               .defaults=${this._state!.defaults}
               .warnings=${this._state!.warnings}
               .language=${this._language}

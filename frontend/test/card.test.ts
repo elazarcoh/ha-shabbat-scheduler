@@ -997,6 +997,20 @@ describe('authoring', () => {
     expect(el.shadowRoot!.querySelector('shabbat-defaults-dialog')).toBeNull();
   });
 
+  it('opens the simulate dialog from the header icon', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(state());
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-block-header')!.dispatchEvent(
+      new CustomEvent('simulate-open', { bubbles: true, composed: true }),
+    );
+    await el.updateComplete;
+
+    expect(el.shadowRoot!.querySelector('shabbat-simulate-dialog')).not.toBeNull();
+  });
+
   // ---- the block:null dead end this plan's headline fix removes ----
 
   it('renders day groups and the preview banner with no block, once a profile is selected', async () => {

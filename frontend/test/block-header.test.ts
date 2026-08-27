@@ -124,6 +124,21 @@ describe('profile chips', () => {
     (el.shadowRoot!.querySelector('.gear') as HTMLElement).click();
     expect(listener).toHaveBeenCalledOnce();
   });
+
+  it('offers the simulate icon to a writer and not to a reader', async () => {
+    expect((await render({ canWrite: true })).shadowRoot!.querySelector('.simulate-open'))
+      .not.toBeNull();
+    expect((await render({ canWrite: false })).shadowRoot!.querySelector('.simulate-open'))
+      .toBeNull();
+  });
+
+  it('dispatches simulate-open when the icon is used', async () => {
+    const el = await render({ canWrite: true });
+    const listener = vi.fn();
+    el.addEventListener('simulate-open', listener);
+    (el.shadowRoot!.querySelector('.simulate-open') as HTMLElement).click();
+    expect(listener).toHaveBeenCalledOnce();
+  });
 });
 
 describe('shabbat-block-header mobile layout', () => {

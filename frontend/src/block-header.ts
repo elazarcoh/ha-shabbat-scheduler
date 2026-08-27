@@ -54,7 +54,7 @@ export class ShabbatBlockHeader extends LitElement {
       color: var(--text-primary-color, #fff);
       border-color: transparent;
     }
-    .gear { border: none; background: none; cursor: pointer; font-size: 1.1em; }
+    .gear, .simulate-open { border: none; background: none; cursor: pointer; font-size: 1.1em; }
     .master-wrap { display: flex; align-items: center; gap: 6px; }
     .master-label { font-size: 0.9em; }
     @media (max-width: 599px) {
@@ -114,6 +114,18 @@ export class ShabbatBlockHeader extends LitElement {
               @click=${() => this.dispatchEvent(new CustomEvent('defaults-open'))}
             >
               ⚙
+            </button>`
+          : nothing}
+        ${this.canWrite
+          ? html`<button
+              class="simulate-open"
+              aria-label=${t(this.language, 'simulate_title')}
+              @click=${() =>
+                this.dispatchEvent(
+                  new CustomEvent('simulate-open', { bubbles: true, composed: true }),
+                )}
+            >
+              ▶
             </button>`
           : nothing}
         <div class="master-wrap">

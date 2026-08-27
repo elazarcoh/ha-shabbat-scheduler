@@ -76,6 +76,12 @@ const STRINGS = {
     run_now_button: 'Run now',
     run_now_simulate: 'Simulate',
     run_now_real: 'Run for real',
+    simulate_title: 'Test your schedule',
+    simulate_profile: 'Block length',
+    simulate_day: 'Day',
+    simulate_force_conditions: 'Force conditions to pass',
+    simulate_this_day: 'Simulate this day',
+    simulate_run_for_real: 'Run this day for real',
   },
   he: {
     erev: 'ערב',
@@ -133,6 +139,12 @@ const STRINGS = {
     run_now_button: 'הרצה עכשיו',
     run_now_simulate: 'סימולציה',
     run_now_real: 'הרצה אמיתית',
+    simulate_title: 'בדיקת הלוח',
+    simulate_profile: 'אורך הבלוק',
+    simulate_day: 'יום',
+    simulate_force_conditions: 'לעקוף תנאים',
+    simulate_this_day: 'סימולציה ליום זה',
+    simulate_run_for_real: 'הרצה אמיתית ליום זה',
   },
 } as const;
 

@@ -5,6 +5,7 @@ import './day-group';
 import './warnings';
 import './rule-dialog';
 import './defaults-dialog';
+import './simulate-dialog';
 import { buildGroups, formToChanges, formToCreate, isPreview } from './format';
 import { t } from './strings';
 import type { CardState, DayGroup, RuleData, RuleFormState } from './types';
@@ -57,6 +58,7 @@ export class ShabbatSchedulerCard extends LitElement {
   @state() private _editing: RuleData | null = null;
   @state() private _creatingDay: string | null = null;
   @state() private _defaultsOpen = false;
+  @state() private _simulateOpen = false;
   @state() private _dialogError: string | null = null;
   @state() private _toggleErrors: Record<string, string> = {};
   @state() private _busy = false;
@@ -289,6 +291,7 @@ export class ShabbatSchedulerCard extends LitElement {
     this._creatingDay = null;
     this._duplicateSeed = null;
     this._defaultsOpen = false;
+    this._simulateOpen = false;
     this._dialogError = null;
     this._runNowResult = null;
   };
@@ -483,7 +486,11 @@ export class ShabbatSchedulerCard extends LitElement {
     );
 
     return html`
-      <ha-card @rule-open=${this._onRuleOpen} @rule-toggle-enabled=${this._onRuleToggleEnabled}>
+      <ha-card
+        @rule-open=${this._onRuleOpen}
+        @rule-toggle-enabled=${this._onRuleToggleEnabled}
+        @simulate-open=${() => { this._simulateOpen = true; }}
+      >
         ${this._config.title
           ? html`<div class="title">${this._config.title}</div>`
           : nothing}
@@ -557,6 +564,13 @@ export class ShabbatSchedulerCard extends LitElement {
               @dialog-save=${this._onDefaultsSave}
               @dialog-close=${this._closeDialogs}
             ></shabbat-defaults-dialog>`
+          : nothing}
+        ${this._simulateOpen
+          ? html`<shabbat-simulate-dialog
+              .hass=${this._hass}
+              .language=${this._language}
+              @dialog-close=${() => { this._simulateOpen = false; }}
+            ></shabbat-simulate-dialog>`
           : nothing}
       </ha-card>
     `;

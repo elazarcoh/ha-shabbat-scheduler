@@ -1,36 +1,46 @@
+<p align="center">
+  <img src="brands/icon@2x.png" alt="Shabbat Scheduler" width="160">
+</p>
+
 # Shabbat Scheduler
 
 *Alpha. 897 tests passing (549 Python + 15 end-to-end, 333 frontend).*
 
-I built this because Shabbat and Chag are the one time nobody in the house
-is going to walk over and adjust a thermostat, and I was tired of choosing
-between doing that by hand and cobbling it together with plain time-based
-automations that quietly re-fight each other all day. Shabbat Scheduler
-schedules Home Assistant to do anything — turn a light on, run a scene,
-send a notification, adjust a thermostat — at specific times across
-Shabbat and Chag, and then it gets out of the way. Nothing about it is
-specific to climate control or lighting; if Home Assistant can call the
-service, a rule can schedule it.
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge)](https://github.com/hacs/integration)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=elazarcoh&repository=ha-shabbat-scheduler&category=integration)
+[![Add Integration to your Home Assistant instance.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=shabbat_scheduler)
 
-It gives you two things an ordinary automation doesn't: a rule **fires
-once and leaves the device alone** afterward — nothing keeps nudging it
-back to "on" every time something else changes it — and **overlapping
-rules are reported, never silently and arbitrarily resolved** in whichever
-order the automation engine happens to run them.
+Shabbat Scheduler schedules Home Assistant to do anything — turn a light
+on, run a scene, send a notification, adjust a thermostat — at specific
+times across Shabbat and Chag, without you touching a switch.
+
+## ✨ Highlights
+
+- 📅 **Built on the Jewish Calendar integration.** Every schedule is
+  derived straight from its candle-lighting and havdalah sensors — a
+  1-day Shabbat, a 2- or 3-day Chag, all resolved automatically. No
+  manual date math, ever.
+- 🔁 **A rule fires once and leaves the device alone.** Not a state to
+  keep re-asserting — turn something off by hand five minutes later and
+  it stays off. No automation fighting you for control of your own
+  switch.
+- ⚡ **Set up in minutes.** Install via HACS, point it at two sensors you
+  probably already have, and the card is already on your dashboard —
+  nothing to add to Lovelace resources by hand.
+- 🎛️ **Schedule *anything*, not just climate.** Any `domain.service` Home
+  Assistant can call — lights, scenes, notifications, thermostats — with
+  Home Assistant's own target selector (entity, device, area, or label)
+  and its own condition schema. No fixed vocabulary, no allow-list.
+- 🧪 **Prove it before you trust it.** Run any rule, or a whole day's
+  schedule, right now — simulated or for real — instead of waiting for
+  the next actual Shabbat to find out if you set it up correctly.
+- 🧬 **Clone a day or a whole profile.** Building a 3-day Chag from a
+  Shabbat you already trust is a couple of taps, not retyping every rule.
+- ⚠️ **Conflicts are reported, never silently resolved.** Two rules
+  targeting the same device at the same time get flagged — there's no
+  hidden winner, the choice stays yours.
 
 ![The card showing a real, resolved schedule](docs/images/card-screenshot.png)
-
-## Why "fires once" is a guarantee, not a slogan
-
-I didn't start here. I started with a popular third-party `scheduler`
-component, and abandoned it after it kept re-asserting "on" against
-whatever had turned a device off, and — separately, and worse — silently
-mutated its own stored timeslots. Losing trust in a scheduler is a bad
-time to discover it, so this project's whole shape follows from refusing
-to repeat that: a rule acts at its one moment and is done. Turn something
-off by hand five minutes later and it stays off. That's not a nice-to-have
-here — it's the entire reason this exists instead of the thing I was using
-before.
 
 ## Quick start
 
@@ -40,12 +50,13 @@ before.
    sensors, and setup can't complete without two sensors to point at.
 2. **Check your Home Assistant version.** This needs `2026.8.0` or newer;
    HACS will refuse the install otherwise.
-3. **Install via HACS.** Add this repository as a custom repository of
-   type *Integration*, download it, and restart Home Assistant.
-4. **Add the integration.** Settings → Devices & Services → Add
-   Integration → **Shabbat Scheduler**. Jewish Calendar's candle-lighting
-   and havdalah sensors are offered as the defaults — accept them unless
-   you have a reason not to.
+3. **Install via HACS.** Use the button above, or add this repository as
+   a custom repository of type *Integration* by hand, then restart Home
+   Assistant.
+4. **Add the integration.** Use the button above, or go to Settings →
+   Devices & Services → Add Integration → **Shabbat Scheduler**. Jewish
+   Calendar's candle-lighting and havdalah sensors are offered as the
+   defaults — accept them unless you have a reason not to.
 5. **The master switch starts off.** Nothing can happen yet: installing
    (and even authoring rules) cannot touch a single appliance until you
    deliberately turn `switch.shabbat_scheduler` on. This is deliberate —
@@ -317,12 +328,3 @@ an edited file keeps each rule's entity, history and customisation.
 Non-obvious behaviours and accepted trade-offs — the havdalah sensor rollover,
 refresh serialisation, and what restart catch-up does across havdalah — are
 documented in [docs/known-behaviours.md](docs/known-behaviours.md).
-
-## Upgrading
-
-Coming from v1? Rule shapes changed — a v1 `on`/`off`/`custom` rule against a
-fixed device list is now any Home Assistant service call — and the upgrade
-happens automatically the first time you restart with this version
-installed. See [`docs/upgrading-from-v1.md`](docs/upgrading-from-v1.md) for
-exactly what migrates, what gets flagged for your attention instead of
-silently dropped, and what to check afterward.

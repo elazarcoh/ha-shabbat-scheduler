@@ -550,93 +550,6 @@ async def test_create_of_an_invalid_target_is_rejected(
     assert reloaded.rules == []
 
 
-async def test_a_rule_read_from_the_api_can_be_written_straight_back(
-    hass, hass_ws_client, setup_scheduler
-):
-    """A read-modify-write must not be refused for fields the server added.
-
-    `rule_to_dict` - which is what every websocket response returns -
-    carries `migration_error` and `migration_source`, written by the v1
-    -> v2 migration so the card can say WHICH rule it could not convert.
-    `rule_from_api` used to reject them as unknown fields, so a client
-    that read a rule, changed its name and sent it back was refused for a
-    field it never chose to send. They are now dropped on the way in, so a
-    client still cannot SET them.
-    """
-    await setup_scheduler([ORIGINAL])
-    client = await hass_ws_client(hass)
-
-    await client.send_json({"id": 1, "type": "shabbat_scheduler/rules/list"})
-    listed = (await client.receive_json())["result"]["rules"][0]
-    assert "migration_error" in listed  # the payload really does carry it
-
-    await client.send_json(
-        {
-            "id": 2,
-            "type": "shabbat_scheduler/rules/update",
-            "rule_id": "r1",
-            "changes": {**listed, "id": None, "name": "renamed"},
-        }
-    )
-    # `id` is never updatable; drop it the way a real client would.
-    msg = await client.receive_json()
-    assert not msg["success"]  # ...because `id` is present, not the read-onlys
-
-    del listed["id"]
-    await client.send_json(
-        {
-            "id": 3,
-            "type": "shabbat_scheduler/rules/update",
-            "rule_id": "r1",
-            "changes": {**listed, "name": "renamed"},
-        }
-    )
-    msg = await client.receive_json()
-    assert msg["success"], msg.get("error")
-    assert msg["result"]["rule"]["name"] == "renamed"
-
-    reloaded = RuleStore(hass)
-    await reloaded.async_load()
-    assert reloaded.rules[0].name == "renamed"
-    # Dropped, not stored: the client could not set them even by echoing.
-    assert reloaded.rules[0].migration_error is None
-    assert reloaded.rules[0].migration_source is None
-
-
-async def test_a_client_cannot_forge_the_migration_fields_on_create(
-    hass, hass_ws_client, setup_scheduler
-):
-    """The other half of the I4 seam. `yaml_io` now PRESERVES
-    `migration_error`/`migration_source`, because a YAML file is a
-    serialised store; the websocket door must still drop them, because a
-    client payload is an edit. A forged `migration_error` would put a
-    healthy rule in the unmigrated-rules repair issue and make the card
-    render a migration failure that never happened.
-    """
-    await setup_scheduler()
-    client = await hass_ws_client(hass)
-    await client.send_json(
-        {
-            "id": 1,
-            "type": "shabbat_scheduler/rules/create",
-            "rule": {
-                **NEW_RULE,
-                "migration_error": "forged",
-                "migration_source": {"devices": ["climate.a"]},
-            },
-        }
-    )
-    msg = await client.receive_json()
-    assert msg["success"], msg.get("error")
-    assert msg["result"]["rule"]["migration_error"] is None
-    assert msg["result"]["rule"]["migration_source"] is None
-
-    reloaded = RuleStore(hass)
-    await reloaded.async_load()
-    assert reloaded.rules[0].migration_error is None
-    assert reloaded.rules[0].migration_source is None
-
-
 async def test_update_succeeds_but_warns_on_a_conflict(
     hass, hass_ws_client, setup_scheduler
 ):
@@ -1528,8 +1441,7 @@ async def test_a_client_cannot_forge_a_last_outcome(
         "rule": {**NEW_RULE, "last_outcome": forged},
     })
     msg = await client.receive_json()
-    # Dropped, not rejected - the echo must keep working, like the two
-    # migration fields before it.
+    # Dropped, not rejected - the echo must keep working.
     assert msg["success"], msg.get("error")
     rule_id = msg["result"]["rule"]["id"]
     # It is not a rule field at all, so it cannot even ride along in the

@@ -14,8 +14,8 @@ RETRY_DELAY_SECONDS = 30
 
 # A block spans at most three calendar days - a two-day Chag adjacent to
 # Shabbat. This is the one place that bound is spelled out; everywhere
-# else (migration.py, rule_schema.py, websocket_api.py, __init__.py)
-# imports it. It used to be six independently-typed literal "1..3"s -
+# else (rule_schema.py, websocket_api.py, __init__.py) imports it. It used
+# to be six independently-typed literal "1..3"s -
 # carried forward from Plan 2's final review as the kind of duplication
 # that is fine right up until someone changes one copy and not the rest.
 MIN_PROFILE = 1

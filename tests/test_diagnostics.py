@@ -34,8 +34,6 @@ async def test_diagnostics_report_the_rule_count_and_engine_state(
 
     assert result["rule_count"] == 1
     assert result["enabled"] is True
-    assert "migration_failures" in result
-    assert result["migration_failures"] == []
 
 
 async def test_diagnostics_do_not_include_rule_targets_or_data(
@@ -145,9 +143,9 @@ async def test_diagnostics_do_not_include_the_real_rule_id(
     hass, hass_client, setup_scheduler, jerusalem
 ):
     """A rule's `id` is not always integration-generated - a hand-edited
-    YAML import or a migrated v1 rule can carry a user-authored id, so it
-    could name something personal. Diagnostics must report a
-    positionally-stable stand-in instead of the real value."""
+    YAML import can carry a user-authored id, so it could name something
+    personal. Diagnostics must report a positionally-stable stand-in
+    instead of the real value."""
     from pytest_homeassistant_custom_component.components.diagnostics import (
         get_diagnostics_for_config_entry,
     )

@@ -116,10 +116,13 @@ def test_replay_defaults_to_off_with_no_window():
     assert rule.replay == Replay()
 
 
-def test_the_v1_fields_are_rejected_outright():
-    """Silently ignoring them would hide a half-migrated rule."""
+def test_the_old_v1_field_names_are_rejected_as_unknown():
+    """v1 support has been removed entirely, including its dedicated
+    rejection message: these field names now fail the same generic
+    "unknown field(s)" check as any other typo, rather than being called
+    out by name."""
     for gone in ("devices", "settings", "script", "variables", "replay_on_restart"):
-        with pytest.raises(RuleValidationError):
+        with pytest.raises(RuleValidationError, match="unknown field"):
             rule_from_api({**BASE, gone: "anything"}, "r1")
 
 
@@ -158,29 +161,6 @@ def test_a_forged_last_outcome_is_dropped_from_a_partial_update():
     )
     assert changes == {"name": "renamed"}
     assert "last_outcome" not in changes
-
-
-def test_yaml_import_cannot_smuggle_a_last_outcome_either():
-    """`keep_server_fields` is for `migration_error`/`migration_source` only.
-
-    A YAML document is a serialised store, which is why those two survive
-    an import - the documented way to inspect an unmigrated rule is to
-    export it. A verdict about last Shabbat is not part of the schedule
-    anybody authors, so this opt-in must NOT widen to cover it. It is the
-    branch a client can reach through the `import_yaml` service, and the
-    only test that drives it.
-    """
-    rule = rule_from_api(
-        {
-            **BASE,
-            "migration_error": "kept",
-            "last_outcome": {"outcome": "called", "at": "x", "detail": None},
-        },
-        "r1",
-        keep_server_fields=True,
-    )
-    assert rule.migration_error == "kept"   # still preserved, deliberately
-    assert not hasattr(rule, "last_outcome")
 
 
 def test_the_profile_bound_matches_the_shared_constant():

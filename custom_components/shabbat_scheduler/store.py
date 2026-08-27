@@ -14,7 +14,6 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import STORAGE_KEY, STORAGE_VERSION
-from .migration import migrate_v1
 from .models import Replay, Rule
 from .rule_schema import RuleValidationError, _duration
 
@@ -87,10 +86,6 @@ def rule_to_dict(rule: Rule) -> dict:
         "icon": rule.icon,
         "color": rule.color,
         "enabled": rule.enabled,
-        "migration_error": rule.migration_error,
-        "migration_source": (
-            dict(rule.migration_source) if rule.migration_source is not None else None
-        ),
     }
 
 
@@ -110,12 +105,6 @@ def rule_from_dict(data: dict) -> Rule:
         icon=data.get("icon"),
         color=data.get("color"),
         enabled=data.get("enabled", True),
-        migration_error=data.get("migration_error"),
-        migration_source=(
-            dict(data["migration_source"])
-            if isinstance(data.get("migration_source"), dict)
-            else None
-        ),
     )
 
 
@@ -183,15 +172,10 @@ class _MigratingStore(Store):
 
     def __init__(self, hass: HomeAssistant) -> None:
         super().__init__(hass, STORAGE_VERSION, STORAGE_KEY)
-        self.migration_failures: list[str] = []
 
     async def _async_migrate_func(
         self, old_major_version: int, old_minor_version: int, old_data: dict
     ) -> dict:
-        if old_major_version == 1:
-            migrated, failed = migrate_v1(old_data)
-            self.migration_failures = failed
-            return migrated
         return old_data
 
 
@@ -223,15 +207,6 @@ class RuleStore:
     @property
     def enabled(self) -> bool:
         return self._enabled
-
-    @property
-    def migration_failures(self) -> list[str]:
-        """Ids of rules a v1 -> v2 upgrade could not convert.
-
-        Populated once, by `_MigratingStore._async_migrate_func`, during
-        `async_load`. Empty for a store that was never migrated.
-        """
-        return list(self._store.migration_failures)
 
     @property
     def active_block(self) -> tuple[datetime, datetime] | None:

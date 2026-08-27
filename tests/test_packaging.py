@@ -29,7 +29,6 @@ PURE_MODULES = (
     "const.py",
     "rule_schema.py",
     "yaml_io.py",
-    "migration.py",
 )
 
 

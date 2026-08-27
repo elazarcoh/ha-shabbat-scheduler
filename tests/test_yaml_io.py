@@ -94,9 +94,12 @@ def test_default_replay_is_not_written():
     assert "replay" not in text
 
 
-def test_a_v1_file_is_rejected_with_a_useful_message():
-    """Not silently half-imported."""
-    with pytest.raises(ValueError, match="v1"):
+def test_a_v1_shaped_file_is_rejected_as_an_unknown_field():
+    """v1 support has been removed entirely: a v1-shaped rule (`devices`,
+    `action: 'on'`, no `target`/`data`) is no longer given a special v1
+    message - it is just an unrecognised field, the same as any other typo,
+    and is rejected rather than silently half-imported."""
+    with pytest.raises(ValueError, match="unknown field"):
         import_yaml("profiles:\n  1_day:\n    day_1:\n"
                     "      - {id: a, at: '11:00:00', action: 'on', devices: [climate.x]}\n")
 
@@ -270,122 +273,3 @@ def test_import_still_accepts_a_real_boolean_enabled():
     )
     assert rules[0].enabled is False
 
-
-# --- I4: the export must be able to carry an UNMIGRATED rule, and the ----
-#     import must not destroy it. `docs/known-behaviours.md` sent the user
-#     here to read `migration_source`, and the round trip both failed to
-#     show it and permanently deleted it - along with `migration_error`,
-#     which is the flag the repair issue is derived from, so following the
-#     documented advice also deleted the warning.
-
-
-def _unmigrated_stub():
-    """What the v1 -> v2 migration actually writes for a rule it could not
-    convert: a disabled stub pointing at a service that does not exist,
-    plus the two fields that are the only record of why and of what the
-    original rule was."""
-    return Rule(
-        id="d", profile=1, day="1", time=time(11, 0),
-        action="shabbat_scheduler.unmigrated",
-        enabled=False,
-        name="broken",
-        migration_error="a custom rule with no script has nothing to call",
-        migration_source={
-            "id": "d", "profile": 1, "day": "1", "time": "11:00:00",
-            "action": "custom", "script": None, "variables": {"minutes": 30},
-        },
-    )
-
-
-def test_the_export_carries_the_migration_record():
-    """The documented inspection route: export the rule set and read
-    `migration_source` directly."""
-    entry = yaml.safe_load(
-        export_yaml({}, [_unmigrated_stub()])
-    )["profiles"]["1_day"]["day_1"][0]
-    assert entry["migration_error"] == (
-        "a custom rule with no script has nothing to call"
-    )
-    assert entry["migration_source"]["script"] is None
-    assert entry["migration_source"]["variables"] == {"minutes": 30}
-
-
-def test_an_unmigrated_stub_survives_a_round_trip_intact():
-    """The documented RECOVERY route used to be destructive: import ->
-    async_replace_all replaced every rule with one whose migration fields
-    were both None, so every stub the user did not fix in that one pass
-    lost its stashed v1 payload permanently and its repair warning with
-    it."""
-    stub = _unmigrated_stub()
-    _defaults, back = import_yaml(export_yaml({}, [stub]))
-    assert back == [stub]
-
-
-def test_a_migration_record_is_not_written_when_there_is_none():
-    """A healthy rule set must not grow two null keys per rule."""
-    entry = yaml.safe_load(export_yaml({}, _rules()))["profiles"]["1_day"]["erev"][0]
-    assert "migration_error" not in entry
-    assert "migration_source" not in entry
-
-
-def test_the_v1_fields_inside_a_stashed_migration_source_are_not_rejected():
-    """`migration_source` is a verbatim v1 rule, so it is full of exactly
-    the keys `_check_unknown_fields` rejects by name at the top level. The
-    guard is per-level, and this pins that: the v1-field rejection must
-    still fire for a real v1 document (the test above this section) while a
-    stashed one rides through untouched."""
-    _defaults, back = import_yaml(export_yaml({}, [_unmigrated_stub()]))
-    assert back[0].migration_source["action"] == "custom"
-
-
-def test_the_import_still_rejects_a_forged_migration_error_shape():
-    """Preserved is not unvalidated: the fields are typed on the way in
-    like every other."""
-    text = yaml.safe_dump(
-        {
-            "defaults": {},
-            "profiles": {"1_day": {"day_1": [
-                {"id": "d", "at": "11:00:00", "action": "switch.turn_on",
-                 "migration_error": {"he": "nope"}}
-            ]}},
-        }
-    )
-    with pytest.raises(ValueError, match="migration_error"):
-        import_yaml(text)
-
-
-def test_a_forged_migration_source_shape_is_rejected_too():
-    text = yaml.safe_dump(
-        {
-            "defaults": {},
-            "profiles": {"1_day": {"day_1": [
-                {"id": "d", "at": "11:00:00", "action": "switch.turn_on",
-                 "migration_source": "the original rule"}
-            ]}},
-        }
-    )
-    with pytest.raises(ValueError, match="migration_source"):
-        import_yaml(text)
-
-
-def test_the_api_door_still_drops_the_migration_fields():
-    """The seam. `_READ_ONLY_FIELDS` exists so a websocket CLIENT cannot
-    forge a `migration_error` - it echoes the whole rule back on a
-    read-modify-write, and a forged one would add its rule to the repair
-    issue and make the card claim the migration failed. That protection is
-    unchanged; only `yaml_io`, which round-trips storage rather than
-    accepting a client edit, opts in."""
-    from custom_components.shabbat_scheduler.rule_schema import (
-        changes_from_api,
-        rule_from_api,
-    )
-
-    payload = {
-        "profile": 1, "day": "1", "time": "11:00:00", "action": "switch.turn_on",
-        "migration_error": "forged", "migration_source": {"forged": True},
-    }
-    built = rule_from_api(payload, "x")
-    assert built.migration_error is None
-    assert built.migration_source is None
-    assert "migration_error" not in changes_from_api(payload)
-    assert "migration_source" not in changes_from_api(payload)

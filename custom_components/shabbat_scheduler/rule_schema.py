@@ -23,60 +23,22 @@ _FIELDS = {
 
 _DEFAULTS_FIELDS = {"target", "data"}
 
-_V1_FIELDS = {"devices", "settings", "script", "variables", "replay_on_restart"}
-
-# Server-owned, never client-settable, but present in every rule the API
-# hands out (see store.rule_to_dict): the v1 -> v2 migration writes them so
-# the card can say WHICH rule it could not convert, which is the whole
-# point of recording them. Rejecting them on the way back in - which is
-# what happened until now - means a client that reads a rule, edits one
-# field and PUTs it back is refused with "unknown field(s)", for a field it
-# never chose to send. They are dropped instead of stored: a client still
-# cannot set them, so the guarantee the ledger asked for is intact, but a
-# read-modify-write no longer fails.
+# Server-owned, and handed out on every rule the card reads (see
+# `_state_payload`), so a read-modify-write client echoes it back - but NOT
+# a field on `Rule` at all. An outcome is what happened to a rule, not part
+# of its definition; it lives in the store's own outcome map, keyed by rule
+# id.
 #
-# WHERE THE SEAM IS. Dropping them is right for a websocket client, whose
-# payload is an EDIT: it echoes back a rule it did not author these fields
-# on, and a forged `migration_error` would put a healthy rule in the
-# unmigrated repair issue and make the card claim its migration failed.
-# It is wrong for `yaml_io`, whose payload is a SERIALISED STORE: the
-# documented way to inspect and re-author an unmigrated rule is to export
-# it, and an export that cannot carry these two fields cannot show the user
-# the stashed v1 payload - while the import silently deleted it, along with
-# the `migration_error` the repair issue is derived from. So the drop stays
-# the default and `rule_from_api` takes an explicit opt-in instead;
-# `changes_from_api`, which only ever serves the websocket, has none.
-_READ_ONLY_FIELDS = {"migration_error", "migration_source"}
-
-# Server-owned like the two above, and handed out on every rule the card
-# reads (see `_state_payload`), so a read-modify-write client echoes it
-# back - but NOT a field on `Rule` at all. An outcome is what happened to a
-# rule, not part of its definition; it lives in the store's own outcome map,
-# keyed by rule id.
-#
-# Dropped UNCONDITIONALLY, which is where this differs from
-# `_READ_ONLY_FIELDS`. Those have a `keep_server_fields` opt-in for
-# `yaml_io`, because a YAML document is a serialised store and an export
-# that cannot carry the stashed v1 payload cannot show the user the rule it
-# could not migrate. There is no such argument here: a YAML document is the
-# SCHEDULE, and a verdict about last Shabbat re-imported as part of it would
-# be a claim about a fire that never happened. There is also nowhere to put
-# it - `Rule` has no such field, so keeping it would be a TypeError.
-#
-# Forging is the reason this is a drop and not a passthrough. A client that
-# could set it would make the card report "fired" for a rule that never ran,
-# or "blocked" for one that did - which is the precise lie this whole
-# feature exists to make impossible.
+# Dropped UNCONDITIONALLY rather than validated and stored: there is
+# nowhere to put it - `Rule` has no such field, so keeping it would be a
+# TypeError - and forging it would make the card report "fired" for a rule
+# that never ran, or "blocked" for one that did, which is the precise lie
+# this whole feature exists to make impossible.
 _NEVER_STORED_FIELDS = {"last_outcome"}
 
 
 class RuleValidationError(ValueError):
     """A rule as supplied cannot be built."""
-
-
-def _strip_read_only(data: dict) -> dict:
-    """Drop the server-owned fields a client may echo back. See above."""
-    return {key: value for key, value in data.items() if key not in _READ_ONLY_FIELDS}
 
 
 def _strip_never_stored(data: dict) -> dict:
@@ -89,12 +51,6 @@ def _strip_never_stored(data: dict) -> dict:
 
 def _check_unknown_fields(data: dict, allowed: set[str] = _FIELDS) -> None:
     """Check for unknown fields in data."""
-    stale = set(data) & _V1_FIELDS
-    if stale:
-        raise RuleValidationError(
-            f"{sorted(stale)} belong to the v1 rule format. A rule is now an "
-            "action with a target and data; see the README."
-        )
     unknown = set(data) - allowed
     if unknown:
         raise RuleValidationError(f"unknown field(s): {sorted(unknown)}")
@@ -238,13 +194,8 @@ def _coerce(field: str, value):
         return _replay(value)
     if field == "enabled":
         return _bool(field, value)
-    if field in ("name", "icon", "color", "migration_error"):
+    if field in ("name", "icon", "color"):
         return _text(field, value)
-    if field == "migration_source":
-        # `dict | None` on the Rule, and what a repair tool would load back
-        # through `rule_from_dict`. Preserved verbatim is not the same as
-        # unvalidated: the shape is typed here like every other field.
-        return None if value is None else _mapping(field, value)
     # Every rule field is now typed; only the defaults payload, which
     # shares this helper for its own two keys, ever reaches here.
     return value
@@ -266,30 +217,17 @@ def changes_from_api(data: dict) -> dict:
     """Validate a partial update into kwargs for dataclasses.replace."""
     if "id" in data:
         raise RuleValidationError("id cannot be changed")
-    payload = _strip_never_stored(_strip_read_only(data))
+    payload = _strip_never_stored(data)
     _check_unknown_fields(payload)
     return {field: _coerce(field, value) for field, value in payload.items()}
 
 
-def rule_from_api(
-    data: dict, rule_id: str, *, keep_server_fields: bool = False
-) -> Rule:
-    """Build a validated Rule. Any client-supplied id is ignored.
-
-    `keep_server_fields` preserves `migration_error`/`migration_source`
-    instead of dropping them, and is for `yaml_io` ONLY - a YAML document
-    is a serialised store, not a client edit. See `_READ_ONLY_FIELDS`. It
-    defaults to off so a new call site is safe by default; the websocket
-    API passes nothing and keeps the old behaviour exactly.
-    """
+def rule_from_api(data: dict, rule_id: str) -> Rule:
+    """Build a validated Rule. Any client-supplied id is ignored."""
     payload = _strip_never_stored(
         {key: value for key, value in data.items() if key != "id"}
     )
-    if not keep_server_fields:
-        payload = _strip_read_only(payload)
-    _check_unknown_fields(
-        payload, _FIELDS | _READ_ONLY_FIELDS if keep_server_fields else _FIELDS
-    )
+    _check_unknown_fields(payload)
 
     for required in ("profile", "day", "time", "action"):
         if required not in payload:

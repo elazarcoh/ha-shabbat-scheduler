@@ -34,14 +34,6 @@
     "zmanim_sensor_missing": {
       "title": "The configured zmanim sensors can't be read",
       "description": "Shabbat Scheduler cannot read {candle_sensor} and/or {havdalah_sensor}. Check that the Jewish Calendar integration is set up and that those entity ids are still correct, then change them from the integration's Configure options if not. Nothing is scheduled until they can be read."
-    },
-    "unmigrated_rules": {
-      "title": "Some rules could not be migrated",
-      "description": "Upgrading from the previous version could not convert these rules automatically, so they were kept, disabled: {rule_ids}. Open each one to see why, then re-enable or recreate it."
-    },
-    "split_rules": {
-      "title": "Some rules were split by the upgrade",
-      "description": "The previous version could drive several kinds of device from one rule; a rule now names one action, so these rules were split into one rule per device type and all of them are still active: {rules}. Nothing was lost and nothing needs fixing — check the card looks the way you expect, then dismiss this. Each new rule keeps a copy of the original, which the YAML export shows."
     }
   },
   "services": {

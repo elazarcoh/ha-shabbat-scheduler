@@ -49,10 +49,10 @@ def _rule_shape(
 
     `id` is reported as a positionally-stable `rule_{index}`, not the real
     id: ids are not always integration-generated - a hand-edited YAML
-    import (`yaml_io.py`) or a migrated v1 rule can carry a user-authored
-    id - so the real one could name something personal, narrowly
-    contradicting this file's "nothing that identifies a person's home"
-    promise for the sake of a field nothing here actually needs.
+    import (`yaml_io.py`) can carry a user-authored id - so the real one
+    could name something personal, narrowly contradicting this file's
+    "nothing that identifies a person's home" promise for the sake of a
+    field nothing here actually needs.
     """
     return {
         "id": f"rule_{index}",
@@ -64,7 +64,6 @@ def _rule_shape(
         "condition_count": len(rule.condition),
         "replay_enabled": rule.replay.enabled,
         "enabled": rule.enabled,
-        "migration_error": rule.migration_error,
         "last_outcome": _outcome_shape(last_outcome),
     }
 
@@ -97,7 +96,6 @@ async def async_get_config_entry_diagnostics(
         },
         "enabled": store.enabled,
         "rule_count": len(store.rules),
-        "migration_failures": store.migration_failures,
         "current_block": _block_shape(engine.current_block),
         "upcoming_count": len(engine.upcoming()),
         "rules": [

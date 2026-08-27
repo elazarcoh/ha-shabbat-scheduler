@@ -947,41 +947,66 @@ a REAL entity), never produces a logbook row, and never fires
 `test_simulate_does_not_signal_rules_changed` in `tests/test_engine.py`,
 plus `test_simulate_does_not_record_even_when_the_rule_is_blocked` and
 `test_simulate_does_not_change_last_run_even_when_blocked` for the
-blocked-condition path specifically, and
-`test_describe_produces_no_entry_at_all_for_a_dry_run` (and its siblings)
-in `tests/test_logbook.py`. It did not really happen, and the rest of the
-system must not be told otherwise. The `would_call` outcome value itself,
-and everywhere it renders LIVE (`format.ts`'s `formatOutcome`,
-`rule-row.ts`'s per-rule result, `simulate-dialog.ts`'s and
-`rule-dialog.ts`'s inline Run Now result), is unchanged — only what
+blocked-condition path specifically. It did not really happen, and the
+rest of the system must not be told otherwise. The `would_call` outcome
+value itself, and everywhere it renders LIVE (`format.ts`'s
+`formatOutcome`, `rule-row.ts`'s per-rule result, `simulate-dialog.ts`'s
+and `rule-dialog.ts`'s inline Run Now result), is unchanged — only what
 triggers it changed, from a standing flag to an explicit per-call choice.
 
 A final review round (2026-08-27) found that the FIRST cut of this work
 still left two real, persisted consequences behind a simulated run — the
 engine mutated `last_run`/`last_run_at` unconditionally, and the logbook
 rendered a `[dry run]`-labelled row that still looked like a real entry.
-Both are now guarded the identical `if not simulate:` way
+Both were guarded the identical `if not simulate:` way
 `_async_record_outcome`/`SIGNAL_RULES_CHANGED` already were, on both the
-blocked-condition path and the normal path.
+blocked-condition path and the normal path (commit `b1b6095`). At that
+point `EVENT_RULE_APPLIED`/`EVENT_RULE_COMPLETED` still kept firing
+UNCONDITIONALLY, exactly as before this whole feature existed, on the
+theory that an external listener might depend on receiving them even
+during a simulated run, distinguishing via a `dry_run` payload key; the
+suppression lived entirely in `logbook.py`'s describer, which read that
+key and returned `{}` — no name, no message, no icon — for either event
+when it was true.
 
-`EVENT_RULE_APPLIED`/`EVENT_RULE_COMPLETED` still carry a `dry_run` key in
-their payload, sourced from `simulate` rather than `self.store.dry_run`,
-and — this is a deliberate decision, not an oversight — both events keep
-firing UNCONDITIONALLY, exactly as before this whole feature existed:
-external listeners may depend on receiving them even during a simulated
-run, distinguishing via `dry_run`. The key name is also kept for backward
-compatibility with anything already listening on the event bus, even
-though the internal flag it used to read is gone. `logbook.py`'s own
-describer reads that same `dry_run` key and returns `{}` — no name, no
-message, no icon — for either event when it is true, which is how "the
-event bus still fires" and "the logbook must not say it happened" both
-hold at once. It returns `{}`, never `None`: `async_describe_events`'s own
-contract requires a dict back, and the real logbook processor
-(`homeassistant.components.logbook.processor`) unconditionally indexes
-into whatever the describer returns, OUTSIDE the `try` that guards the
-call itself — `None` would crash that ENTIRE logbook query, not just
-suppress this one row. See `_dry_run_entry` in `logbook.py` for the full
-reasoning.
+That did not actually work. A re-review of `b1b6095` (still 2026-08-27,
+same day, against the real dev container's recorder rather than by
+reading source) found that HA's `async_describe_events` extension point
+has no way to suppress a logbook row entirely: `logbook/processor.py`'s
+own loop does `yield data` unconditionally after stamping `domain`/`when`
+onto whatever a describer returns, so a `{}` result still produced a row —
+just a BLANK one (domain and timestamp only, no name/message/icon), not
+"no row at all". `docs/known-behaviours.md` and `README.md` were, at that
+point, both claiming something false.
+
+The fix (follow-up to `b1b6095`, same day): rather than accept a blank row
+as good enough, `EVENT_RULE_APPLIED` and `EVENT_RULE_COMPLETED` are now
+not fired AT ALL when `simulate` is true — on both the blocked-condition
+path and the normal path, the same `if not simulate:` discipline as every
+other simulate guard here. This is strictly stronger than the describer
+trick it replaces: an event that never reaches the bus cannot produce a
+row of any kind, blank or otherwise, and there is nothing left for a
+describer to have to special-case. The "external listener compatibility"
+reasoning that justified firing unconditionally no longer applies, because
+it never actually applied in practice — this integration has never been
+installed on any real Home Assistant instance, so there was never a real
+external listener anywhere depending on receiving a simulated-run event.
+Both events still carry a `dry_run` key in their payload (still sourced
+from `simulate`, still kept under that name for backward compatibility
+with anything that might one day listen), but since a simulated run no
+longer reaches the event bus at all, that key is only ever seen as `False`
+in practice. `logbook.py`'s own `dry_run`-checking special case
+(`_dry_run_entry`, added by `b1b6095`) is genuinely unreachable now and
+has been removed — see the proof this actually holds in
+`tests/test_engine.py`'s `test_simulate_fires_neither_event` and
+`test_simulate_fires_neither_event_even_when_blocked` (both events, both
+paths, asserted directly on the event bus, not merely inferred from a
+describer's return value), plus a real end-to-end check against the dev
+container's own recorder and live event bus: a simulated `rules/run_now`
+put zero events on the bus and zero rows in `/api/logbook`, while an
+identical real run on the same rule put two of each — the positive control
+that proves the zero-row result is a genuine suppression and not e.g. a
+broken logbook query.
 
 `at`'s honest limit: HA's own `sun`/`time` condition helpers
 (`homeassistant.helpers.condition.time`,

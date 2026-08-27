@@ -293,6 +293,11 @@ class ShabbatEngine:
         function cannot look the rule up - it may have been renamed or deleted
         by then. Firing first is also what lets Home Assistant attribute each
         device's own change back to this rule, the same way automations do.
+        None of that applies to a simulated call: no real device state
+        changes, so there is nothing for Home Assistant to attribute and
+        nothing an attribution-dependent listener could be relying on -
+        see the `simulate` paragraph below for why the event is not fired
+        at all in that case.
 
         `simulate`: behaves exactly as the old `store.dry_run` flag used to
         at the point of the real service call (`_call` returns `would_call`
@@ -302,15 +307,26 @@ class ShabbatEngine:
         `self.last_run`/`self.last_run_at` - the transient pair
         `sensor.shabbat_scheduler_last_run` reads - on every path including
         a blocked one: it did not really happen, and the rest of the
-        system must not be told otherwise. The event bus still fires
-        (EVENT_RULE_APPLIED / EVENT_RULE_COMPLETED), carrying the same
-        `dry_run`-named key for backward compatibility with anything
-        listening - renaming it would be a breaking change to an external
-        contract this codebase does not control the readers of. Logbook's
-        own describer (`logbook.py`) reads that same key to render no row
-        at all for a simulated event, which is how "the event bus still
-        fires" and "the logbook must not say it happened" both stay true
-        at once.
+        system must not be told otherwise.
+
+        Follow-up to b1b6095: that fix tried to keep this promise for the
+        logbook by having its describer return `{}` for a simulated event,
+        but HA's `async_describe_events` extension point has no way to
+        suppress a row entirely - `logbook/processor.py`'s `yield data` is
+        unconditional, so a `{}` describer result still produced a BLANK
+        row (domain + timestamp only), confirmed against the real dev
+        container's recorder. The actual fix is here instead: neither
+        EVENT_RULE_APPLIED nor EVENT_RULE_COMPLETED is fired AT ALL when
+        `simulate` is true, on every path including the blocked one, the
+        same `if not simulate:` discipline the rest of this method already
+        uses. This integration has never been installed on any real Home
+        Assistant instance, so there is no external listener anywhere that
+        could be relying on receiving a simulated-run event - the "listener
+        compatibility" reasoning that used to justify firing unconditionally
+        does not apply. Both events still carry a `dry_run` key in their
+        payload (sourced from `simulate`) for whatever real run might one
+        day want it, but since a simulated run now never reaches the event
+        bus at all, that key is only ever seen as `False` in practice.
 
         `force_conditions`: when true, every condition is treated as passed
         and `_condition_block_reason` is not consulted at all. Its only
@@ -332,46 +348,54 @@ class ShabbatEngine:
         context = Context()
         self._our_contexts.append(context.id)
 
-        self.hass.bus.async_fire(
-            EVENT_RULE_APPLIED,
-            {
-                "rule_id": rule.id,
-                "name": rule.name,
-                "action": rule.action,
-                "target": dict(rule.target),
-                "dry_run": simulate,
-            },
-            context=context,
-        )
+        # Not fired at all under simulate - see the `simulate` paragraph
+        # above. A real run still needs this BEFORE the condition gate, for
+        # the attribution reason explained there.
+        if not simulate:
+            self.hass.bus.async_fire(
+                EVENT_RULE_APPLIED,
+                {
+                    "rule_id": rule.id,
+                    "name": rule.name,
+                    "action": rule.action,
+                    "target": dict(rule.target),
+                    "dry_run": simulate,
+                },
+                context=context,
+            )
 
         if rule.condition and not force_conditions:
             blocked_by = await self._condition_block_reason(rule, at)
             if blocked_by is not None:
                 results = [{"outcome": "blocked", "reason": blocked_by}]
-                # `last_run`/`last_run_at` are guarded here too, not only
-                # `_async_record_outcome` below - both back
-                # `sensor.shabbat_scheduler_last_run`, a REAL entity, and a
-                # simulated run that moved it would be exactly the lie
-                # "it did not really happen" forbids, just reached through
-                # the sensor instead of the per-rule outcome.
+                # `last_run`/`last_run_at`, `_fire_completed` (which now
+                # means EVENT_RULE_COMPLETED not firing at all) and
+                # `_async_record_outcome` are all one `if not simulate:`
+                # block, deliberately - all three back the promise that a
+                # simulated run "did not really happen, and the rest of the
+                # system must not be told otherwise" (`last_run`/
+                # `last_run_at` back `sensor.shabbat_scheduler_last_run`, a
+                # REAL entity), and none of them may run on a simulated
+                # blocked path any more than on a simulated normal one.
                 #
-                # Set BEFORE `_fire_completed`, deliberately: the sensor's
-                # own `EVENT_RULE_COMPLETED` listener
+                # `last_run_at` set BEFORE `_fire_completed`, deliberately:
+                # the sensor's own `EVENT_RULE_COMPLETED` listener
                 # (`LastRunSensor.async_added_to_hass`) is a synchronous
                 # `@callback` that reads `engine.last_run_at` the moment
                 # the event fires, not afterwards - firing first would
                 # have it read the PREVIOUS value and never notice this
                 # one at all, needing some later, unrelated push to catch
-                # up.
+                # up. Moot while this whole block is skipped under
+                # simulate, but load-bearing for the real path this same
+                # code still serves.
                 if not simulate:
                     self.last_run = results
                     self.last_run_at = dt_util.utcnow()
-                self._fire_completed(rule, results, simulate=simulate)
-                # The same words the logbook row carries, deliberately:
-                # the person reading the card and the person reading the
-                # logbook must not be told two different things about why
-                # one rule did nothing.
-                if not simulate:
+                    self._fire_completed(rule, results)
+                    # The same words the logbook row carries, deliberately:
+                    # the person reading the card and the person reading
+                    # the logbook must not be told two different things
+                    # about why one rule did nothing.
                     await self._async_record_outcome(
                         rule,
                         build_outcome("blocked", self.last_run_at, blocked_by),
@@ -387,13 +411,14 @@ class ShabbatEngine:
                     )
                 )
 
-        # Set BEFORE `_fire_completed` - see the identical note on the
-        # blocked-condition branch above for why the ordering matters.
+        # One `if not simulate:` block, same as the blocked-condition
+        # branch above and for the identical reason - `last_run_at` set
+        # BEFORE `_fire_completed` for the sensor listener's sake on the
+        # real path. See that branch's comment for the full reasoning.
         if not simulate:
             self.last_run = results
             self.last_run_at = dt_util.utcnow()
-        self._fire_completed(rule, results, simulate=simulate)
-        if not simulate:
+            self._fire_completed(rule, results)
             await self._async_record_outcome(
                 rule, outcome_from_results(results, self.last_run_at)
             )
@@ -429,9 +454,7 @@ class ShabbatEngine:
         await self.store.async_record_outcome(rule.id, record)
         async_dispatcher_send(self.hass, SIGNAL_RULES_CHANGED)
 
-    def _fire_completed(
-        self, rule: Rule, results: list[dict], *, simulate: bool = False
-    ) -> None:
+    def _fire_completed(self, rule: Rule, results: list[dict]) -> None:
         """Announce the outcome, carrying enough to describe itself.
 
         Fired after the results exist, for consumers that need them.
@@ -445,10 +468,12 @@ class ShabbatEngine:
         outcome row could not say which rule or which device it was about,
         and an outcome nobody can attribute is barely an outcome.
 
-        `dry_run` in the payload is `simulate`, not `self.store.dry_run` -
-        the persisted flag is gone (see docs/known-behaviours.md); the key
-        NAME stays `dry_run` for backward compatibility with anything
-        listening on the event bus.
+        No `simulate` parameter any more (follow-up to b1b6095): every call
+        site now guards the call itself with `if not simulate:`, so this is
+        never reached at all for a simulated run - see `async_apply_rule`'s
+        docstring. `dry_run` therefore only ever appears as `False` in a
+        payload that actually reaches the event bus; the key NAME is kept
+        anyway for backward compatibility with anything already listening.
         """
         self.hass.bus.async_fire(
             EVENT_RULE_COMPLETED,
@@ -457,7 +482,7 @@ class ShabbatEngine:
                 "name": rule.name,
                 "action": rule.action,
                 "target": dict(rule.target),
-                "dry_run": simulate,
+                "dry_run": False,
                 "results": results,
             },
         )

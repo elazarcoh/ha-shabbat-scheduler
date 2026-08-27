@@ -608,6 +608,19 @@ describe('Run Now', () => {
     expect(el.shadowRoot!.textContent).not.toContain('Would have fired');
   });
 
+  it('hides a stale result the moment the form is edited, even for the same rule', async () => {
+    const el = await render({
+      runNowResult: { ruleId: 'r1', results: [{ outcome: 'would_call' }], at: '2026-08-25T18:00:00Z' },
+    });
+    expect(el.shadowRoot!.textContent).toContain('Would have fired');
+
+    (el.shadowRoot!.querySelector('input.name') as HTMLInputElement).value = 'Renamed';
+    (el.shadowRoot!.querySelector('input.name') as HTMLInputElement).dispatchEvent(new Event('change'));
+    await el.updateComplete;
+
+    expect(el.shadowRoot!.textContent).not.toContain('Would have fired');
+  });
+
   describe('disabled while the form has unsaved edits', () => {
     it('disables Run Now once a field is edited, with a title explaining why', async () => {
       const el = await render();
@@ -647,6 +660,30 @@ describe('Run Now', () => {
       nameInput().dispatchEvent(new Event('change'));
       await el.updateComplete;
       expect((el.shadowRoot!.querySelector('.run-now') as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it('disables an already-open confirm when `rule` changes externally, not just via a local edit', async () => {
+      // `_patch` (a local edit) closes the confirm outright, which is
+      // already covered above. This pins the narrower gap: the SAME rule
+      // id pushed with different content (another client's edit landing
+      // while this dialog sits open) does not go through `_patch` at all
+      // and does not re-seed the form (`_seeded` is keyed on id, not
+      // content) - so the confirm would otherwise stay open AND clickable
+      // even though `_dirty` is now true.
+      const el = await render();
+      (el.shadowRoot!.querySelector('.run-now') as HTMLElement).click();
+      await el.updateComplete;
+      const runSimulate = () => el.shadowRoot!.querySelector('.run-simulate') as HTMLButtonElement;
+      const runReal = () => el.shadowRoot!.querySelector('.run-real') as HTMLButtonElement;
+      expect(runSimulate().disabled).toBe(false);
+      expect(runReal().disabled).toBe(false);
+
+      (el as any).rule = { ...existing, name: 'Renamed elsewhere' };
+      await el.updateComplete;
+
+      expect(el.shadowRoot!.querySelector('.run-simulate')).not.toBeNull();
+      expect(runSimulate().disabled).toBe(true);
+      expect(runReal().disabled).toBe(true);
     });
   });
 });

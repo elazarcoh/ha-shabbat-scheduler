@@ -204,34 +204,6 @@ def _note_diagnostics(message: str, results: list[dict]) -> str:
     return _note_no_live_targets(_note_unknown(message, results), results)
 
 
-def _dry_run_entry(data) -> dict | None:
-    """`{}` when `data` is a simulated event, else `None`.
-
-    A simulated run "did not really happen, and the rest of the system
-    must not be told otherwise" (the design spec's own words) - not even
-    with a `[dry run]`-labelled row that still LOOKS like a real one. The
-    honest answer is no row at all.
-
-    `{}`, not `None`. `async_describe_events`'s own contract
-    (`Callable[[LazyEventPartialState], dict[str, Any]]` in HA core) is
-    typed to always return a dict, and its caller
-    (`logbook/processor.py`'s `_humanify`) unconditionally does
-    `data[LOGBOOK_ENTRY_DOMAIN] = domain` on whatever comes back, OUTSIDE
-    the `try` that wraps the call to this describer - exactly the
-    "describer that raises takes down the whole logbook page" failure this
-    module's own top docstring warns every read here must stay defensive
-    against. `None` would hit that line as `None["domain"] = ...` and raise
-    for the ENTIRE query, not just this one row - worse than the row this
-    replaces. `{}` carries no name, no message and no icon, so HA still
-    stamps its own `domain`/`when` onto it (harmless - both are true, a
-    Shabbat Scheduler event genuinely happened at that instant) but there
-    is nothing left for a reader to see or act on.
-    """
-    if data.get("dry_run"):
-        return {}
-    return None
-
-
 def _catch_up_message(results: list[dict]) -> str:
     """The one summary row for a whole catch-up pass.
 
@@ -283,13 +255,19 @@ def async_describe_events(
         wording here that implied success would be a claim it cannot back.
         The outcome is the completed event's row, below.
 
-        A simulated run gets no row at all here - see `_dry_run_entry`'s
-        own docstring for why that is `{}` rather than a `[dry run]`-labelled
-        row, and why it cannot be `None`.
+        A simulated run is never described here at all, because it never
+        reaches the event bus in the first place - `engine.py`'s
+        `async_apply_rule` does not fire EVENT_RULE_APPLIED when `simulate`
+        is true (follow-up to b1b6095: this describer used to special-case
+        a `dry_run: True` payload and return `{}`, but HA's
+        `async_describe_events` extension point has no way to suppress a
+        logbook row entirely - the real processor still stamps a domain and
+        timestamp onto whatever a describer returns, so that only ever
+        produced a BLANK row, not no row. Suppressing the event itself,
+        upstream, is what actually keeps a simulated run out of the
+        logbook).
         """
         data = event.data
-        if (empty := _dry_run_entry(data)) is not None:
-            return empty
         message = f"rule '{_rule_label(data)}' due"
         what = _what(data)
         if what:
@@ -308,13 +286,13 @@ def async_describe_events(
         of the four non-firing rows and in none of the firing ones, so it
         is greppable.
 
-        A simulated run gets no row here either - see `_dry_run_entry`.
-        `catch_up` events never carry `dry_run` (catch-up is never
-        simulated), so that branch below is never reached by this check.
+        A simulated run is never described here either, for the same reason
+        as `async_describe_rule_applied` above: EVENT_RULE_COMPLETED simply
+        does not fire when `simulate` is true, so this function never
+        receives a simulated event to special-case at all. `catch_up`
+        events never carry `dry_run` either (catch-up is never simulated).
         """
         data = event.data
-        if (empty := _dry_run_entry(data)) is not None:
-            return empty
         results = _results(data)
 
         # Catch-up fires one final aggregate event with `rule_id: None`,

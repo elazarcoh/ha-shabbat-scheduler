@@ -87,12 +87,19 @@ async def test_describe_handles_an_unnamed_rule(hass):
     assert "r1" in result["message"]
 
 
-async def test_describe_produces_no_entry_at_all_for_a_dry_run(hass):
-    """A simulated run "did not really happen, and the rest of the system
-    must not be told otherwise" - not even a `[dry run]`-labelled row that
-    still looks like a real one. `{}` is the "no row" answer here, not
-    `None` - see `_dry_run_entry`'s own docstring for why `None` would
-    crash the real logbook query this describer is called from."""
+async def test_the_dry_run_key_no_longer_suppresses_the_applied_row(hass):
+    """Follow-up to b1b6095: "no logbook row for a simulated run" is now
+    kept by the ENGINE never firing the event at all
+    (`engine.py`'s `async_apply_rule`), not by this describer special-casing
+    a `dry_run` key - HA's `async_describe_events` extension point has no
+    way to suppress a row entirely; a describer returning `{}` still
+    produced a BLANK row (domain + timestamp only), confirmed against the
+    real dev container's recorder. A real engine never fires
+    EVENT_RULE_APPLIED with `dry_run: True` any more, but this proves the
+    describer does not treat that key specially even if a historical event
+    from an older version of this integration still carries it - it must
+    render exactly like any other applied event, not crash and not go
+    blank."""
     described = _describers(hass)
 
     event = Event(
@@ -106,7 +113,9 @@ async def test_describe_produces_no_entry_at_all_for_a_dry_run(hass):
         },
     )
     result = described[EVENT_RULE_APPLIED](event)
-    assert result == {}
+    assert result != {}
+    assert "בוקר שבת" in result["message"]
+    assert "due" in result["message"]
 
 
 def test_both_events_are_described(hass):
@@ -462,16 +471,22 @@ def test_a_fired_row_names_an_entity_that_does_not_exist(hass):
     assert "no such entity: climate.slaon" in message
 
 
-def test_a_dry_run_produces_no_logbook_row_even_with_an_unknown_entity(hass):
-    """A dry run is exactly where the user is hunting for a typo - but that
+def test_a_would_call_outcome_still_names_an_unknown_entity(hass):
+    """A dry run is exactly where the user is hunting for a typo - that
     diagnostic reaches them live, in the Simulate result the card renders
-    inline (`formatOutcome` in format.ts), not through a persisted logbook
-    row. The logbook stays silent for a simulated event no matter what its
-    results say, per the "did not really happen" design decision."""
+    inline (`formatOutcome` in format.ts) AND, if this describer is ever
+    handed a `would_call` result at all, in the row it renders here too.
+
+    A real engine now never fires EVENT_RULE_COMPLETED for a simulated run
+    (`async_apply_rule` suppresses the event itself under `simulate` -
+    follow-up to b1b6095, whose describer-side `dry_run` suppression this
+    replaces), so this outcome-driven branch is reachable only via a
+    historical event. It must still render sensibly rather than go blank
+    or crash.
+    """
     described = _describers(hass)
     result = described[EVENT_RULE_COMPLETED](
         _completed(
-            dry_run=True,
             target={"entity_id": ["climate.slaon"]},
             results=[
                 {
@@ -484,7 +499,9 @@ def test_a_dry_run_produces_no_logbook_row_even_with_an_unknown_entity(hass):
             ],
         )
     )
-    assert result == {}
+    message = result["message"]
+    assert "would have fired" in message
+    assert "no such entity: climate.slaon" in message
 
 
 def test_a_total_miss_says_no_such_entity_exactly_once(hass):
@@ -573,11 +590,12 @@ def test_a_fired_row_says_when_the_call_reached_nothing(hass):
     assert "did not run" not in message.lower()
 
 
-def test_a_dry_run_produces_no_logbook_row_even_with_no_live_targets(hass):
+def test_a_would_call_outcome_still_notes_no_live_targets(hass):
+    """Same reasoning as `test_a_would_call_outcome_still_names_an_unknown_entity`,
+    for the other target diagnostic."""
     described = _describers(hass)
     result = described[EVENT_RULE_COMPLETED](
         _completed(
-            dry_run=True,
             target={"device_id": ["deadbeef"]},
             results=[
                 {
@@ -590,7 +608,9 @@ def test_a_dry_run_produces_no_logbook_row_even_with_no_live_targets(hass):
             ],
         )
     )
-    assert result == {}
+    message = result["message"]
+    assert "would have fired" in message
+    assert "reached no entity that exists" in message
 
 
 def test_both_target_diagnostics_can_appear_on_one_row(hass):
@@ -731,14 +751,20 @@ def test_a_malformed_unknown_targets_value_does_not_break_the_row(hass):
     assert "no such entity" not in result["message"]
 
 
-def test_a_dry_run_completion_produces_no_logbook_row(hass):
-    """A simulated run never reaches the logbook at all - the "would have
-    fired" wording lives only in the live Simulate result the card renders
-    (`format.ts`'s `formatOutcome`), never as a persisted row."""
+def test_a_would_call_outcome_renders_the_dry_run_message(hass):
+    """A simulated run never reaches the logbook at all in practice - the
+    engine simply never fires EVENT_RULE_COMPLETED for one (follow-up to
+    b1b6095: see this module's own top-of-function docstrings and
+    `engine.py`'s `async_apply_rule`). This is the base case for the
+    `would_call` outcome branch itself, exercised directly since nothing
+    else in this file did before the describer-side `dry_run` suppression
+    it replaces was removed. The "would have fired" wording still lives
+    primarily in the live Simulate result the card renders
+    (`format.ts`'s `formatOutcome`); this only proves the describer itself
+    does not go blank or crash on a `would_call` result."""
     described = _describers(hass)
     result = described[EVENT_RULE_COMPLETED](
         _completed(
-            dry_run=True,
             results=[
                 {
                     "action": "climate.set_temperature",
@@ -749,7 +775,8 @@ def test_a_dry_run_completion_produces_no_logbook_row(hass):
             ],
         )
     )
-    assert result == {}
+    assert result != {}
+    assert "would have fired" in result["message"]
 
 
 def test_a_catch_up_summary_renders_as_one_row(hass):

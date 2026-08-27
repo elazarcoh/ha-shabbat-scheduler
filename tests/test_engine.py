@@ -12,6 +12,7 @@ from pytest_homeassistant_custom_component.common import async_mock_service
 
 from custom_components.shabbat_scheduler.const import (
     EVENT_RULE_APPLIED,
+    EVENT_RULE_COMPLETED,
     UNKNOWN_ENTITY_PREFIX,
 )
 from custom_components.shabbat_scheduler.engine import ShabbatEngine
@@ -1788,6 +1789,86 @@ async def test_a_real_run_still_records_and_signals(hass, engine, _rule):
 
     assert engine.store.last_outcome(rule.id) is not None
     assert calls == [1]
+
+
+# --- Follow-up to b1b6095: neither event fires at all under simulate ------
+#
+# b1b6095 tried to keep a simulated run out of the logbook by having
+# logbook.py's describer return `{}` for a `dry_run: True` event. That does
+# not work: HA's `async_describe_events` extension point has no way to
+# suppress a row entirely - `logbook/processor.py`'s `yield data` is
+# unconditional, so a `{}` result still produced a BLANK row (domain +
+# timestamp only), confirmed against the real dev container's recorder (see
+# this fix round's report). The tests below prove the actual mechanism
+# instead: the event itself is never fired at all, which is both necessary
+# and sufficient for "the logbook must not say it happened" - a describer
+# that never runs cannot render anything, blank or otherwise. This is fully
+# verifiable at the Python level without touching the recorder, unlike the
+# describer-in-isolation tests these replace, which is exactly the kind of
+# insufficient evidence this fix round exists to correct.
+
+
+async def test_simulate_fires_neither_event(hass, engine, _rule):
+    """The positive-path guarantee: a simulated, unblocked run must not put
+    EVENT_RULE_APPLIED or EVENT_RULE_COMPLETED on the bus at all."""
+    hass.states.async_set("input_boolean.t", "off")
+    rule = await _seeded(engine, _rule())
+    applied = []
+    completed = []
+    hass.bus.async_listen(EVENT_RULE_APPLIED, lambda event: applied.append(event))
+    hass.bus.async_listen(EVENT_RULE_COMPLETED, lambda event: completed.append(event))
+
+    results = await engine.async_apply_rule(rule, simulate=True)
+    await hass.async_block_till_done()
+
+    assert results[0]["outcome"] == "would_call"  # the call did happen, simulated
+    assert applied == []
+    assert completed == []
+
+
+async def test_simulate_fires_neither_event_even_when_blocked(hass, engine, _rule):
+    """Ablate the guard on the blocked branch specifically and a simulated
+    but blocked rule still fires both events - the same shape the
+    `last_run`/durable-outcome guards above are pinned for independently on
+    this path, since the guard had to be applied there separately too."""
+    hass.states.async_set("input_boolean.kids", "off")
+    rule = await _seeded(engine, _rule(condition=(
+        {"condition": "state", "entity_id": "input_boolean.kids", "state": "on"},
+    )))
+    applied = []
+    completed = []
+    hass.bus.async_listen(EVENT_RULE_APPLIED, lambda event: applied.append(event))
+    hass.bus.async_listen(EVENT_RULE_COMPLETED, lambda event: completed.append(event))
+
+    results = await engine.async_apply_rule(rule, simulate=True)
+    await hass.async_block_till_done()
+
+    assert results[0]["outcome"] == "blocked"
+    assert applied == []
+    assert completed == []
+
+
+async def test_a_real_run_still_fires_both_events(hass, engine, _rule):
+    """The negative-path ablation: a REAL run (simulate defaults False) must
+    still fire both events, or the two guards above prove nothing - this is
+    also the pre-existing behaviour
+    `test_event_is_self_describing_and_fires_before_the_calls` already pins
+    for EVENT_RULE_APPLIED alone; this adds EVENT_RULE_COMPLETED and a
+    direct real-vs-simulated contrast in one place."""
+    hass.states.async_set("input_boolean.t", "off")
+    rule = await _seeded(engine, _rule())
+    applied = []
+    completed = []
+    hass.bus.async_listen(EVENT_RULE_APPLIED, lambda event: applied.append(event))
+    hass.bus.async_listen(EVENT_RULE_COMPLETED, lambda event: completed.append(event))
+
+    await engine.async_apply_rule(rule)
+    await hass.async_block_till_done()
+
+    assert len(applied) == 1
+    assert len(completed) == 1
+    assert applied[0].data["dry_run"] is False
+    assert completed[0].data["dry_run"] is False
 
 
 async def test_force_conditions_skips_evaluation_entirely(hass, engine, _rule):

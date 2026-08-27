@@ -182,7 +182,18 @@ export class ShabbatRuleDialog extends LitElement {
    * would run and report on the OLD version while the new, unsaved values
    * sit right above it in the form, which is exactly backwards for a
    * feature whose whole point is "prove this rule works as I've set it up
-   * right now".
+   * right now". The two inline confirm buttons (Simulate / Run for real)
+   * carry the identical guard directly, not only through `_patch` closing
+   * the confirm on every edit - `_patch` cannot catch `this.rule` changing
+   * out from under an already-open confirm because of an edit made
+   * elsewhere (another client, another tab), which flips `_dirty` true
+   * without any local edit ever calling `_patch` at all.
+   *
+   * Also gates the displayed Run Now result: an edit after running leaves
+   * `runNowResult.ruleId` still matching `this.rule.id` (same rule, just
+   * edited), so without this the OLD result would stay visible underneath
+   * the new, unsaved edits, looking like a preview of them rather than a
+   * verdict on the version now superseded.
    *
    * `false` while creating (`this.rule === null`): Run Now (`canWrite &&
    * editing`) never renders there at all, so there is nothing for this to
@@ -472,15 +483,17 @@ export class ShabbatRuleDialog extends LitElement {
             ? html`<div class="run-confirm">
                 <button
                   class="run-simulate"
+                  ?disabled=${this._dirty}
                   @click=${() => this._emitRunNow(true)}
                 >${t(this.language, 'run_now_simulate')}</button>
                 <button
                   class="run-real"
+                  ?disabled=${this._dirty}
                   @click=${() => this._emitRunNow(false)}
                 >${t(this.language, 'run_now_real')}</button>
               </div>`
             : nothing}
-          ${this.rule !== null && this.runNowResult?.ruleId === this.rule.id
+          ${this.rule !== null && !this._dirty && this.runNowResult?.ruleId === this.rule.id
             ? html`<div class="run-now-result">
                 ${foldRunNowResults(this.runNowResult, this.language).map(
                   (line) => html`<div>${line}</div>`,

@@ -644,16 +644,18 @@ function je(e){return null==e}Ne.styles=s`
           ${this._runConfirmOpen?B`<div class="run-confirm">
                 <button
                   class="run-simulate"
+                  ?disabled=${this._dirty}
                   @click=${()=>this._emitRunNow(!0)}
                 >${ge(this.language,"run_now_simulate")}</button>
                 <button
                   class="run-real"
+                  ?disabled=${this._dirty}
                   @click=${()=>this._emitRunNow(!1)}
                 >${ge(this.language,"run_now_real")}</button>
               </div>`:q}
-          ${null!==this.rule&&this.runNowResult?.ruleId===this.rule.id?B`<div class="run-now-result">
+          ${null===this.rule||this._dirty||this.runNowResult?.ruleId!==this.rule.id?q:B`<div class="run-now-result">
                 ${(t=this.runNowResult,i=this.language,[xe(Ae(t.results,t.at),i)]).map(e=>B`<div>${e}</div>`)}
-              </div>`:q}
+              </div>`}
         </div>
       </div>
     `;var t,i}};Ri.styles=s`

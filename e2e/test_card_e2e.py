@@ -16,6 +16,9 @@ A dashboard created the way a real user would (lovelace/dashboards/create)
 is unaffected, so that is where the card actually lives here.
 """
 
+import json
+import urllib.request
+
 from playwright.sync_api import expect
 
 # Must match dev/seed.py's DASHBOARD_URL_PATH - that script creates the
@@ -837,3 +840,40 @@ def test_only_one_target_picker_is_visible_in_the_defaults_dialog(page, base_url
 
     dialog.locator(".actions button").first.click()
     dialog.wait_for(state="detached", timeout=10_000)
+
+
+def _rest_state(base_url, token, entity_id):
+    request = urllib.request.Request(
+        f"{base_url}/api/states/{entity_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read())["state"]
+
+
+def test_run_day_for_real_actually_calls_the_real_services(page, base_url, token):
+    """The exact code path a real fire uses, triggered manually.
+
+    Profile 1 day '1' (dev/seed.py) has two real rules against
+    `input_boolean.salon`: ON at 11:00 ("Shabbat morning"), then OFF at
+    18:00. Run for real, in resolve_rules' own order, they leave the
+    entity OFF regardless of its state before this test - so no starting
+    state has to be pinned or restored.
+    """
+    card = _card(page, base_url)
+
+    card.locator("shabbat-block-header button.simulate-open").click()
+    dialog = card.locator("shabbat-simulate-dialog")
+    dialog.wait_for(state="attached", timeout=10_000)
+
+    dialog.locator("select.profile").select_option("1")
+    dialog.locator("select.day").select_option("1")
+    dialog.locator("button.run-real").click()
+
+    dialog.locator(".results .row").first.wait_for(timeout=15_000)
+    results_text = dialog.locator(".results").inner_text()
+    assert "Fired" in results_text or "fired" in results_text.lower(), results_text
+
+    assert _rest_state(base_url, token, "input_boolean.salon") == "off"
+
+    dialog.locator("button:has-text('Cancel')").click()

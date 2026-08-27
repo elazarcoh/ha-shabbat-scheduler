@@ -317,8 +317,8 @@ profiles:
 
 One authored action can still become more than one actual service call:
 see [`docs/known-behaviours.md`](docs/known-behaviours.md) for the one
-compatibility shim this integration keeps, and for how conflicts, replay
-and migrated rules behave in more detail than fits here.
+compatibility shim this integration keeps, and for how conflicts and replay
+behave in more detail than fits here.
 
 Rule ids are preserved across an export/import round trip, so re-importing
 an edited file keeps each rule's entity, history and customisation.

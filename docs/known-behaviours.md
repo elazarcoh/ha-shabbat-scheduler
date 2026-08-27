@@ -132,9 +132,9 @@ window was, rather than either firing blindly or vanishing without a
 trace. Omitting `within` means no bound at all, matching how every rule
 behaved before this option existed.
 
-What this costs a v1 user specifically — a migrated on/off rule loses the
-unconditional catch-up it used to have — is its own accepted decision, below:
-"v2 does not self-correct after a mid-block restart".
+That an on/off rule gets no unconditional catch-up any more, unless it opts
+in, is its own accepted decision, below: "v2 does not self-correct after a
+mid-block restart".
 
 `replay.enabled` and `replay.within` are not the only gate. `async_catch_up`
 replays through the same `async_apply_rule` path a normal fire uses
@@ -174,54 +174,6 @@ deterministically and how to get the guarantee back (a lock keyed on the
 headed "A GUARANTEE v2 GAVE UP" in
 `.superpowers/sdd/2026-08-24-shabbat-scheduler-v2-model/progress.md`.
 
-## A rule that could not be migrated is kept, disabled, and reported
-
-A v1 store can contain a rule shape the v1→v2 migration cannot translate
-into a `target`/`data` pair — a hand-edited `.storage` file, or a v1 field
-combination nobody anticipated. That rule is never dropped. It is kept in
-the store with `enabled: false` and `action: shabbat_scheduler.unmigrated`
-so it cannot fire in a shape nothing understands, `migration_error` names
-why it could not convert, and `migration_source` stashes the entire
-original v1 rule dict verbatim — including anything the migration *did*
-manage to salvage into `target`/`data` along the way.
-
-The user is told through a repair issue (Settings → Repairs), not a log
-line during the one week nobody reads logs: `ISSUE_UNMIGRATED_RULES` names
-every affected rule id so they do not have to hunt through the whole rule
-set to find them. What to do with one: open it in the card, which renders
-the migration error inline, then re-author it by hand as a v2
-`action`/`target`/`data` rule and re-enable it — nothing does this
-automatically, because a migration confident enough to invent a `target`
-on your behalf is exactly the kind of silent guess this project exists to
-avoid. Preserving `migration_source` whole in storage is what makes that
-reconstruction possible instead of a rewrite from memory.
-
-The YAML export is the other way to inspect one, and it is now safe. Both
-`migration_error` and `migration_source` are written by `export_yaml` and
-preserved by `import_yaml`, so a round trip shows you the original v1 rule
-verbatim and leaves an untouched stub exactly as it was — still disabled,
-still carrying its error, still named in the repair issue. To repair one
-this way, replace the stub's `action`/`target`/`data` with the v2 rule you
-want, delete its two `migration_*` keys and set `enabled: true`; the warning
-clears itself once no rule carries a `migration_error` any more.
-
-This was not always true, and the earlier behaviour was destructive: the
-export omitted both fields, so the documented inspection route could not
-work, and the import stripped them, so a round trip permanently deleted the
-stashed v1 payload *and* cleared the flag the repair issue is derived from —
-leaving a disabled stub pointing at a service that does not exist with
-nothing anywhere saying why.
-
-Note the asymmetry this creates, deliberately. A **websocket client** still
-cannot set either field: `rule_schema._READ_ONLY_FIELDS` drops them from
-every create and update, because a client payload is an *edit* that echoes
-back fields it did not author, and a forged `migration_error` would put a
-healthy rule in the repair issue and make the card claim a migration failed.
-A **YAML document** is a serialised store rather than an edit, so it opts in
-(`rule_from_api(..., keep_server_fields=True)`). Forging one there is
-pointless rather than dangerous: the shape is still validated, and the only
-thing it achieves is listing your own rule as unmigrated.
-
 ## The shared defaults are domain-blind, and v1's were not
 
 `block.merge_defaults` folds `defaults["data"]` into **every** rule, whatever
@@ -234,163 +186,23 @@ untouched, and Home Assistant then refuses the call outright —
 notification. This is worth knowing before you author a `light.turn_on` rule
 in a rule set whose defaults were written for an air conditioner.
 
-v1 was different: it read its global `settings` for the **climate** domain
-and nowhere else, so a mixed v1 rule set was safe by accident. The v1 → v2
-migration therefore does **not** copy `defaults.settings` into
-`defaults.data`. It inlines them onto each migrated climate rule's own `data`
-instead, merged per key with the rule's own settings and in the same order
-`merge_defaults` uses — so the effective payload of every rule is byte for
-byte what v1 fired, and no non-climate rule inherits anything. Dropping them
-instead would have been lossy in the other direction: a v1 climate rule with
-no settings of its own *did* read the global ones, and would have become a
-bare `climate.turn_on` — the unit coming on at whatever temperature it was
-last left at, reported nowhere.
-
-The cost is stated where the code is (`migration.migrate_v1_defaults`): the
-values are **materialised per rule**, so editing the shared defaults
-afterwards no longer changes them. That is unavoidable — "climate only" is a
-v1 concept v2 cannot express — and copying it is honest where reinterpreting
-it is not.
-
-`defaults.devices` is resolved per rule for the same reason, and it matters
-even more. v1's `merge_defaults` was, verbatim:
-
-```python
-devices = rule.devices or tuple(defaults.get("devices", ()))
-```
-
-So **a v1 rule with no `devices` of its own inherited the global ones** —
-which is what `defaults.devices` was for, and the shape the v1 README
-documented as the common case. The migration therefore resolves that
-fallback per rule, `or` not merge (a rule's own devices win outright), and
-writes the result into the rule's **own** `target`. It has to be written
-rather than left to v2's `defaults.target` inheritance, because the migrated
-*action* (`switch.turn_on` vs `climate.set_temperature`) is derived from
-those same devices and is frozen into the rule: a target left floating could
-later be repointed at a domain the frozen action does not belong to. A
-migrated rule describes itself. `defaults.devices` still becomes a shared
-`defaults.target` as well, for rules authored later.
-
-If the shared devices span **several domains**, an inheriting rule is split
-into one rule per domain, exactly as a rule carrying its own mixed devices is
-— see the next section.
-
-## The migration reproduces what v1 DID, not what a v1 rule said
-
-A v1 rule's stored fields are not the same thing as its behaviour. v1 read
-some of them, ignored others, and could not act on some at all — so
-converting a rule field-for-field produces something that looks right and
-does not behave the way the user's schedule behaved. Four cases, each cited
-to v1's source at `5192d4c` so the claim can be checked rather than trusted.
-
-**v1 drove five domains, and no others.** `climate`, plus
-`device_ops._SIMPLE_DOMAINS = ("switch", "light", "input_boolean", "fan")`
-(`5192d4c:device_ops.py:14`). Anything else fell through `plan_calls` and
-came back as `Skip("unsupported domain 'x'")` — v1 made **no service call**
-for it, ever. So a v1 rule on `lock.front` never did anything, and a blind
-`f"{domain}.turn_on"` would either name a service that does not exist
-(`lock.turn_on`) or, worse, one that does (`scene.turn_on`, `script.turn_on`)
-and quietly start doing something the user never had. Such a rule is kept,
-disabled and reported instead, with the domain named. The allow-list lives in
-`migration.py` rather than `device_ops.py` because it is a fact about v1, not
-about Home Assistant: a rule you author in v2 can name any service you like.
-
-**v1 read exactly three keys out of `settings`:** `hvac_mode`, `temperature`
-and `fan_mode`, one branch each in `_plan_climate`
-(`5192d4c:device_ops.py:104-183`). A `swing_mode`, a `humidity`, a
-`target_temp_high` or a typo was **ignored, and the rule worked**. Carrying
-those keys into `climate.set_temperature` breaks a rule that used to work,
-because the schema is `PREVENT_EXTRA` and refuses the whole call — so the
-temperature stops being set too. Only the three keys are carried; the rest
-are logged and dropped, which is precisely what v1 did with them.
-
-**A v1 climate `on` rule with no `hvac_mode`, `temperature` or `fan_mode`
-did nothing at all.** `_plan_climate` appended no calls, and the engine
-reported `outcome: "ok"` with the state unchanged
-(`5192d4c:engine.py:493-500`). Converting it to `climate.turn_on` would make
-an air conditioner start up, unattended, on a Shabbat, at whatever
-temperature it was last left at. That is inventing behaviour on the user's
-behalf, so the rule is kept, disabled and reported instead, and the message
-says what to add to make it act. A climate `off` rule with no settings is
-unaffected: v1 genuinely called `climate.turn_off` for it.
-
-**A v1 rule spanning two domains worked, so it becomes two v2 rules.** v1
-looped `for entity_id in rule.devices` and re-derived the domain per entity
-(`5192d4c:engine.py:104`), so one rule could legitimately drive
-`climate.salon` and `switch.boiler` together — and the v1 card let you select
-several devices for one rule. v2 is one rule, one action, so the only way to
-keep that schedule working is one v2 rule per domain. **This is the one place
-the migration changes the number of rules you have**, and it is worth knowing
-before you open the card after an upgrade:
-
-- Ids are derived and deterministic: `e` becomes `e-climate` and `e-switch`,
-  suffixed further only to dodge a collision with an id the store already
-  uses. A re-migration of the same store produces the same ids.
-- Both parts are renamed, rather than one keeping `e`, so that nothing
-  implies one is "the real rule". `e` and `e-switch` would leave a reader
-  unable to tell whether `e` had always been climate-only.
-- **You are told.** A repair issue (`ISSUE_SPLIT_RULES`, Settings → Repairs)
-  names each original rule and what it became: `e → e-climate, e-switch`. It
-  is the only report here that is not about something being *wrong* — the
-  rules converted correctly and are all enabled — but a rule count changing
-  under someone in silence is exactly the shape of thing this project exists
-  to prevent, so it gets the same channel as everything else. There is
-  nothing to fix, so dismiss it once you have looked at the card; it is
-  persistent, so it survives a restart until you do.
-- Both parts stash the whole original rule in `migration_source`, so the
-  YAML export shows exactly what the single v1 rule was, and the repair issue
-  above is derived from it. That field alone renders nothing in the card —
-  only `migration_error` does — so it is a paper trail, not a warning. A YAML
-  round trip that drops those keys also clears the repair issue, which is the
-  other way to acknowledge it.
-- Each part gets its own rule switch. Both parts share the original's name,
-  so Home Assistant dedupes the second entity id.
-- The two parts share a profile, day and time but have disjoint targets, so
-  they are not reported as conflicting with each other.
-- A part on a domain v1 could not drive fails on its own, leaving the
-  working part working — which is exactly what v1 did with that rule.
-
-A `custom` (script) rule is never split: `_apply_custom`
-(`5192d4c:engine.py:451-470`) used `script` and `variables` and never looked
-at `devices`, so a custom rule's devices did nothing in v1 either.
-
 ## Accepted decision: v2 does not self-correct after a mid-block restart
 
-v1 did. v2 does not, unless a rule opts into replay. **This is a deliberate
-decision by the project owner, not a limitation nobody noticed**, and it is
-the one behaviour on the upgrade path a v1 user will actively miss. "Replay
-is opt-in and bounded", above, describes the v2 mechanism and why v1's could
-not survive the move to a generic action; this is about what the upgrade
-itself does to an existing v1 rule.
+v2 replays a rule after a restart only if the rule's author set
+`replay.enabled`, bounded by `replay.within`; nothing does so by default.
+**This is a deliberate decision by the project owner, not a limitation
+nobody noticed.** "Replay is opt-in and bounded", above, describes the
+mechanism and why a generic action cannot safely replay unconditionally.
 
-What v1 did (`5192d4c:engine.py:396-424`): on every restart, catch-up took
-every device any rule touched, asked `desired_state_at` what state the most
-recent already-passed rule wanted it in, and applied it — with no opt-in of
-any kind. `replay_on_restart` gated **only** `custom` (script) rules
-(`5192d4c:engine.py:430-437`). So a Home Assistant restart or a power cut at
-9pm on Friday re-asserted the air conditioning, and nobody had to know
-anything had happened.
+A v2 rule is an opaque service call with no queryable desired state, so
+replay **re-fires** rather than reconciles: there is no way, as there would
+be for an approach that compares current state to a desired one, to tell
+whether replaying is even a no-op. Re-firing every passed rule of a block on
+every restart, with no bound on staleness, would be worse than not acting.
+Nothing unexpected ever firing is the strictest reading of fire-once, and it
+is the reading this project takes.
 
-What v2 does: catch-up replays only rules whose author set `replay.enabled`,
-bounded by `replay.within`. The migration maps `replay_on_restart` →
-`replay.enabled` faithfully as a **field**, but that field meant something
-narrower in v1 — so a v1 on/off rule left at the default, which is almost all
-of them, **is not replayed after a restart any more**. If the last rule of the
-day has already passed, the appliance stays as the restart left it for the
-rest of Shabbat.
-
-Why it is not simply switched on for every migrated rule, which was
-considered and rejected: v1 could afford unconditional catch-up because it
-computed a desired state and **compared before acting** — `plan_calls`
-returned no calls at all for a device already in the wanted state, so
-replaying was free. A v2 rule is an opaque service call with no queryable
-desired state, so replay **re-fires** rather than reconciles. Re-firing every
-passed rule of the block on every restart, through the unbounded window a
-migrated rule would inherit, is worse than not acting. Nothing unexpected
-ever firing is the strictest reading of fire-once, and it is the reading this
-project takes.
-
-**If you want the old behaviour**, turn it on per rule, on the rules where
+**If you want catch-up behaviour**, turn it on per rule, on the rules where
 re-firing is genuinely safe — a `climate.set_temperature` naming an absolute
 temperature usually is; a `script.turn_on` that adds 30 minutes to a timer is
 not. Set `replay.enabled` and give it a `within` window, so a restart hours
@@ -439,52 +251,12 @@ most likely to notice and least likely to connect to an upgrade. The v1
 README's documented example config uses exactly `fan_mode: quiet`, so this is
 not a corner case for this install.
 
-It cannot be fixed in the migration: choosing a synonym needs the device's
-`fan_modes` attribute, which needs a running instance, and `migration.py`
-imports no Home Assistant. The honest fix is to restore the resolution at
+The honest fix is to restore the resolution at
 fire time in the engine, which already reads each entity's state and
 attributes, together with v1's `Skip` behaviour so an unsupported mode drops
 one sub-call and reports it rather than failing the whole rule. That is a
 change to the fire path, not to the upgrade path, so it is recorded rather
 than smuggled into a migration fix.
-
-## `migrate_v1` never raises, by construction
-
-The whole migration is total. Anything it raised escaped
-`_MigratingStore._async_migrate_func` → `Store.async_load` →
-`RuleStore.async_load` → `async_setup_entry`, which failed with
-`ConfigEntryState.SETUP_ERROR` — and because the store was then still at
-version 1, **every subsequent restart failed identically**. No entities, no
-engine, nothing scheduled, and the only trace a setup traceback nobody reads
-during the one week they cannot. Two live instances of that were closed
-(a `settings` or a `defaults` that was a truthy non-mapping, e.g. `'hot'`),
-along with the same shape in `devices` and `variables`.
-
-Two rules follow from it, and both are load-bearing:
-
-- Every coercion is guarded, and a field the migration cannot parse routes
-  the rule through keep-disable-report — the same path as any other
-  unconvertible rule, with the whole raw v1 rule stashed in
-  `migration_source`, so being told costs one field to fix.
-- The per-rule conversion is additionally wrapped in a catch-all, so the
-  *ninth* instance of that failure class becomes one kept, disabled and
-  reported rule rather than a permanently unbootable install. The trade: a
-  genuine bug in `migrate_v1_rule` shows up as a disabled rule naming the
-  exception rather than as a crash. For the one function whose crash costs
-  the user every rule they have, that is the right way round.
-
-A malformed **`defaults`** is the one case with nothing to disable — it is
-not a rule — so it drops to empty and logs a warning. Inventing a phantom
-rule to carry the report would put something in the store the user never
-wrote, which is a worse violation than a log line.
-
-That is not free, and the section above says why: a rule with no `devices` of
-its own inherits the shared ones, so a `defaults` that cannot be read costs
-every such rule its target. Those rules are **not** silent about it — each
-one is kept, disabled, and named in the repair issue, with a reason pointing
-at the defaults. The log line is the only trace of the *defaults* being
-unreadable; the consequence for each affected rule is reported through the
-channel the user actually looks at.
 
 ## The zmanim sensors roll forward at havdalah
 
@@ -722,13 +494,10 @@ retries three times and raises a persistent notification.
 
 That contradicts the letter of `test_hvac_mode_only_does_not_emit_an_empty_
 set_temperature_call`, which holds for a *non-null* mode-only payload. The
-inconsistency is real and is recorded here rather than fixed, for two reasons.
-
-The migration cannot produce this shape — v1's own three settings keys are
-value-gated in `migration.py`, so a null never reaches storage from an upgrade.
-It is reachable only from a rule authored directly against the v2 API with an
-explicit null mode and no temperature, which is a nonsense rule, and for such a
-rule a loud refusal naming the problem beats silence.
+inconsistency is real and is recorded here rather than fixed. It is reachable
+only from a rule with an explicit null mode and no temperature, which is a
+nonsense rule, and for such a rule a loud refusal naming the problem beats
+silence.
 
 The apparent fix — return no calls at all — is worse as things stand. The
 engine records `last_run` from what `expand_action` yields, so an empty
@@ -742,11 +511,6 @@ in the shim.
 `ha-service-control` work). Until then the shape is unreachable in practice;
 after then it is one selector click away, and the honest empty-expansion path
 should land with it.
-
-A sibling of the same key-versus-value gating survives in
-`migrate_v1_defaults`: a null in `defaults.settings` is dropped silently, while
-an unrecognised key there is reported. The behaviour is right — v1 dropped it
-too — and only the reporting is inconsistent.
 
 ## The defaults dialog's service picker is blank on reopen
 
@@ -905,9 +669,9 @@ Four things worth knowing about it:
   rather than the claim.
 - **Outcomes are pruned for deleted rules on every save**, so the map is
   bounded by the rule set rather than by uptime. `last_outcome` is also
-  server-owned: `rule_schema.py` drops it on the way in (unconditionally, not
-  under `keep_server_fields`), so a client can echo a rule it read without
-  being refused and still cannot forge a verdict.
+  server-owned: `rule_schema.py` drops it on the way in unconditionally, so a
+  client can echo a rule it read without being refused and still cannot
+  forge a verdict.
 
 ## Dry run is gone; verification is now on-demand
 
@@ -1031,6 +795,34 @@ run, and exposes `force_conditions` as its own toggle — but its Simulate
 and Run for real buttons, like the ▶ icon that opens it, only render for
 `canWrite`; a non-admin can open nothing that fires a real (or simulated)
 call.
+
+## v1 migration support has been removed entirely
+
+`custom_components/shabbat_scheduler/migration.py`, its `_MigratingStore`
+version-1 branch, the `migration_error`/`migration_source` rule fields,
+`ISSUE_UNMIGRATED_RULES`/`ISSUE_SPLIT_RULES` and the repair-issue machinery
+built on them, the v1-shaped-field rejection in `rule_schema.py`
+(`_V1_FIELDS`), and every card/test/doc surface reading any of the above are
+gone, along with `docs/upgrading-from-v1.md`. v1 was never shipped to a real
+user, so there was no one who needed an upgrade path, and carrying dead
+migration machinery for a version nobody ever ran was pure cost.
+
+Several sections above described what the migration did and why - "A rule
+that could not be migrated is kept, disabled, and reported", "The migration
+reproduces what v1 DID, not what a v1 rule said", and "`migrate_v1` never
+raises, by construction" - and have been deleted along with the code they
+documented, rather than left to describe a code path that no longer exists.
+"v1 resolved fan-mode synonyms against the device; v2 does not" is the one
+v1-comparison section kept whole: it documents a real, still-open capability
+gap in the current engine, independent of the migration that used to convert
+v1 rules.
+
+A rule shaped like a v1 rule (`devices`, `settings`, `script`, `variables`,
+`replay_on_restart`) is no longer called out by name on the way in - it now
+fails the same generic "unknown field(s)" check as any other unrecognised
+field, which is the intent stated above: "a rule that a user authors in v2
+can name any service they like", and there is no more v1 shape to recognise
+specially.
 
 ## Deployment note
 

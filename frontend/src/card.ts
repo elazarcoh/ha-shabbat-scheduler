@@ -569,6 +569,7 @@ export class ShabbatSchedulerCard extends LitElement {
           ? html`<shabbat-simulate-dialog
               .hass=${this._hass}
               .language=${this._language}
+              .canWrite=${this._canWrite}
               @dialog-close=${() => { this._simulateOpen = false; }}
             ></shabbat-simulate-dialog>`
           : nothing}

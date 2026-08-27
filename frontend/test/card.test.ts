@@ -1011,6 +1011,19 @@ describe('authoring', () => {
     expect(el.shadowRoot!.querySelector('shabbat-simulate-dialog')).not.toBeNull();
   });
 
+  it('passes canWrite through to the simulate dialog for a read-only user', async () => {
+    const { hass, send } = fakeHass({ user: { is_admin: false } });
+    const el = await mount(hass);
+    send(state());
+    await el.updateComplete;
+
+    el._simulateOpen = true;
+    await el.updateComplete;
+
+    const dialog = el.shadowRoot!.querySelector('shabbat-simulate-dialog') as any;
+    expect(dialog.canWrite).toBe(false);
+  });
+
   // ---- the block:null dead end this plan's headline fix removes ----
 
   it('renders day groups and the preview banner with no block, once a profile is selected', async () => {

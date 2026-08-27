@@ -30,6 +30,7 @@ function daysFor(length: number): string[] {
 export class ShabbatSimulateDialog extends LitElement {
   @property({ attribute: false }) hass: Hass | null = null;
   @property() language = 'en';
+  @property({ type: Boolean }) canWrite = false;
 
   @state() private _profile = 1;
   @state() private _day = 'erev';
@@ -176,6 +177,7 @@ export class ShabbatSimulateDialog extends LitElement {
               .hass=${this.hass}
               .selector=${{ boolean: {} }}
               .value=${this._forceConditions}
+              .disabled=${!this.canWrite}
               @value-changed=${(event: CustomEvent) => {
                 this._forceConditions = Boolean(event.detail?.value);
               }}
@@ -209,16 +211,18 @@ export class ShabbatSimulateDialog extends LitElement {
             <button @click=${() => this.dispatchEvent(new CustomEvent('dialog-close'))}>
               ${t(this.language, 'cancel')}
             </button>
-            <button
-              class="run-simulate"
-              ?disabled=${this._busy}
-              @click=${() => this._run(true)}
-            >${t(this.language, 'simulate_this_day')}</button>
-            <button
-              class="run-real"
-              ?disabled=${this._busy}
-              @click=${() => this._run(false)}
-            >${t(this.language, 'simulate_run_for_real')}</button>
+            ${this.canWrite
+              ? html`<button
+                  class="run-simulate"
+                  ?disabled=${this._busy}
+                  @click=${() => this._run(true)}
+                >${t(this.language, 'simulate_this_day')}</button>
+                <button
+                  class="run-real"
+                  ?disabled=${this._busy}
+                  @click=${() => this._run(false)}
+                >${t(this.language, 'simulate_run_for_real')}</button>`
+              : nothing}
           </div>
         </div>
       </div>

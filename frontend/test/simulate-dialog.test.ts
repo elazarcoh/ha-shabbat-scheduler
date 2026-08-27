@@ -12,7 +12,7 @@ function fakeHass(previewResult: unknown, runResult: unknown) {
 async function render(hass: unknown, props: Record<string, unknown> = {}) {
   const el = document.createElement('shabbat-simulate-dialog') as HTMLElement &
     Record<string, any>;
-  Object.assign(el, { hass, language: 'en', ...props });
+  Object.assign(el, { hass, language: 'en', canWrite: true, ...props });
   document.body.appendChild(el);
   await el.updateComplete;
   await el.updateComplete; // second tick: the preview load is async
@@ -79,5 +79,15 @@ describe('shabbat-simulate-dialog', () => {
     await el.updateComplete;
     await el.updateComplete; // second tick: the run_day round trip is async
     expect(el.shadowRoot!.textContent).toContain('Would have fired');
+  });
+
+  it('hides the run buttons and disables the force-conditions toggle for a reader', async () => {
+    const hass = fakeHass({ profile: 1, rules: [], conflicts: [], warnings: [] }, { results: [] });
+    const el = await render(hass, { canWrite: false });
+    expect(el.shadowRoot!.querySelector('button.run-simulate')).toBeNull();
+    expect(el.shadowRoot!.querySelector('button.run-real')).toBeNull();
+    expect(
+      (el.shadowRoot!.querySelector('ha-selector.force-conditions') as any).disabled,
+    ).toBe(true);
   });
 });

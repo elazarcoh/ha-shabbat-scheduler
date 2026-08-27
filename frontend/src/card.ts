@@ -494,6 +494,31 @@ export class ShabbatSchedulerCard extends LitElement {
     mode: 'extend' | 'overwrite',
     alreadyCleared = false,
   ): Promise<CloneReport> {
+    // Snapshot the source rules BEFORE the delete loop below runs -
+    // deliberately NOT re-read from `this._state` afterwards.
+    //
+    // Overwrite mode deletes whatever currently sits at
+    // `{targetProfile, targetDay}` - and when the target IS the source day
+    // (the clone dialog's own default target, reached with zero picker
+    // interaction), that delete removes the very rules this call exists to
+    // clone FROM. The websocket state push for each delete arrives
+    // synchronously, before `_send`'s own promise even resolves
+    // (`ws_delete` -> `store.async_delete` -> `_notify_change` ->
+    // `async_dispatcher_send` -> `connection.send_message`, all before
+    // `connection.send_result`), so by the time a re-read of
+    // `this._state.rules` would have happened below, the source is already
+    // gone. The create loop would then find no source rules, `landed`
+    // would stay `[]`, and the caller would report a clean success while
+    // the source rules were permanently deleted and nothing replaced them.
+    //
+    // Capturing the snapshot here, before any delete is even sent, means
+    // the create loop always has the real source content to clone from,
+    // regardless of what the delete loop does to `this._state` in the
+    // meantime.
+    const sourceRules = sourceRuleIds
+      .map((id) => (this._state?.rules ?? []).find((rule) => rule.id === id))
+      .filter((rule): rule is RuleData => rule !== undefined);
+
     let cleared = alreadyCleared;
     if (mode === 'overwrite' && !cleared) {
       const toDelete = (this._state?.rules ?? []).filter(
@@ -514,7 +539,6 @@ export class ShabbatSchedulerCard extends LitElement {
       cleared = true;
     }
 
-    const sourceRules = this._state?.rules ?? [];
     const landed: string[] = [];
     for (const sourceId of sourceRuleIds) {
       const source = sourceRules.find((rule) => rule.id === sourceId);
@@ -810,6 +834,7 @@ export class ShabbatSchedulerCard extends LitElement {
           ? html`<shabbat-clone-dialog
               .source=${this._cloneSource}
               .rules=${this._state.rules}
+              .canWrite=${this._canWrite}
               .busy=${this._busy}
               .error=${this._dialogError}
               .landed=${this._cloneLanded}

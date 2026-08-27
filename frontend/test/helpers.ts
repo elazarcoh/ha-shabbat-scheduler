@@ -10,7 +10,7 @@
  * close.
  */
 import { vi } from 'vitest';
-import type { CardState } from '../src/types';
+import type { CardState, RuleData } from '../src/types';
 
 export type Unsubscribe = () => Promise<void>;
 export type SubscribeFn = (
@@ -43,6 +43,85 @@ export function fakeHass(over: Record<string, unknown> = {}) {
     ...over,
   };
   return { hass, send: (s: CardState) => push!(s), unsubscribe, callService, callWS };
+}
+
+/**
+ * A fake `hass` whose `callWS` genuinely mutates its own rule list and
+ * pushes a fresh state after every `rules/create`/`rules/delete` - unlike
+ * `fakeHass` above, whose `callWS` is a bare mock that never touches
+ * `_state` at all.
+ *
+ * That gap is right for a test that only cares what got SENT, and it is
+ * exactly the blind spot that let the critical overwrite-onto-self clone
+ * bug hide behind a fully green suite: production pushes a new `_state`
+ * mid-operation (`ws_delete` -> `store.async_delete` -> `_notify_change`
+ * -> the subscribed push, all before `send_result`), so a card function
+ * that re-reads `this._state` between two awaited `callWS` calls sees
+ * ITS OWN prior call's effect - but `fakeHass`'s `_state` stays frozen for
+ * the whole test, so that re-read always finds the stale, still-correct
+ * copy no matter what the function under test actually did. Any test that
+ * needs the card to observe its own in-flight side effects - overwrite
+ * mode's delete-then-recreate chief among them - needs THIS helper
+ * instead.
+ */
+export function fakeServerHass(initialRules: RuleData[]) {
+  let rules = [...initialRules];
+  let nextId = 0;
+  let push: ((s: CardState) => void) | null = null;
+
+  const buildState = (): CardState => ({
+    defaults: {}, rules: [...rules], enabled: false, warnings: [],
+    master_entity_id: 'switch.master',
+    block: {
+      length: 1, candle_lighting: '2026-08-14T18:44:00+03:00',
+      havdalah: '2026-08-15T20:01:00+03:00',
+      dates: { erev: '2026-08-14', '1': '2026-08-15' },
+    },
+  }) as CardState;
+
+  const pushState = () => { if (push) push(buildState()); };
+
+  const callWS = vi.fn(async (message: any) => {
+    if (message.type === 'shabbat_scheduler/rules/create') {
+      nextId += 1;
+      const id = `srv-${nextId}`;
+      const r = message.rule;
+      const created: RuleData = {
+        id,
+        day: r.day, profile: r.profile, time: r.time, action: r.action,
+        target: r.target ?? {}, data: r.data ?? {},
+        condition: r.condition ?? [],
+        replay: r.replay ?? { enabled: false },
+        name: r.name ?? null, icon: r.icon ?? null, color: r.color ?? null,
+        enabled: r.enabled ?? true, last_outcome: null,
+      };
+      rules = [...rules, created];
+      pushState();
+      return { rule_id: id };
+    }
+    if (message.type === 'shabbat_scheduler/rules/delete') {
+      rules = rules.filter((rule) => rule.id !== message.rule_id);
+      pushState();
+      return {};
+    }
+    return {};
+  });
+
+  const hass = {
+    locale: { language: 'en' },
+    user: { is_admin: true },
+    callService: vi.fn(async () => {}),
+    callWS,
+    connection: {
+      subscribeMessage: vi.fn<SubscribeFn>(async (cb) => {
+        push = cb;
+        pushState();
+        return async () => {};
+      }),
+    },
+  };
+
+  return { hass, callWS, rules: () => rules };
 }
 
 /** Attaches a card without waiting for anything - for mid-flight probes. */

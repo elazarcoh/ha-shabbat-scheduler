@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import '../src/card';
 import type { CardState, RuleData } from '../src/types';
-import { fakeHass, flush, mount } from './helpers';
+import { fakeHass, fakeServerHass, flush, mount } from './helpers';
 
 const rule = (over: Partial<RuleData> = {}): RuleData => ({
   id: 'a', profile: 1, day: 'erev', time: '11:00:00',
@@ -454,5 +454,114 @@ describe('clone dialog wiring in card.ts', () => {
     // Retry fully succeeded - the dialog closes, confirming the fix
     // holds end to end, not just that the delete call was skipped.
     expect(el.shadowRoot!.querySelector('shabbat-clone-dialog')).toBeNull();
+  });
+});
+
+describe('CRITICAL: overwrite-clone onto the source itself does not destroy the source', () => {
+  // Regression tests for a data-loss bug: `_cloneRules` used to delete the
+  // target day's rules FIRST and only THEN re-read `this._state.rules` to
+  // find the source rules to clone from. When target === source (the
+  // clone dialog's own DEFAULT target, reached with zero picker
+  // interaction), the delete step removes the very rules being cloned
+  // FROM, the server's websocket push for that delete lands before this
+  // function's own `await` resolves, and the create loop then finds no
+  // source rules left - reporting a clean success while the source is
+  // gone and nothing replaced it.
+  //
+  // `fakeHass` cannot reproduce this: its `callWS` never mutates or
+  // pushes `_state`, so the source is always still "found" in every other
+  // test in this file even though production would already have deleted
+  // it by then. `fakeServerHass` closes that gap - it is a real, if
+  // minimal, server: creates and deletes genuinely change its rule list
+  // and push a fresh state, in the same order the real backend does.
+
+  it('day-scope overwrite clone onto the SAME day preserves the source rules by content', async () => {
+    const seed = [
+      rule({ id: 'a', profile: 1, day: 'erev', time: '11:00:00', name: 'Lights on' }),
+      rule({ id: 'b', profile: 1, day: 'erev', time: '12:00:00', name: 'AC on' }),
+    ];
+    const { hass, rules } = fakeServerHass(seed);
+    const el = await mount(hass);
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-day-group')!.dispatchEvent(
+      new CustomEvent('clone-open', {
+        detail: { scope: 'day', profile: 1, day: 'erev' }, bubbles: true, composed: true,
+      }),
+    );
+    await el.updateComplete;
+
+    // The dialog's own default target IS the source - overwrite-onto-self
+    // with zero picker interaction, exactly how the bug was reproduced
+    // against the real dev container.
+    const dialog = el.shadowRoot!.querySelector('shabbat-clone-dialog') as any;
+    dialog.dispatchEvent(new CustomEvent('dialog-clone-confirm', {
+      detail: {
+        sourceRuleIds: ['a', 'b'], sourceScope: 'day', sourceProfile: 1,
+        targetProfile: 1, targetDay: 'erev', mode: 'overwrite',
+      },
+    }));
+    await flush();
+    await el.updateComplete;
+
+    // Reports genuine success, not a false one: `landed` names the two
+    // rules that were actually re-created, proving the create loop worked
+    // from the pre-delete snapshot rather than finding nothing.
+    expect((el as any)._cloneLanded).toEqual(['a', 'b']);
+    expect((el as any)._cloneFailed).toEqual([]);
+    expect(el.shadowRoot!.querySelector('shabbat-clone-dialog')).toBeNull();
+
+    // The real proof: the day still has its two rules, by content. Their
+    // ids are legitimately new (the old ones were deleted then
+    // recreated) - that is expected, not a defect.
+    const finalDay = rules().filter((r) => r.profile === 1 && r.day === 'erev');
+    expect(finalDay).toHaveLength(2);
+    expect(finalDay.map((r) => r.id)).not.toContain('a');
+    expect(finalDay.map((r) => r.id)).not.toContain('b');
+    expect(finalDay.map((r) => r.time).sort()).toEqual(['11:00:00', '12:00:00']);
+    expect(finalDay.map((r) => r.name).sort()).toEqual(['AC on', 'Lights on']);
+  });
+
+  it('profile-scope overwrite clone onto the SAME profile preserves every day\'s rules by content', async () => {
+    const seed = [
+      rule({ id: 'erev-a', profile: 1, day: 'erev', time: '11:00:00', name: 'Erev thing' }),
+      rule({ id: 'day1-a', profile: 1, day: '1', time: '09:00:00', name: 'Day 1 thing' }),
+    ];
+    const { hass, rules } = fakeServerHass(seed);
+    const el = await mount(hass);
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-block-header')!.dispatchEvent(
+      new CustomEvent('clone-open', {
+        detail: { scope: 'profile', profile: 1 }, bubbles: true, composed: true,
+      }),
+    );
+    await el.updateComplete;
+
+    // Again, the dialog's own default target profile IS the source
+    // profile - overwrite-onto-self with zero picker interaction.
+    const dialog = el.shadowRoot!.querySelector('shabbat-clone-dialog') as any;
+    dialog.dispatchEvent(new CustomEvent('dialog-clone-confirm', {
+      detail: {
+        sourceRuleIds: ['erev-a', 'day1-a'], sourceScope: 'profile', sourceProfile: 1,
+        targetProfile: 1, mode: 'overwrite',
+      },
+    }));
+    await flush();
+    await el.updateComplete;
+
+    expect((el as any)._cloneLanded!.slice().sort()).toEqual(['day1-a', 'erev-a']);
+    expect((el as any)._cloneFailed).toEqual([]);
+    expect(el.shadowRoot!.querySelector('shabbat-clone-dialog')).toBeNull();
+
+    const finalRules = rules().filter((r) => r.profile === 1);
+    expect(finalRules).toHaveLength(2);
+    expect(finalRules.map((r) => r.id)).not.toContain('erev-a');
+    expect(finalRules.map((r) => r.id)).not.toContain('day1-a');
+    expect(finalRules.map((r) => r.name).sort()).toEqual(['Day 1 thing', 'Erev thing']);
+    const erevFinal = finalRules.find((r) => r.day === 'erev')!;
+    const day1Final = finalRules.find((r) => r.day === '1')!;
+    expect(erevFinal.time).toBe('11:00:00');
+    expect(day1Final.time).toBe('09:00:00');
   });
 });

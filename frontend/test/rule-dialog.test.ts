@@ -296,17 +296,6 @@ describe('shabbat-rule-dialog', () => {
     expect(form.replay).toEqual(rule.replay);
   });
 
-  it('says so when a rule could not be migrated, instead of showing it as normal', async () => {
-    const el = await render({
-      rule: {
-        ...existing,
-        migration_error: 'no v2 target could be derived from the v1 devices',
-      },
-    });
-    expect(el.shadowRoot!.textContent).toContain('could not be converted');
-    expect(el.shadowRoot!.textContent).toContain('no v2 target could be derived');
-  });
-
   // ---- the real editors, replacing the read-only block ----
 
   const editors = (el: any) => ({

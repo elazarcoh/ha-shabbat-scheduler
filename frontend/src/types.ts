@@ -24,15 +24,6 @@ export interface RuleData {
   enabled: boolean;
   color: string | null;
   /**
-   * Server-owned and read-only. Set by the v1 -> v2 migration on a rule it
-   * could not convert, so the card can say WHICH rule needs attention
-   * rather than showing a plausible-looking rule that will never fire.
-   * `rule_schema.py` drops these on the way back in - a client cannot set
-   * them, and echoing them back is not an error.
-   */
-  migration_error?: string | null;
-  migration_source?: Record<string, unknown> | null;
-  /**
    * What happened the last time this rule came due. `null` for a rule that
    * never has.
    *

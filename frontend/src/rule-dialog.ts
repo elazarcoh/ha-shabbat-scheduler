@@ -110,12 +110,6 @@ export class ShabbatRuleDialog extends LitElement {
       font-size: 0.9em;
     }
     .note { color: var(--secondary-text-color, #666); font-size: 0.85em; }
-    .migration {
-      color: var(--error-color, #d64545);
-      margin-block: 8px;
-      font-size: 0.9em;
-      overflow-wrap: anywhere;
-    }
     /* The wrapper around the advanced fields is load-bearing under this
        repo's pinned lit-html + happy-dom: a template whose root holds
        several top-level expressions renders NONE of them. Same constraint
@@ -346,11 +340,6 @@ export class ShabbatRuleDialog extends LitElement {
           ${this.canWrite
             ? nothing
             : html`<div class="note">${t(this.language, 'read_only')}</div>`}
-          ${this.rule?.migration_error
-            ? html`<div class="migration">
-                ${t(this.language, 'migration_error')} ${this.rule.migration_error}
-              </div>`
-            : nothing}
           ${this.error !== null
             ? html`<div class="error">${this.error}</div>`
             : nothing}

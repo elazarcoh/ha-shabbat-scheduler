@@ -37,8 +37,6 @@
         "detail": "22:10:00 late, window 1:30:00",
         "outcome": "skipped_stale"
       },
-      "migration_error": null,
-      "migration_source": null,
       "name": "Salon AC",
       "profile": 1,
       "replay": {
@@ -74,8 +72,6 @@
         "detail": "replay is switched off for this rule",
         "outcome": "skipped_no_replay"
       },
-      "migration_error": null,
-      "migration_source": null,
       "name": null,
       "profile": 1,
       "replay": {
@@ -102,8 +98,6 @@
         "detail": "replay is switched off for this rule",
         "outcome": "skipped_no_replay"
       },
-      "migration_error": null,
-      "migration_source": null,
       "name": null,
       "profile": 1,
       "replay": {
@@ -127,8 +121,6 @@
       "icon": null,
       "id": "day1-disabled",
       "last_outcome": null,
-      "migration_error": null,
-      "migration_source": null,
       "name": null,
       "profile": 1,
       "replay": {
@@ -147,8 +139,6 @@
       "icon": null,
       "id": "p3-day2-on",
       "last_outcome": null,
-      "migration_error": null,
-      "migration_source": null,
       "name": null,
       "profile": 3,
       "replay": {
@@ -171,8 +161,6 @@
       "icon": null,
       "id": "p3-day2-off",
       "last_outcome": null,
-      "migration_error": null,
-      "migration_source": null,
       "name": null,
       "profile": 3,
       "replay": {

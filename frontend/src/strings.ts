@@ -73,6 +73,9 @@ const STRINGS = {
     // wording already present in `detail`.
     outcome_no_such_entity: 'no such entity: ',
     outcome_reached_nothing: 'reached no entity that exists',
+    run_now_button: 'Run now',
+    run_now_simulate: 'Simulate',
+    run_now_real: 'Run for real',
   },
   he: {
     erev: 'ערב',
@@ -127,6 +130,9 @@ const STRINGS = {
     outcome_unknown: 'הסתיים ללא תוצאה מדווחת',
     outcome_no_such_entity: 'אין ישות כזו: ',
     outcome_reached_nothing: 'לא הגיע לאף ישות קיימת',
+    run_now_button: 'הרצה עכשיו',
+    run_now_simulate: 'סימולציה',
+    run_now_real: 'הרצה אמיתית',
   },
 } as const;
 

@@ -348,6 +348,46 @@ export function formatOutcomeAt(at: string, language?: string): string {
 }
 
 /**
+ * Mirrors const.py's `OUTCOME_PRECEDENCE` - see that file for why this
+ * exact order matters and why the two must never drift apart.
+ */
+const OUTCOME_PRECEDENCE = [
+  'failed', 'blocked', 'skipped_stale', 'skipped_no_replay', 'would_call', 'called',
+] as const;
+
+/**
+ * One rule's per-call results (from `rules/run_now`/`rules/run_day`, never
+ * durable - these calls may have been simulated) folded into the single
+ * verdict `formatOutcome`/`outcomeIsBad` expect, mirroring
+ * `outcome_from_results` (engine.py) client-side for exactly this display
+ * purpose. `at` is the moment this response arrived, not a server-recorded
+ * timestamp - a simulated run is never durably recorded, so there is no
+ * server `at` to read.
+ */
+export function foldCallResults(
+  results: Record<string, unknown>[], at: string,
+): LastOutcome {
+  if (results.length === 0) {
+    return { outcome: 'unknown', at, detail: null };
+  }
+  const outcomes = new Set(results.map((r) => String(r.outcome ?? '')));
+  const outcome = OUTCOME_PRECEDENCE.find((candidate) => outcomes.has(candidate)) ?? 'unknown';
+  const withDetail = results.find(
+    (r) => r.outcome === outcome && (r.error || r.reason),
+  );
+  const unknownTargets = Array.from(new Set(
+    results.flatMap((r) => (r.unknown_targets as string[] | undefined) ?? []),
+  ));
+  return {
+    outcome,
+    at,
+    detail: (withDetail?.error ?? withDetail?.reason ?? null) as string | null,
+    unknown_targets: unknownTargets.length ? unknownTargets : undefined,
+    no_live_targets: results.some((r) => r.no_live_targets === true) || undefined,
+  };
+}
+
+/**
  * Every field the form carries, including the four it displays read-only.
  *
  * `target`, `data`, `condition` and `replay` are in the diff on purpose

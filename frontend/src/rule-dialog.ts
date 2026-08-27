@@ -1,6 +1,6 @@
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { ruleToForm } from './format';
+import { foldCallResults, formatOutcome, ruleToForm } from './format';
 import { t } from './strings';
 import type { Defaults, Hass, RuleData, RuleFormState } from './types';
 import './condition-editor';
@@ -13,6 +13,19 @@ const EMPTY_FORM: RuleFormState = {
   replay: { enabled: false }, name: null, icon: null, color: null,
   enabled: true,
 };
+
+/**
+ * The run-now result folded to the single line `formatOutcome` renders,
+ * language-aware - see the note on `_emitRunNow`'s caller in `render` for
+ * why this cannot simply call `formatOutcome` with no language argument.
+ */
+function foldRunNowResults(
+  result: { results: unknown[]; at: string },
+  language?: string,
+): string[] {
+  const outcome = foldCallResults(result.results as Record<string, unknown>[], result.at);
+  return [formatOutcome(outcome, language)];
+}
 
 @customElement('shabbat-rule-dialog')
 export class ShabbatRuleDialog extends LitElement {
@@ -33,10 +46,14 @@ export class ShabbatRuleDialog extends LitElement {
   @property({ type: Boolean }) busy = false;
   @property() error: string | null = null;
   @property() language = 'en';
+  /** The last `rules/run_now` result, keyed to the rule it belongs to. */
+  @property({ attribute: false }) runNowResult:
+    { ruleId: string; results: unknown[]; at: string } | null = null;
 
   @state() private _form: RuleFormState = EMPTY_FORM;
   @state() private _advanced = false;
   @state() private _conditionError = false;
+  @state() private _runConfirmOpen = false;
   private _seeded: string | null = null;
 
   static override styles = css`
@@ -139,6 +156,7 @@ export class ShabbatRuleDialog extends LitElement {
         this._form = { ...EMPTY_FORM, day: this.day };
       }
       this._advanced = false;
+      this._runConfirmOpen = false;
     }
   }
 
@@ -265,6 +283,13 @@ export class ShabbatRuleDialog extends LitElement {
     }
     this._conditionError = false;
     this._emit('dialog-save');
+  }
+
+  private _emitRunNow(simulate: boolean) {
+    this._runConfirmOpen = false;
+    this.dispatchEvent(
+      new CustomEvent('dialog-run-now', { detail: { rule: this.rule, simulate } }),
+    );
   }
 
   override render() {
@@ -394,6 +419,15 @@ export class ShabbatRuleDialog extends LitElement {
                   ${t(this.language, 'duplicate')}
                 </button>`
               : nothing}
+            ${this.canWrite && editing
+              ? html`<button
+                  class="run-now"
+                  ?disabled=${this.busy}
+                  @click=${() => { this._runConfirmOpen = !this._runConfirmOpen; }}
+                >
+                  ▶ ${t(this.language, 'run_now_button')}
+                </button>`
+              : nothing}
             ${this.canWrite
               ? html`<button
                   class="save"
@@ -404,6 +438,25 @@ export class ShabbatRuleDialog extends LitElement {
                 </button>`
               : nothing}
           </div>
+          ${this._runConfirmOpen
+            ? html`<div class="run-confirm">
+                <button
+                  class="run-simulate"
+                  @click=${() => this._emitRunNow(true)}
+                >${t(this.language, 'run_now_simulate')}</button>
+                <button
+                  class="run-real"
+                  @click=${() => this._emitRunNow(false)}
+                >${t(this.language, 'run_now_real')}</button>
+              </div>`
+            : nothing}
+          ${this.rule !== null && this.runNowResult?.ruleId === this.rule.id
+            ? html`<div class="run-now-result">
+                ${foldRunNowResults(this.runNowResult, this.language).map(
+                  (line) => html`<div>${line}</div>`,
+                )}
+              </div>`
+            : nothing}
         </div>
       </div>
     `;

@@ -554,3 +554,57 @@ describe('shabbat-rule-dialog', () => {
     expect(editors(el).service.action).toBe('switch.turn_on');
   });
 });
+
+describe('Run Now', () => {
+  it('offers Run Now only for an existing rule and a writer', async () => {
+    expect((await render()).shadowRoot!.querySelector('.run-now')).not.toBeNull();
+    expect((await render({ rule: null })).shadowRoot!.querySelector('.run-now')).toBeNull();
+    expect((await render({ canWrite: false })).shadowRoot!.querySelector('.run-now')).toBeNull();
+  });
+
+  it('opens an inline confirm with Simulate and Run for real, not a dialog', async () => {
+    const el = await render();
+    (el.shadowRoot!.querySelector('.run-now') as HTMLElement).click();
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.run-simulate')).not.toBeNull();
+    expect(el.shadowRoot!.querySelector('.run-real')).not.toBeNull();
+  });
+
+  it('dispatches dialog-run-now with simulate true from Simulate', async () => {
+    const el = await render();
+    const listener = vi.fn();
+    el.addEventListener('dialog-run-now', listener);
+    (el.shadowRoot!.querySelector('.run-now') as HTMLElement).click();
+    await el.updateComplete;
+    (el.shadowRoot!.querySelector('.run-simulate') as HTMLElement).click();
+    expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({
+      rule: existing, simulate: true,
+    });
+  });
+
+  it('dispatches dialog-run-now with simulate false from Run for real', async () => {
+    const el = await render();
+    const listener = vi.fn();
+    el.addEventListener('dialog-run-now', listener);
+    (el.shadowRoot!.querySelector('.run-now') as HTMLElement).click();
+    await el.updateComplete;
+    (el.shadowRoot!.querySelector('.run-real') as HTMLElement).click();
+    expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({
+      rule: existing, simulate: false,
+    });
+  });
+
+  it('renders the result inline using formatOutcome', async () => {
+    const el = await render({
+      runNowResult: { ruleId: 'r1', results: [{ outcome: 'would_call' }], at: '2026-08-25T18:00:00Z' },
+    });
+    expect(el.shadowRoot!.textContent).toContain('Would have fired');
+  });
+
+  it('does not render a result belonging to a different rule', async () => {
+    const el = await render({
+      runNowResult: { ruleId: 'someone-else', results: [{ outcome: 'would_call' }], at: '2026-08-25T18:00:00Z' },
+    });
+    expect(el.shadowRoot!.textContent).not.toContain('Would have fired');
+  });
+});

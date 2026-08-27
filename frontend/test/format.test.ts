@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildGroups,
   describeTarget,
+  foldCallResults,
   formatWarning,
   isPreview,
   ruleBrief,
@@ -403,5 +404,46 @@ describe('ruleToForm / formToCreate / formToChanges', () => {
     const payload = formToCreate({ ...ruleToForm(base), enabled: false }, 1);
     expect(payload.enabled).toBe(false);
     expect(typeof payload.enabled).toBe('boolean');
+  });
+});
+
+describe('foldCallResults', () => {
+  it('reports the single result verbatim', () => {
+    const result = foldCallResults(
+      [{ outcome: 'would_call' }], '2026-08-25T18:00:00Z',
+    );
+    expect(result).toEqual({ outcome: 'would_call', at: '2026-08-25T18:00:00Z', detail: null });
+  });
+
+  it('picks the worst outcome across multiple calls, precedence-ordered', () => {
+    const result = foldCallResults(
+      [{ outcome: 'called' }, { outcome: 'failed', error: 'boom' }],
+      '2026-08-25T18:00:00Z',
+    );
+    expect(result.outcome).toBe('failed');
+    expect(result.detail).toBe('boom');
+  });
+
+  it('unions unknown_targets across calls', () => {
+    const result = foldCallResults(
+      [
+        { outcome: 'called', unknown_targets: ['a.x'] },
+        { outcome: 'called', unknown_targets: ['a.y'] },
+      ],
+      '2026-08-25T18:00:00Z',
+    );
+    expect(result.unknown_targets).toEqual(['a.x', 'a.y']);
+  });
+
+  it('reports unknown for an empty results list rather than throwing', () => {
+    expect(foldCallResults([], '2026-08-25T18:00:00Z').outcome).toBe('unknown');
+  });
+
+  it('reads reason as detail for a blocked result, which has no error key', () => {
+    const result = foldCallResults(
+      [{ outcome: 'blocked', reason: 'condition 1 of 1 not met' }],
+      '2026-08-25T18:00:00Z',
+    );
+    expect(result.detail).toBe('condition 1 of 1 not met');
   });
 });

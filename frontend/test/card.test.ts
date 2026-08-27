@@ -1131,4 +1131,28 @@ describe('authoring', () => {
     expect(header.shadowRoot!.querySelector('.dry-run')).toBeNull();
     expect('dryRun' in header).toBe(false);
   });
+
+  it('sends run_now and shows the inline result, without closing the dialog', async () => {
+    const { hass, send } = fakeHass();
+    hass.callWS = vi.fn(async () => ({ results: [{ outcome: 'would_call' }] }));
+    const el = await mount(hass);
+    send(withRules());
+    el._editing = withRules().rules[0];
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-rule-dialog')!.dispatchEvent(
+      new CustomEvent('dialog-run-now', {
+        detail: { rule: withRules().rules[0], simulate: true },
+      }),
+    );
+    await flush();
+    await el.updateComplete;
+
+    expect(hass.callWS).toHaveBeenCalledWith({
+      type: 'shabbat_scheduler/rules/run_now',
+      rule_id: withRules().rules[0].id,
+      simulate: true,
+    });
+    expect(el.shadowRoot!.querySelector('shabbat-rule-dialog')).not.toBeNull();
+  });
 });

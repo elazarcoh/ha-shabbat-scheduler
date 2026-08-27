@@ -61,6 +61,8 @@ export class ShabbatSchedulerCard extends LitElement {
   @state() private _toggleErrors: Record<string, string> = {};
   @state() private _busy = false;
   @state() private _duplicateSeed: RuleFormState | null = null;
+  @state() private _runNowResult:
+    { ruleId: string; results: unknown[]; at: string } | null = null;
 
   private _hass: any;
   private _unsubscribe: (() => Promise<void>) | null = null;
@@ -288,6 +290,7 @@ export class ShabbatSchedulerCard extends LitElement {
     this._duplicateSeed = null;
     this._defaultsOpen = false;
     this._dialogError = null;
+    this._runNowResult = null;
   };
 
   private _onRuleOpen = (event: Event) => {
@@ -295,6 +298,7 @@ export class ShabbatSchedulerCard extends LitElement {
     this._creatingDay = null;
     this._duplicateSeed = null;
     this._dialogError = null;
+    this._runNowResult = null;
   };
 
   /**
@@ -334,6 +338,7 @@ export class ShabbatSchedulerCard extends LitElement {
     this._editing = null;
     this._duplicateSeed = null;
     this._dialogError = null;
+    this._runNowResult = null;
   };
 
   private _onSave = async (event: Event) => {
@@ -416,6 +421,30 @@ export class ShabbatSchedulerCard extends LitElement {
       defaults,
     })) {
       this._closeDialogs();
+    }
+  };
+
+  /**
+   * Not `_send`: this write has no dialog-blocking `_busy` semantics of
+   * its own and must not close the dialog or clear `_dialogError` on
+   * success - it is an inline result, not a form save.
+   */
+  private _onRunNow = async (event: Event) => {
+    const { rule, simulate } = (event as CustomEvent).detail as {
+      rule: RuleData; simulate: boolean;
+    };
+    try {
+      const response = await this._hass.callWS({
+        type: 'shabbat_scheduler/rules/run_now',
+        rule_id: rule.id,
+        simulate,
+      }) as { results: unknown[] };
+      this._runNowResult = {
+        ruleId: rule.id, results: response.results, at: new Date().toISOString(),
+      };
+    } catch (err) {
+      const detail = err as { message?: string } | null;
+      this._dialogError = detail?.message ?? String(err);
     }
   };
 
@@ -509,9 +538,11 @@ export class ShabbatSchedulerCard extends LitElement {
               .busy=${this._busy}
               .error=${this._dialogError}
               .language=${this._language}
+              .runNowResult=${this._runNowResult}
               @dialog-save=${this._onSave}
               @dialog-delete=${this._onDelete}
               @dialog-duplicate=${this._onDuplicate}
+              @dialog-run-now=${this._onRunNow}
               @dialog-close=${this._closeDialogs}
             ></shabbat-rule-dialog>`
           : nothing}

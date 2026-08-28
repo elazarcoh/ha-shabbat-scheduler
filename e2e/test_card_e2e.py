@@ -106,38 +106,58 @@ def _set_time(dialog, hh_mm_ss):
     pierce all of that shadow DOM, so a flat `input` descendant locator
     reaches all three directly.
 
-    Each field only commits a `value-changed` on blur, reading the
-    WIDGET'S OWN internal hours/minutes/seconds properties at that moment -
-    not the three `<input>` elements' live DOM values directly. Those
-    internal properties are themselves only updated by each field's own
-    input handler, which is not guaranteed to have finished (a Lit
-    property update is a microtask, not synchronous with the DOM `input`
-    event) before a DIFFERENT field's fill-triggered blur reads them.
+    Each field only commits a `value-changed` on blur, and the value it
+    carries can be wrong in a way invisible from outside the widget: two
+    separate diagnostic dumps (2026-08-28, CI only, never locally) showed
+    the three `<input>` elements correctly holding e.g. ['12','15','00']
+    AND the dialog's own bound `_form.time` - what `_onSave` actually
+    reads - already wrong (`00:15:00`) at that exact moment, before Save
+    was even clicked. So this is not a timing race this function's own
+    interaction pattern can out-wait or reorder away by filling fields in
+    a different sequence or adding delays (both tried; neither changed
+    the outcome even once across 9+ consecutive CI runs,
+    2026-08-27/2026-08-28) - the widget's OWN internal state genuinely
+    diverges from its rendered inputs on whatever browser build GitHub
+    Actions' runners use, for reasons this file has no way to fix at the
+    source (`ha-base-time-input` is Home Assistant's own element, not
+    this repo's).
 
-    Filling all three fields back-to-back and blurring only the last one
-    (this function's previous approach, and before that, relying on the
-    caller's next click to supply that blur) both assumed "by the time
-    the last field blurs, the widget has already absorbed the first two" -
-    true often enough to pass locally every single time, but a genuine
-    race that lost on GitHub Actions' runners in 9 consecutive CI runs
-    (2026-08-27 through 2026-08-28): a live dump of the actual saved rule
-    on failure showed hours silently landing on "0" while minutes/seconds
-    were correct (e.g. asking for "12:15:00" produced a saved "00:15:00")
-    - the hour field's blur had fired and been read by the SECOND field's
-    blur before the widget's own hours property had caught up, exactly the
-    "stale combination" this docstring used to say was harmless.
-
-    Fixed by blurring (via Tab) and giving the widget a moment to settle
-    after EACH field, not just the last - so every field's own value is
-    fully absorbed before the next field's fill can possibly race it.
+    So this function no longer trusts a single fill-and-blur pass at all:
+    it reads the dialog's bound `_form.time` back after filling and, if
+    it does not match, re-drives the HOUR field specifically (the one
+    both dumps showed reverting to 0; minutes/seconds were correct both
+    times) and re-checks, up to a few attempts, raising a clear assertion
+    naming what was asked for and what actually stuck rather than letting
+    a caller's own later assertion fail confusingly far from the cause.
     """
     hour, minute, second = hh_mm_ss.split(":")
     inputs = dialog.locator("ha-selector.time input")
     page = dialog.page
-    for index, value in enumerate((hour, minute, second)):
-        inputs.nth(index).fill(value)
-        inputs.nth(index).press("Tab")
+
+    def _fill_all() -> None:
+        for index, value in enumerate((hour, minute, second)):
+            inputs.nth(index).fill(value)
+            inputs.nth(index).press("Tab")
+            page.wait_for_timeout(100)
+
+    def _committed() -> str | None:
+        return dialog.evaluate("el => el._form && el._form.time")
+
+    _fill_all()
+    for _ in range(4):  # 1 initial fill above + up to 4 hour-only retries
+        if _committed() == hh_mm_ss:
+            return
+        # Hour is the field both prior diagnostics showed reverting -
+        # re-drive it alone rather than redoing all three, which would
+        # only reintroduce the same race for minute/second.
+        inputs.nth(0).fill(hour)
+        inputs.nth(0).press("Tab")
         page.wait_for_timeout(100)
+
+    raise AssertionError(
+        f"time field would not commit to {hh_mm_ss!r}; "
+        f"dialog._form.time is {_committed()!r} after retries"
+    )
 
 
 def test_the_card_renders_the_timeline(page, base_url):
@@ -258,40 +278,18 @@ def test_editing_a_rule_redraws_the_timeline(page, base_url):
         dialog.wait_for(state="attached", timeout=10_000)
 
         _set_time(dialog, "12:15:00")
-        print(
-            "DIAG2 inputs right after _set_time:",
-            [dialog.locator("ha-selector.time input").nth(i).input_value()
-             for i in range(3)],
-        )
-        print(
-            "DIAG3 dialog._form.time:",
-            dialog.evaluate("el => el._form && el._form.time"),
-        )
         dialog.locator("button.save").click()
 
         # No optimistic update: the redraw only happens once the server has
         # accepted and pushed the new state back over the SIGNAL_RULES_CHANGED
-        # subscription. The real cause of this timing out on CI (2026-08-27
-        # through 2026-08-28, 9 consecutive runs, never locally) turned out
-        # to live in `_set_time` itself, not here - see its docstring: the
-        # rule that got saved genuinely had the wrong hour ("00:15:00"
-        # instead of "12:15:00"), so no amount of waiting here was ever
-        # going to find "12:15".
-        try:
-            card.locator("shabbat-rule-row .time").filter(
-                has_text="12:15"
-            ).first.wait_for(timeout=15_000)
-        except Exception:
-            print("DIAG2 all row times now:", card.locator("shabbat-rule-row .time").all_inner_texts())
-            print("DIAG2 dialog still attached:", dialog.count() > 0)
-            if dialog.count() > 0:
-                print(
-                    "DIAG2 dialog time inputs now:",
-                    [dialog.locator("ha-selector.time input").nth(i).input_value()
-                     for i in range(3)],
-                )
-                print("DIAG2 error banner present:", dialog.locator(".error").count() > 0)
-            raise
+        # subscription. `_set_time` itself now guarantees the dialog's bound
+        # form actually holds "12:15:00" before returning (see its
+        # docstring for why that needed guaranteeing at all) - so this wait
+        # is only for the real websocket round trip, not a symptom of the
+        # save carrying the wrong value.
+        card.locator("shabbat-rule-row .time").filter(has_text="12:15").first.wait_for(
+            timeout=15_000
+        )
         after = card.locator("shabbat-rule-row .time").all_inner_texts()
         assert "12:15" in after
         assert "11:00" not in after

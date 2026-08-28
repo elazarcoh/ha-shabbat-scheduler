@@ -263,6 +263,10 @@ def test_editing_a_rule_redraws_the_timeline(page, base_url):
             [dialog.locator("ha-selector.time input").nth(i).input_value()
              for i in range(3)],
         )
+        print(
+            "DIAG3 dialog._form.time:",
+            dialog.evaluate("el => el._form && el._form.time"),
+        )
         dialog.locator("button.save").click()
 
         # No optimistic update: the redraw only happens once the server has

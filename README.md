@@ -4,11 +4,17 @@
 
 # Shabbat Scheduler
 
-*Alpha. 897 tests passing (549 Python + 15 end-to-end, 333 frontend).*
+*Alpha. 790 tests passing (443 Python + 15 end-to-end, 332 frontend).*
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge)](https://github.com/hacs/integration)
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=elazarcoh&repository=ha-shabbat-scheduler&category=integration)
 [![Add Integration to your Home Assistant instance.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=shabbat_scheduler)
+
+[![CI](https://github.com/elazarcoh/ha-shabbat-scheduler/actions/workflows/ci.yml/badge.svg)](https://github.com/elazarcoh/ha-shabbat-scheduler/actions/workflows/ci.yml)
+[![e2e](https://github.com/elazarcoh/ha-shabbat-scheduler/actions/workflows/e2e.yml/badge.svg)](https://github.com/elazarcoh/ha-shabbat-scheduler/actions/workflows/e2e.yml)
+[![License: MIT](https://img.shields.io/github/license/elazarcoh/ha-shabbat-scheduler)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/elazarcoh/ha-shabbat-scheduler)](https://github.com/elazarcoh/ha-shabbat-scheduler/commits/master)
+[![Open issues](https://img.shields.io/github/issues/elazarcoh/ha-shabbat-scheduler)](https://github.com/elazarcoh/ha-shabbat-scheduler/issues)
 
 Shabbat Scheduler schedules Home Assistant to do anything — turn a light
 on, run a scene, send a notification, adjust a thermostat — at specific

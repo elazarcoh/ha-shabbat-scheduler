@@ -246,22 +246,39 @@ def test_editing_a_rule_redraws_the_timeline(page, base_url):
         card.locator("shabbat-rule-row").filter(has_text="11:00").first.click()
         dialog.wait_for(state="attached", timeout=10_000)
 
+        time_inputs = dialog.locator("ha-selector.time input")
+        filled_values = [time_inputs.nth(i).input_value() for i in range(3)]
         _set_time(dialog, "12:15:00")
+        committed_values = [time_inputs.nth(i).input_value() for i in range(3)]
         dialog.locator("button.save").click()
 
-        # No optimistic update: the redraw only happens once the server has
-        # accepted and pushed the new state back over the SIGNAL_RULES_CHANGED
-        # subscription - a real websocket round trip through a real Home
-        # Assistant, not a mocked push. 15s was seen timing out on GitHub
-        # Actions' own runners (2026-08-27 through 2026-08-28, 8 consecutive
-        # CI runs, never reproduced locally) - not a redraw that never
-        # happens, but one that can genuinely take longer than 15s under
-        # CI's docker/network overhead. 30s matches this file's other
-        # generous waits (target/action pickers) rather than inventing a new
-        # margin.
-        card.locator("shabbat-rule-row .time").filter(has_text="12:15").first.wait_for(
-            timeout=30_000
-        )
+        # TEMPORARY DIAGNOSTIC (2026-08-28): this wait has failed on every
+        # GitHub Actions run since 2026-08-27, never once locally, through
+        # two prior fix attempts (30s timeout, explicit blur-via-Tab in
+        # _set_time) that did not change the outcome at all - same two
+        # tests, same symptom, unchanged. Dumping real state on failure
+        # instead of guessing a fourth time.
+        try:
+            card.locator("shabbat-rule-row .time").filter(
+                has_text="12:15"
+            ).first.wait_for(timeout=30_000)
+        except Exception:
+            error_banner = dialog.locator(".error")
+            print("DIAG time inputs before _set_time:", filled_values)
+            print("DIAG time inputs after _set_time (pre-Tab reread):", committed_values)
+            print("DIAG dialog still attached:", dialog.count() > 0)
+            print("DIAG error banner present:", error_banner.count() > 0)
+            if error_banner.count() > 0:
+                print("DIAG error banner text:", error_banner.inner_text())
+            print("DIAG all row times now:", card.locator("shabbat-rule-row .time").all_inner_texts())
+            if dialog.count() > 0:
+                print(
+                    "DIAG dialog time inputs now:",
+                    [dialog.locator("ha-selector.time input").nth(i).input_value()
+                     for i in range(3)],
+                )
+            raise
+
         after = card.locator("shabbat-rule-row .time").all_inner_texts()
         assert "12:15" in after
         assert "11:00" not in after

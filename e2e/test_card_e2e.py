@@ -258,6 +258,11 @@ def test_editing_a_rule_redraws_the_timeline(page, base_url):
         dialog.wait_for(state="attached", timeout=10_000)
 
         _set_time(dialog, "12:15:00")
+        print(
+            "DIAG2 inputs right after _set_time:",
+            [dialog.locator("ha-selector.time input").nth(i).input_value()
+             for i in range(3)],
+        )
         dialog.locator("button.save").click()
 
         # No optimistic update: the redraw only happens once the server has
@@ -268,9 +273,21 @@ def test_editing_a_rule_redraws_the_timeline(page, base_url):
         # rule that got saved genuinely had the wrong hour ("00:15:00"
         # instead of "12:15:00"), so no amount of waiting here was ever
         # going to find "12:15".
-        card.locator("shabbat-rule-row .time").filter(has_text="12:15").first.wait_for(
-            timeout=15_000
-        )
+        try:
+            card.locator("shabbat-rule-row .time").filter(
+                has_text="12:15"
+            ).first.wait_for(timeout=15_000)
+        except Exception:
+            print("DIAG2 all row times now:", card.locator("shabbat-rule-row .time").all_inner_texts())
+            print("DIAG2 dialog still attached:", dialog.count() > 0)
+            if dialog.count() > 0:
+                print(
+                    "DIAG2 dialog time inputs now:",
+                    [dialog.locator("ha-selector.time input").nth(i).input_value()
+                     for i in range(3)],
+                )
+                print("DIAG2 error banner present:", dialog.locator(".error").count() > 0)
+            raise
         after = card.locator("shabbat-rule-row .time").all_inner_texts()
         assert "12:15" in after
         assert "11:00" not in after

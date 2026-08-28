@@ -243,7 +243,7 @@ def test_editing_a_rule_redraws_the_timeline(page, base_url):
     forgiving event model. Only a browser does.
 
     The undo is in a `finally`. This test mutates the shared dev fixture,
-    and an assertion that fails halfway leaves the rule at 14:15 - so the
+    and an assertion that fails halfway leaves the rule at 10:15 - so the
     next run starts from a different fixture than this one did and the
     suite stops being repeatable, which is precisely the property e2e is
     here to provide.
@@ -257,25 +257,35 @@ def test_editing_a_rule_redraws_the_timeline(page, base_url):
         card.locator("shabbat-rule-row").filter(has_text="11:00").first.click()
         dialog.wait_for(state="attached", timeout=10_000)
 
-        _set_time(dialog, "14:15:00")
+        _set_time(dialog, "10:15:00")
         dialog.locator("button.save").click()
 
         # No optimistic update: the redraw only happens once the server has
         # accepted and pushed the new state back over the SIGNAL_RULES_CHANGED
-        # subscription. 14:15, deliberately not noon - see _set_time's
+        # subscription. 10:15, deliberately not noon - see _set_time's
         # docstring for the real, found cause of this test's long-standing
         # CI failure: hour 12 hits an upstream AM/PM-boundary quirk in
         # ha-base-time-input that has nothing to do with this wait.
-        card.locator("shabbat-rule-row .time").filter(has_text="14:15").first.wait_for(
+        card.locator("shabbat-rule-row .time").filter(has_text="10:15").first.wait_for(
             timeout=15_000
         )
         after = card.locator("shabbat-rule-row .time").all_inner_texts()
-        assert "14:15" in after
+        assert "10:15" in after
         assert "11:00" not in after
     finally:
-        # Put it back, so the fixture is unchanged for the next run.
-        if card.locator("shabbat-rule-row").filter(has_text="14:15").count():
-            card.locator("shabbat-rule-row").filter(has_text="14:15").first.click()
+        # Put it back, so the fixture is unchanged for the next run. A
+        # fresh `_card()` first, deliberately, not the same `card`/`dialog`
+        # captured above: the time widget is a single reused element bound
+        # to whichever rule is open, and reverting through the SAME live
+        # widget instance that just handled the 10:15 edit is exactly the
+        # shape of bug this test exists to catch elsewhere in this file
+        # (a value carried over from one edit into the next) - a real
+        # navigation forces the widget to rebuild from the server's own
+        # current value instead of whatever state it was last left in.
+        card = _card(page, base_url)
+        dialog = card.locator("shabbat-rule-dialog")
+        if card.locator("shabbat-rule-row").filter(has_text="10:15").count():
+            card.locator("shabbat-rule-row").filter(has_text="10:15").first.click()
             dialog.wait_for(state="attached", timeout=10_000)
             _set_time(dialog, "11:00:00")
             dialog.locator("button.save").click()

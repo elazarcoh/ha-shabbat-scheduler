@@ -109,16 +109,24 @@ def _set_time(dialog, hh_mm_ss):
     Each field only commits a `value-changed` on blur, using whatever the
     other two fields currently hold - so filling hour then minute can
     momentarily emit a stale combination built from the old, not-yet-typed
-    third field. That is harmless here: by the time the third field is
-    filled, the first two already hold their target values, and the
-    dialog's own next click (Save, or moving to another field) blurs the
-    last one and commits the correct HH:MM:SS.
+    third field. By the time the third field is filled, the first two
+    already hold their target values, so the LAST field's own blur is what
+    commits the correct HH:MM:SS - this used to rely on the caller's next
+    click (Save, or another field) to supply that blur as a side effect,
+    which raced the click handler's own read of pending form state on
+    GitHub Actions' runners (never reproduced locally, 8 consecutive CI
+    runs 2026-08-27/28: the row never showed the new time, and it hadn't
+    reverted to the old one either - consistent with the click reading a
+    value that hadn't committed yet). An explicit `Tab` after the last
+    fill removes the race outright: this function now always returns with
+    the value already committed, regardless of what the caller does next.
     """
     hour, minute, second = hh_mm_ss.split(":")
     inputs = dialog.locator("ha-selector.time input")
     inputs.nth(0).fill(hour)
     inputs.nth(1).fill(minute)
     inputs.nth(2).fill(second)
+    inputs.nth(2).press("Tab")
 
 
 def test_the_card_renders_the_timeline(page, base_url):

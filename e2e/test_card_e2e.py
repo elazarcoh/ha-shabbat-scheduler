@@ -242,15 +242,30 @@ def test_editing_a_rule_redraws_the_timeline(page, base_url):
         dialog.locator("button.save").click()
 
         # No optimistic update: the redraw only happens once the server has
-        # accepted and pushed the new state back.
+        # accepted and pushed the new state back over the SIGNAL_RULES_CHANGED
+        # subscription - a real websocket round trip through a real Home
+        # Assistant, not a mocked push. 15s was seen timing out on GitHub
+        # Actions' own runners (2026-08-27 through 2026-08-28, 8 consecutive
+        # CI runs, never reproduced locally) - not a redraw that never
+        # happens, but one that can genuinely take longer than 15s under
+        # CI's docker/network overhead. 30s matches this file's other
+        # generous waits (target/action pickers) rather than inventing a new
+        # margin.
         card.locator("shabbat-rule-row .time").filter(has_text="12:15").first.wait_for(
-            timeout=15_000
+            timeout=30_000
         )
         after = card.locator("shabbat-rule-row .time").all_inner_texts()
         assert "12:15" in after
         assert "11:00" not in after
     finally:
-        # Put it back, so the fixture is unchanged for the next run.
+        # Put it back, so the fixture is unchanged for the next run. The
+        # `.count()` guard itself depends on the same redraw as the `try`
+        # block's own wait_for above - now that that one has a 30s margin
+        # instead of 15s, a slow-but-real CI redraw is far less likely to
+        # still be in flight by the time execution reaches here and make
+        # this look like nothing needs reverting when the rule had, in
+        # fact, already moved to 12:15 server-side (which is what silently
+        # broke the NEXT test in 8 straight CI runs, 2026-08-27/28).
         if card.locator("shabbat-rule-row").filter(has_text="12:15").count():
             card.locator("shabbat-rule-row").filter(has_text="12:15").first.click()
             dialog.wait_for(state="attached", timeout=10_000)
@@ -258,7 +273,7 @@ def test_editing_a_rule_redraws_the_timeline(page, base_url):
             dialog.locator("button.save").click()
             card.locator("shabbat-rule-row .time").filter(
                 has_text="11:00"
-            ).first.wait_for(timeout=15_000)
+            ).first.wait_for(timeout=30_000)
 
 
 def test_the_add_button_creates_a_rule_on_its_own_day(page, base_url):

@@ -72,6 +72,10 @@ const STRINGS = {
     // wording already present in `detail`.
     outcome_no_such_entity: 'no such entity: ',
     outcome_reached_nothing: 'reached no entity that exists',
+    // Simulate-only (engine.py's `_call`): a real failing call gets this
+    // same story from Home Assistant itself, in `detail`, so this line
+    // never appears alongside one - see `LastOutcome.invalid_data`.
+    outcome_invalid_data: 'would be refused: ',
     run_now_button: 'Run now',
     run_now_simulate: 'Simulate',
     run_now_real: 'Run for real',
@@ -148,6 +152,7 @@ const STRINGS = {
     outcome_unknown: 'הסתיים ללא תוצאה מדווחת',
     outcome_no_such_entity: 'אין ישות כזו: ',
     outcome_reached_nothing: 'לא הגיע לאף ישות קיימת',
+    outcome_invalid_data: 'היה נדחה: ',
     run_now_button: 'הרצה עכשיו',
     run_now_simulate: 'סימולציה',
     run_now_real: 'הרצה אמיתית',

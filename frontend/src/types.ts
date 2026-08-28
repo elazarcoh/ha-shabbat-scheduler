@@ -73,6 +73,14 @@ export interface LastOutcome {
   unknown_targets?: string[];
   /** The call was made and resolved to no entity that exists. */
   no_live_targets?: boolean;
+  /**
+   * Reasons a targeted entity's OWN advertised options (`fan_modes`,
+   * `hvac_modes`, and the like) would refuse a value in `data`, right now.
+   * Simulate-only (see `engine.py`'s `_call`): a real failing call gets the
+   * same story from Home Assistant itself, in `detail`, so this never
+   * appears alongside a `failed` outcome - only alongside `would_call`.
+   */
+  invalid_data?: string[];
 }
 
 /** Whether, and how late, a rule may be re-run after a restart. */

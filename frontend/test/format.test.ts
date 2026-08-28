@@ -446,4 +446,45 @@ describe('foldCallResults', () => {
     );
     expect(result.detail).toBe('condition 1 of 1 not met');
   });
+
+  it('unions invalid_data across calls, de-duplicated', () => {
+    const result = foldCallResults(
+      [
+        { outcome: 'would_call', invalid_data: ["fan_mode 'silent' is not valid for a"] },
+        { outcome: 'would_call', invalid_data: ["fan_mode 'silent' is not valid for a"] },
+        { outcome: 'would_call', invalid_data: ["hvac_mode 'dry' is not valid for b"] },
+      ],
+      '2026-08-25T18:00:00Z',
+    );
+    expect(result.invalid_data).toEqual([
+      "fan_mode 'silent' is not valid for a",
+      "hvac_mode 'dry' is not valid for b",
+    ]);
+  });
+});
+
+import { formatOutcome, outcomeIsBad } from '../src/format';
+
+describe('formatOutcome / outcomeIsBad with invalid_data', () => {
+  const wouldCall = (invalid_data?: string[]) => ({
+    outcome: 'would_call', at: '2026-08-25T18:00:00Z', detail: null, invalid_data,
+  });
+
+  it('appends the violation to a would_call line', () => {
+    const text = formatOutcome(wouldCall(["fan_mode 'silent' is not valid for climate.x"]), 'en');
+    expect(text).toContain("fan_mode 'silent' is not valid for climate.x");
+  });
+
+  it('a clean would_call carries no violation text', () => {
+    const text = formatOutcome(wouldCall(undefined), 'en');
+    expect(text).not.toContain('not valid');
+  });
+
+  it('marks a would_call with a violation as bad', () => {
+    expect(outcomeIsBad(wouldCall(["fan_mode 'silent' is not valid for climate.x"]))).toBe(true);
+  });
+
+  it('a clean would_call is not bad', () => {
+    expect(outcomeIsBad(wouldCall(undefined))).toBe(false);
+  });
 });

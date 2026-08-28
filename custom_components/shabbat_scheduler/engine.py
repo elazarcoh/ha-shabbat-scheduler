@@ -43,6 +43,7 @@ from .const import (
 )
 from . import repairs
 from .device_ops import expand_action
+from .ha_validation import describe_data_violations
 from .models import Block, ResolvedRule, Rule
 from .store import RuleStore
 
@@ -1125,6 +1126,18 @@ class ShabbatEngine:
             )
 
         if simulate:
+            # Only under simulate: a REAL call that names an invalid value
+            # gets this exact same story from `async_call_from_config`
+            # itself, verbatim, in `result["error"]` below - surfacing it
+            # twice here too would tell the household the same thing in two
+            # different sentences. Simulate has no `error` field of its own
+            # to carry it in (nothing was called), so this is its only
+            # route to the same diagnosis - the whole reason `simulate` was
+            # asked for in the first place: a way to be told this without
+            # touching the device.
+            invalid_data = describe_data_violations(self.hass, target, data)
+            if invalid_data:
+                result["invalid_data"] = invalid_data
             result["outcome"] = "would_call"
             return result
 

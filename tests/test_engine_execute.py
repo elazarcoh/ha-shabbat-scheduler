@@ -153,3 +153,52 @@ async def test_simulate_calls_nothing(hass, test_booleans):
 
     assert hass.states.get("input_boolean.salon").state == "off"
     assert results[0]["outcome"] == "would_call"
+
+
+async def test_simulate_surfaces_a_value_the_target_would_refuse(hass):
+    """The real bug this exists for: a rule re-targeted (via the card) to
+
+    an entity whose live `fan_modes` do not include the authored value.
+    Simulating it must say so, without ever calling `climate.set_fan_mode`
+    for real - proven here by there being no mock service registered for
+    it at all, so a real call would error the test itself.
+    """
+    engine = await _engine(hass)
+    hass.states.async_set(
+        "climate.living_room", "cool", {"fan_modes": ["auto", "quiet"]},
+    )
+    rule = Rule(
+        id="r", profile=1, day="1", time=time(11, 0),
+        action="climate.set_fan_mode",
+        target={"entity_id": ["climate.living_room"]},
+        data={"fan_mode": "silent"},
+    )
+    results = await engine.async_apply_rule(rule, simulate=True)
+
+    assert results[0]["outcome"] == "would_call"
+    assert "climate.living_room" in results[0]["invalid_data"][0]
+    assert "silent" in results[0]["invalid_data"][0]
+
+
+async def test_a_real_failing_call_does_not_carry_the_redundant_diagnostic(hass):
+    """A REAL call that fails gets its own `error`, verbatim from Home
+
+    Assistant - `invalid_data` is simulate-only so the household is not
+    told the same thing twice in two different sentences (see the comment
+    in engine.py's `_call`).
+    """
+    engine = await _engine(hass)
+    hass.states.async_set(
+        "climate.living_room", "cool", {"fan_modes": ["auto", "quiet"]},
+    )
+    rule = Rule(
+        id="r", profile=1, day="1", time=time(11, 0),
+        action="climate.set_fan_mode",
+        target={"entity_id": ["climate.living_room"]},
+        data={"fan_mode": "silent"},
+    )
+    with patch("custom_components.shabbat_scheduler.engine.asyncio.sleep"):
+        results = await engine.async_apply_rule(rule)
+
+    assert results[0]["outcome"] == "failed"
+    assert "invalid_data" not in results[0]

@@ -290,6 +290,10 @@ export function formatOutcome(outcome: LastOutcome, language?: string): string {
   if (outcome.no_live_targets === true) {
     text = `${text} — ${t(language, 'outcome_reached_nothing')}`;
   }
+  const invalidData = outcome.invalid_data ?? [];
+  if (invalidData.length > 0) {
+    text = `${text} — ${t(language, 'outcome_invalid_data')}${invalidData.join('; ')}`;
+  }
   return text;
 }
 
@@ -329,6 +333,7 @@ export function outcomeIsBad(outcome: LastOutcome): boolean {
     outcome.outcome === 'skipped_stale' ||
     (outcome.unknown_targets ?? []).length > 0 ||
     outcome.no_live_targets === true ||
+    (outcome.invalid_data ?? []).length > 0 ||
     !(outcome.outcome in OUTCOME_LABELS)
   );
 }
@@ -386,12 +391,16 @@ export function foldCallResults(
   const unknownTargets = Array.from(new Set(
     results.flatMap((r) => (r.unknown_targets as string[] | undefined) ?? []),
   ));
+  const invalidData = Array.from(new Set(
+    results.flatMap((r) => (r.invalid_data as string[] | undefined) ?? []),
+  ));
   return {
     outcome,
     at,
     detail: (withDetail?.error ?? withDetail?.reason ?? null) as string | null,
     unknown_targets: unknownTargets.length ? unknownTargets : undefined,
     no_live_targets: results.some((r) => r.no_live_targets === true) || undefined,
+    invalid_data: invalidData.length ? invalidData : undefined,
   };
 }
 

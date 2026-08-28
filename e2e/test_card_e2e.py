@@ -106,27 +106,38 @@ def _set_time(dialog, hh_mm_ss):
     pierce all of that shadow DOM, so a flat `input` descendant locator
     reaches all three directly.
 
-    Each field only commits a `value-changed` on blur, using whatever the
-    other two fields currently hold - so filling hour then minute can
-    momentarily emit a stale combination built from the old, not-yet-typed
-    third field. By the time the third field is filled, the first two
-    already hold their target values, so the LAST field's own blur is what
-    commits the correct HH:MM:SS - this used to rely on the caller's next
-    click (Save, or another field) to supply that blur as a side effect,
-    which raced the click handler's own read of pending form state on
-    GitHub Actions' runners (never reproduced locally, 8 consecutive CI
-    runs 2026-08-27/28: the row never showed the new time, and it hadn't
-    reverted to the old one either - consistent with the click reading a
-    value that hadn't committed yet). An explicit `Tab` after the last
-    fill removes the race outright: this function now always returns with
-    the value already committed, regardless of what the caller does next.
+    Each field only commits a `value-changed` on blur, reading the
+    WIDGET'S OWN internal hours/minutes/seconds properties at that moment -
+    not the three `<input>` elements' live DOM values directly. Those
+    internal properties are themselves only updated by each field's own
+    input handler, which is not guaranteed to have finished (a Lit
+    property update is a microtask, not synchronous with the DOM `input`
+    event) before a DIFFERENT field's fill-triggered blur reads them.
+
+    Filling all three fields back-to-back and blurring only the last one
+    (this function's previous approach, and before that, relying on the
+    caller's next click to supply that blur) both assumed "by the time
+    the last field blurs, the widget has already absorbed the first two" -
+    true often enough to pass locally every single time, but a genuine
+    race that lost on GitHub Actions' runners in 9 consecutive CI runs
+    (2026-08-27 through 2026-08-28): a live dump of the actual saved rule
+    on failure showed hours silently landing on "0" while minutes/seconds
+    were correct (e.g. asking for "12:15:00" produced a saved "00:15:00")
+    - the hour field's blur had fired and been read by the SECOND field's
+    blur before the widget's own hours property had caught up, exactly the
+    "stale combination" this docstring used to say was harmless.
+
+    Fixed by blurring (via Tab) and giving the widget a moment to settle
+    after EACH field, not just the last - so every field's own value is
+    fully absorbed before the next field's fill can possibly race it.
     """
     hour, minute, second = hh_mm_ss.split(":")
     inputs = dialog.locator("ha-selector.time input")
-    inputs.nth(0).fill(hour)
-    inputs.nth(1).fill(minute)
-    inputs.nth(2).fill(second)
-    inputs.nth(2).press("Tab")
+    page = dialog.page
+    for index, value in enumerate((hour, minute, second)):
+        inputs.nth(index).fill(value)
+        inputs.nth(index).press("Tab")
+        page.wait_for_timeout(100)
 
 
 def test_the_card_renders_the_timeline(page, base_url):
@@ -246,51 +257,25 @@ def test_editing_a_rule_redraws_the_timeline(page, base_url):
         card.locator("shabbat-rule-row").filter(has_text="11:00").first.click()
         dialog.wait_for(state="attached", timeout=10_000)
 
-        time_inputs = dialog.locator("ha-selector.time input")
-        filled_values = [time_inputs.nth(i).input_value() for i in range(3)]
         _set_time(dialog, "12:15:00")
-        committed_values = [time_inputs.nth(i).input_value() for i in range(3)]
         dialog.locator("button.save").click()
 
-        # TEMPORARY DIAGNOSTIC (2026-08-28): this wait has failed on every
-        # GitHub Actions run since 2026-08-27, never once locally, through
-        # two prior fix attempts (30s timeout, explicit blur-via-Tab in
-        # _set_time) that did not change the outcome at all - same two
-        # tests, same symptom, unchanged. Dumping real state on failure
-        # instead of guessing a fourth time.
-        try:
-            card.locator("shabbat-rule-row .time").filter(
-                has_text="12:15"
-            ).first.wait_for(timeout=30_000)
-        except Exception:
-            error_banner = dialog.locator(".error")
-            print("DIAG time inputs before _set_time:", filled_values)
-            print("DIAG time inputs after _set_time (pre-Tab reread):", committed_values)
-            print("DIAG dialog still attached:", dialog.count() > 0)
-            print("DIAG error banner present:", error_banner.count() > 0)
-            if error_banner.count() > 0:
-                print("DIAG error banner text:", error_banner.inner_text())
-            print("DIAG all row times now:", card.locator("shabbat-rule-row .time").all_inner_texts())
-            if dialog.count() > 0:
-                print(
-                    "DIAG dialog time inputs now:",
-                    [dialog.locator("ha-selector.time input").nth(i).input_value()
-                     for i in range(3)],
-                )
-            raise
-
+        # No optimistic update: the redraw only happens once the server has
+        # accepted and pushed the new state back over the SIGNAL_RULES_CHANGED
+        # subscription. The real cause of this timing out on CI (2026-08-27
+        # through 2026-08-28, 9 consecutive runs, never locally) turned out
+        # to live in `_set_time` itself, not here - see its docstring: the
+        # rule that got saved genuinely had the wrong hour ("00:15:00"
+        # instead of "12:15:00"), so no amount of waiting here was ever
+        # going to find "12:15".
+        card.locator("shabbat-rule-row .time").filter(has_text="12:15").first.wait_for(
+            timeout=15_000
+        )
         after = card.locator("shabbat-rule-row .time").all_inner_texts()
         assert "12:15" in after
         assert "11:00" not in after
     finally:
-        # Put it back, so the fixture is unchanged for the next run. The
-        # `.count()` guard itself depends on the same redraw as the `try`
-        # block's own wait_for above - now that that one has a 30s margin
-        # instead of 15s, a slow-but-real CI redraw is far less likely to
-        # still be in flight by the time execution reaches here and make
-        # this look like nothing needs reverting when the rule had, in
-        # fact, already moved to 12:15 server-side (which is what silently
-        # broke the NEXT test in 8 straight CI runs, 2026-08-27/28).
+        # Put it back, so the fixture is unchanged for the next run.
         if card.locator("shabbat-rule-row").filter(has_text="12:15").count():
             card.locator("shabbat-rule-row").filter(has_text="12:15").first.click()
             dialog.wait_for(state="attached", timeout=10_000)

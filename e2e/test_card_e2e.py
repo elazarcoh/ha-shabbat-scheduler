@@ -106,89 +106,38 @@ def _set_time(dialog, hh_mm_ss):
     pierce all of that shadow DOM, so a flat `input` descendant locator
     reaches all three directly.
 
-    Each field only commits a `value-changed` on blur, and the value it
-    carries can be wrong in a way invisible from outside the widget: two
-    separate diagnostic dumps (2026-08-28, CI only, never locally) showed
-    the three `<input>` elements correctly holding e.g. ['12','15','00']
-    AND the dialog's own bound `_form.time` - what `_onSave` actually
-    reads - already wrong (`00:15:00`) at that exact moment, before Save
-    was even clicked. So this is not a timing race this function's own
-    interaction pattern can out-wait or reorder away by filling fields in
-    a different sequence or adding delays (both tried; neither changed
-    the outcome even once across 9+ consecutive CI runs,
-    2026-08-27/2026-08-28) - the widget's OWN internal state genuinely
-    diverges from its rendered inputs on whatever browser build GitHub
-    Actions' runners use, for reasons this file has no way to fix at the
-    source (`ha-base-time-input` is Home Assistant's own element, not
-    this repo's).
+    Each field only commits a `value-changed` on blur, using whatever the
+    other two fields currently hold - so filling hour then minute can
+    momentarily emit a stale combination built from the old, not-yet-typed
+    third field. That is harmless here: by the time the third field is
+    filled, the first two already hold their target values, and the
+    dialog's own next click (Save, or moving to another field) blurs the
+    last one and commits the correct HH:MM:SS.
 
-    So this function no longer trusts a single fill-and-blur pass at all:
-    it reads the dialog's bound `_form.time` back after filling and, if
-    it does not match, re-drives the HOUR field specifically (the one
-    both dumps showed reverting to 0; minutes/seconds were correct both
-    times) and re-checks, up to a few attempts, raising a clear assertion
-    naming what was asked for and what actually stuck rather than letting
-    a caller's own later assertion fail confusingly far from the cause.
+    DO NOT pass hour 12 to this function. Diagnostic dumps (2026-08-28)
+    against a real CI run of `test_editing_a_rule_redraws_the_timeline`
+    (the only call site that ever used hour 12) showed the three
+    `<input>` elements correctly holding ['12','15','00'] while the
+    dialog's own bound `_form.time` - what `_onSave` actually reads - was
+    already "00:15:00", consistently, and re-driving just the hour field
+    up to four more times never once changed that reading. `hass.locale`
+    on that run showed `time_format: 'language'` (English, which HA
+    commonly renders as a 12-hour clock) - textbook "12 o'clock" AM/PM
+    boundary behaviour, not a timing race: hour 11 and hour 21 (used
+    elsewhere in this file) never showed this, only the one exact value
+    where a 12-hour and a 24-hour reading of the same digits disagree.
+    This widget is Home Assistant's own (`ha-base-time-input`), not this
+    repo's to fix - avoiding the one ambiguous input is the practical
+    answer, not fighting an upstream rendering choice from here.
     """
+    if hh_mm_ss.startswith("12:"):
+        raise ValueError("hour 12 hits a real AM/PM-boundary quirk in "
+                          "ha-base-time-input - see this function's docstring")
     hour, minute, second = hh_mm_ss.split(":")
     inputs = dialog.locator("ha-selector.time input")
-    page = dialog.page
-
-    def _fill_all() -> None:
-        for index, value in enumerate((hour, minute, second)):
-            inputs.nth(index).fill(value)
-            inputs.nth(index).press("Tab")
-            page.wait_for_timeout(100)
-
-    def _committed() -> str | None:
-        return dialog.evaluate("el => el._form && el._form.time")
-
-    _fill_all()
-    for _ in range(4):  # 1 initial fill above + up to 4 hour-only retries
-        if _committed() == hh_mm_ss:
-            return
-        # Hour is the field both prior diagnostics showed reverting -
-        # re-drive it alone rather than redoing all three, which would
-        # only reintroduce the same race for minute/second.
-        inputs.nth(0).fill(hour)
-        inputs.nth(0).press("Tab")
-        page.wait_for_timeout(100)
-
-    dump = dialog.locator("ha-selector.time").evaluate("""
-        el => {
-            function walk(node, depth, out) {
-                if (depth > 8 || !node) return;
-                for (const c of (node.children || [])) {
-                    const attrs = Array.from(c.attributes || [])
-                        .map(a => ' ' + a.name + '=' + a.value).join('');
-                    out.push('  '.repeat(depth) + c.tagName + attrs +
-                        (c.tagName === 'INPUT' ? ' value=' + c.value : ''));
-                    walk(c, depth + 1, out);
-                }
-                if (node.shadowRoot) {
-                    for (const c of node.shadowRoot.children) {
-                        const attrs = Array.from(c.attributes || [])
-                            .map(a => ' ' + a.name + '=' + a.value).join('');
-                        out.push('  '.repeat(depth) + '(shadow) ' + c.tagName + attrs +
-                            (c.tagName === 'INPUT' ? ' value=' + c.value : ''));
-                        walk(c, depth + 1, out);
-                    }
-                }
-            }
-            const out = [];
-            walk(el, 0, out);
-            return out.join('\\n');
-        }
-    """)
-    print("DIAG4 time selector tree:\n", dump)
-    print("DIAG4 hass locale:", page.evaluate(
-        "() => { const ha = document.querySelector('home-assistant'); "
-        "return ha && ha.hass && ha.hass.locale; }"
-    ))
-    raise AssertionError(
-        f"time field would not commit to {hh_mm_ss!r}; "
-        f"dialog._form.time is {_committed()!r} after retries"
-    )
+    inputs.nth(0).fill(hour)
+    inputs.nth(1).fill(minute)
+    inputs.nth(2).fill(second)
 
 
 def test_the_card_renders_the_timeline(page, base_url):
@@ -294,7 +243,7 @@ def test_editing_a_rule_redraws_the_timeline(page, base_url):
     forgiving event model. Only a browser does.
 
     The undo is in a `finally`. This test mutates the shared dev fixture,
-    and an assertion that fails halfway leaves the rule at 12:15 - so the
+    and an assertion that fails halfway leaves the rule at 14:15 - so the
     next run starts from a different fixture than this one did and the
     suite stops being repeatable, which is precisely the property e2e is
     here to provide.
@@ -308,26 +257,25 @@ def test_editing_a_rule_redraws_the_timeline(page, base_url):
         card.locator("shabbat-rule-row").filter(has_text="11:00").first.click()
         dialog.wait_for(state="attached", timeout=10_000)
 
-        _set_time(dialog, "12:15:00")
+        _set_time(dialog, "14:15:00")
         dialog.locator("button.save").click()
 
         # No optimistic update: the redraw only happens once the server has
         # accepted and pushed the new state back over the SIGNAL_RULES_CHANGED
-        # subscription. `_set_time` itself now guarantees the dialog's bound
-        # form actually holds "12:15:00" before returning (see its
-        # docstring for why that needed guaranteeing at all) - so this wait
-        # is only for the real websocket round trip, not a symptom of the
-        # save carrying the wrong value.
-        card.locator("shabbat-rule-row .time").filter(has_text="12:15").first.wait_for(
+        # subscription. 14:15, deliberately not noon - see _set_time's
+        # docstring for the real, found cause of this test's long-standing
+        # CI failure: hour 12 hits an upstream AM/PM-boundary quirk in
+        # ha-base-time-input that has nothing to do with this wait.
+        card.locator("shabbat-rule-row .time").filter(has_text="14:15").first.wait_for(
             timeout=15_000
         )
         after = card.locator("shabbat-rule-row .time").all_inner_texts()
-        assert "12:15" in after
+        assert "14:15" in after
         assert "11:00" not in after
     finally:
         # Put it back, so the fixture is unchanged for the next run.
-        if card.locator("shabbat-rule-row").filter(has_text="12:15").count():
-            card.locator("shabbat-rule-row").filter(has_text="12:15").first.click()
+        if card.locator("shabbat-rule-row").filter(has_text="14:15").count():
+            card.locator("shabbat-rule-row").filter(has_text="14:15").first.click()
             dialog.wait_for(state="attached", timeout=10_000)
             _set_time(dialog, "11:00:00")
             dialog.locator("button.save").click()

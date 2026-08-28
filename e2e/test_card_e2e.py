@@ -154,6 +154,37 @@ def _set_time(dialog, hh_mm_ss):
         inputs.nth(0).press("Tab")
         page.wait_for_timeout(100)
 
+    dump = dialog.locator("ha-selector.time").evaluate("""
+        el => {
+            function walk(node, depth, out) {
+                if (depth > 8 || !node) return;
+                for (const c of (node.children || [])) {
+                    const attrs = Array.from(c.attributes || [])
+                        .map(a => ' ' + a.name + '=' + a.value).join('');
+                    out.push('  '.repeat(depth) + c.tagName + attrs +
+                        (c.tagName === 'INPUT' ? ' value=' + c.value : ''));
+                    walk(c, depth + 1, out);
+                }
+                if (node.shadowRoot) {
+                    for (const c of node.shadowRoot.children) {
+                        const attrs = Array.from(c.attributes || [])
+                            .map(a => ' ' + a.name + '=' + a.value).join('');
+                        out.push('  '.repeat(depth) + '(shadow) ' + c.tagName + attrs +
+                            (c.tagName === 'INPUT' ? ' value=' + c.value : ''));
+                        walk(c, depth + 1, out);
+                    }
+                }
+            }
+            const out = [];
+            walk(el, 0, out);
+            return out.join('\\n');
+        }
+    """)
+    print("DIAG4 time selector tree:\n", dump)
+    print("DIAG4 hass locale:", page.evaluate(
+        "() => { const ha = document.querySelector('home-assistant'); "
+        "return ha && ha.hass && ha.hass.locale; }"
+    ))
     raise AssertionError(
         f"time field would not commit to {hh_mm_ss!r}; "
         f"dialog._form.time is {_committed()!r} after retries"

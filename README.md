@@ -4,12 +4,13 @@
 
 # Shabbat Scheduler
 
-*Alpha. 790 tests passing (443 Python + 15 end-to-end, 332 frontend).*
+*Alpha. 824 tests passing (464 Python + 15 end-to-end, 345 frontend).*
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge)](https://github.com/hacs/integration)
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=elazarcoh&repository=ha-shabbat-scheduler&category=integration)
 [![Add Integration to your Home Assistant instance.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=shabbat_scheduler)
 
+[![Latest release](https://img.shields.io/github/v/release/elazarcoh/ha-shabbat-scheduler)](https://github.com/elazarcoh/ha-shabbat-scheduler/releases/latest)
 [![CI](https://github.com/elazarcoh/ha-shabbat-scheduler/actions/workflows/ci.yml/badge.svg)](https://github.com/elazarcoh/ha-shabbat-scheduler/actions/workflows/ci.yml)
 [![e2e](https://github.com/elazarcoh/ha-shabbat-scheduler/actions/workflows/e2e.yml/badge.svg)](https://github.com/elazarcoh/ha-shabbat-scheduler/actions/workflows/e2e.yml)
 [![License: MIT](https://img.shields.io/github/license/elazarcoh/ha-shabbat-scheduler)](LICENSE)

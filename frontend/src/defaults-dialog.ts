@@ -36,6 +36,15 @@ export class ShabbatDefaultsDialog extends LitElement {
   @property({ type: Boolean }) busy = false;
   @property() error: string | null = null;
   @property() language = 'en';
+  /**
+   * The card's own shared language override (`store.language`), or null
+   * to use Home Assistant's own - NOT the same thing as `language` above,
+   * which is what this dialog's OWN text renders in right now. Applies
+   * immediately on change, unlike `defaults`: it is a presentation choice,
+   * not a draft that needs an explicit Save to avoid a half-authored
+   * target/data payload reaching the server.
+   */
+  @property() languageOverride: string | null = null;
 
   @state() private _draft: Defaults = {};
   /**
@@ -157,6 +166,20 @@ export class ShabbatDefaultsDialog extends LitElement {
     }));
   }
 
+  /**
+   * Fires immediately on selection, not gated behind Save - see
+   * `languageOverride`'s own doc comment for why. The empty-string "Auto"
+   * option is this element's own value space (`ha-selector`'s select
+   * selector needs a real string for every option); `null` is the
+   * websocket command's and the store's, so the boundary is crossed here.
+   */
+  private _onLanguageChanged = (event: CustomEvent) => {
+    const value = event.detail?.value as string | undefined;
+    this.dispatchEvent(new CustomEvent('language-changed', {
+      detail: { language: value ? value : null },
+    }));
+  };
+
   override render() {
     return html`
       <div class="sheet" @click=${(event: Event) => {
@@ -170,6 +193,26 @@ export class ShabbatDefaultsDialog extends LitElement {
           ${this.error !== null
             ? html`<div class="error">${this.error}</div>`
             : nothing}
+
+          <div class="section">
+            <div class="label">${t(this.language, 'card_language')}</div>
+            <ha-selector
+              .hass=${this.hass}
+              .selector=${{
+                select: {
+                  mode: 'dropdown',
+                  options: [
+                    { value: '', label: t(this.language, 'card_language_auto') },
+                    { value: 'en', label: 'English' },
+                    { value: 'he', label: 'עברית' },
+                  ],
+                },
+              }}
+              .value=${this.languageOverride ?? ''}
+              .disabled=${!this.canWrite}
+              @value-changed=${this._onLanguageChanged}
+            ></ha-selector>
+          </div>
 
           <div class="form">
             <div class="section">

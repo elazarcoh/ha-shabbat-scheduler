@@ -71,7 +71,7 @@ export function fakeServerHass(initialRules: RuleData[]) {
 
   const buildState = (): CardState => ({
     defaults: {}, rules: [...rules], enabled: false, warnings: [],
-    master_entity_id: 'switch.master',
+    master_entity_id: 'switch.master', language: null,
     block: {
       length: 1, candle_lighting: '2026-08-14T18:44:00+03:00',
       havdalah: '2026-08-15T20:01:00+03:00',

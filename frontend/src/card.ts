@@ -242,7 +242,10 @@ export class ShabbatSchedulerCard extends LitElement {
   }
 
   private get _language(): string {
-    return this._hass?.locale?.language ?? 'en';
+    // The card's own shared override wins - set from the defaults dialog,
+    // stored server-side, the same for every viewer - falling back to
+    // Home Assistant's own language when nobody has chosen one.
+    return this._state?.language ?? this._hass?.locale?.language ?? 'en';
   }
 
   private get _canWrite(): boolean {
@@ -580,6 +583,21 @@ export class ShabbatSchedulerCard extends LitElement {
   };
 
   /**
+   * Not gated behind Save, and does not close the dialog on success -
+   * see `languageOverride`'s doc comment (defaults-dialog.ts) for why:
+   * it is an immediate presentation choice, not a draft. `_send` is still
+   * the right helper for its busy/error handling; only the "close on
+   * success" half of `_onDefaultsSave`'s pattern does not apply here.
+   */
+  private _onLanguageChanged = async (event: Event) => {
+    const { language } = (event as CustomEvent).detail as { language: string | null };
+    await this._send({
+      type: 'shabbat_scheduler/language/update',
+      language,
+    });
+  };
+
+  /**
    * Not `_send`: this write has no dialog-blocking `_busy` semantics of
    * its own and must not close the dialog or clear `_dialogError` on
    * success - it is an inline result, not a form save.
@@ -818,7 +836,9 @@ export class ShabbatSchedulerCard extends LitElement {
               .busy=${this._busy}
               .error=${this._dialogError}
               .language=${this._language}
+              .languageOverride=${this._state.language}
               @dialog-save=${this._onDefaultsSave}
+              @language-changed=${this._onLanguageChanged}
               @dialog-close=${this._closeDialogs}
             ></shabbat-defaults-dialog>`
           : nothing}

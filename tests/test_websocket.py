@@ -467,6 +467,62 @@ async def test_defaults_update_accepts_a_payload_with_no_target_at_all(
     assert "target" not in reloaded.defaults
 
 
+async def test_language_update_persists(hass, hass_ws_client, setup_scheduler):
+    await setup_scheduler()
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {"id": 1, "type": "shabbat_scheduler/language/update", "language": "he"}
+    )
+    msg = await client.receive_json()
+    assert msg["success"]
+    assert msg["result"]["language"] == "he"
+
+    reloaded = RuleStore(hass)
+    await reloaded.async_load()
+    assert reloaded.language == "he"
+
+
+async def test_language_update_clears_with_null(
+    hass, hass_ws_client, setup_scheduler
+):
+    await setup_scheduler()
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {"id": 1, "type": "shabbat_scheduler/language/update", "language": "he"}
+    )
+    await client.receive_json()
+
+    await client.send_json(
+        {"id": 2, "type": "shabbat_scheduler/language/update", "language": None}
+    )
+    msg = await client.receive_json()
+    assert msg["success"]
+    assert msg["result"]["language"] is None
+
+    reloaded = RuleStore(hass)
+    await reloaded.async_load()
+    assert reloaded.language is None
+
+
+async def test_rules_list_reports_the_language_override(
+    hass, hass_ws_client, setup_scheduler
+):
+    """The whole point: every viewer's `rules/list`/`subscribe` must see
+
+    the shared choice, not just the client that set it.
+    """
+    await setup_scheduler()
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {"id": 1, "type": "shabbat_scheduler/language/update", "language": "he"}
+    )
+    await client.receive_json()
+
+    await client.send_json({"id": 2, "type": "shabbat_scheduler/rules/list"})
+    msg = await client.receive_json()
+    assert msg["result"]["language"] == "he"
+
+
 ORIGINAL = Rule(
     id="r1", profile=1, day="1", time=time(11, 0),
     action="climate.turn_on", target={"entity_id": ["climate.a"]},

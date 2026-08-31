@@ -107,6 +107,43 @@ async def test_a_store_without_an_active_block_keeps_its_old_shape(
     assert set(_stored(hass_storage)) == {"rules", "defaults", "enabled"}
 
 
+async def test_language_round_trips(hass):
+    store = RuleStore(hass)
+    await store.async_load()
+    assert store.language is None  # use Home Assistant's own
+
+    await store.async_set_language("he")
+
+    reloaded = RuleStore(hass)
+    await reloaded.async_load()
+    assert reloaded.language == "he"
+
+    await reloaded.async_set_language(None)
+    again = RuleStore(hass)
+    await again.async_load()
+    assert again.language is None
+
+
+async def test_a_store_that_never_set_a_language_keeps_its_old_shape(
+    hass, hass_storage
+):
+    """Additive, the same way `active_block` is: absent before this
+
+    existed, absent when unset - never a stray `"language": null` for
+    every store that has no reason to know this field exists.
+    """
+    store = RuleStore(hass)
+    await store.async_load()
+    await store.async_add(
+        Rule(id="r1", profile=1, day="1", time=time(11, 0), action="input_boolean.turn_on")
+    )
+    assert "language" not in _stored(hass_storage)
+
+    await store.async_set_language("he")
+    assert _stored(hass_storage)["language"] == "he"
+
+
+
 async def test_a_v1_store_is_refused_rather_than_silently_accepted(
     hass, hass_storage
 ):

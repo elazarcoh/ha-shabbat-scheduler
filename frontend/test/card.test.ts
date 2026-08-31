@@ -33,7 +33,7 @@ const rule = (over: Partial<RuleData> = {}): RuleData => ({
 
 const state = (over: Partial<CardState> = {}): CardState => ({
   defaults: {}, rules: [], enabled: false, warnings: [],
-  master_entity_id: 'switch.master',
+  master_entity_id: 'switch.master', language: null,
   block: {
     length: 1,
     candle_lighting: '2026-08-14T18:44:00+03:00',
@@ -995,6 +995,54 @@ describe('authoring', () => {
       defaults: { target: { entity_id: ['climate.salon'] }, data: {} },
     });
     expect(el.shadowRoot!.querySelector('shabbat-defaults-dialog')).toBeNull();
+  });
+
+  it('sends language/update immediately and does NOT close the dialog', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(state());
+    await el.updateComplete;
+    (el.shadowRoot!.querySelector('shabbat-block-header')!
+      .shadowRoot!.querySelector('.gear') as HTMLElement).click();
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-defaults-dialog')!.dispatchEvent(
+      new CustomEvent('language-changed', { detail: { language: 'he' } }),
+    );
+    await flush();
+    await el.updateComplete;
+
+    expect(hass.callWS).toHaveBeenCalledWith({
+      type: 'shabbat_scheduler/language/update',
+      language: 'he',
+    });
+    // Unlike defaults/update: a presentation choice, not a draft - the
+    // dialog stays open so the author can keep editing the shared target/data.
+    expect(el.shadowRoot!.querySelector('shabbat-defaults-dialog')).not.toBeNull();
+  });
+
+  it('prefers the store-shared language override over hass.locale', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(state({ language: 'he' }));
+    await el.updateComplete;
+    el.hass = { ...hass, locale: { language: 'en' } };
+    await el.updateComplete;
+
+    const header = el.shadowRoot!.querySelector('shabbat-block-header') as Card;
+    expect(header.language).toBe('he');
+  });
+
+  it('falls back to hass.locale when no override is set', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(state({ language: null }));
+    await el.updateComplete;
+    el.hass = { ...hass, locale: { language: 'he' } };
+    await el.updateComplete;
+
+    const header = el.shadowRoot!.querySelector('shabbat-block-header') as Card;
+    expect(header.language).toBe('he');
   });
 
   it('opens the simulate dialog from the header icon', async () => {

@@ -22,7 +22,7 @@ const rule = (over: Partial<RuleData>): RuleData => ({
 
 const state = (over: Partial<CardState>): CardState => ({
   defaults: {}, rules: [], enabled: true, warnings: [],
-  master_entity_id: 'switch.master',
+  master_entity_id: 'switch.master', language: null,
   block: {
     length: 1,
     candle_lighting: '2026-08-14T18:44:00+03:00',

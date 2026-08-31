@@ -208,6 +208,11 @@ class RuleStore:
         self._rules: list[Rule] = []
         self._defaults: dict = {}
         self._enabled: bool = False
+        # None means "use Home Assistant's own language" - the behaviour
+        # every install has always had. Shared across every viewer of the
+        # card, the same way `enabled` and `defaults` are: a per-viewer
+        # preference would belong in the browser instead, not here.
+        self._language: str | None = None
         self._active_block: tuple[datetime, datetime] | None = None
         # Keyed by rule id. NOT a field on Rule: an outcome is what
         # happened TO a rule, not part of what the rule is - putting it on
@@ -228,6 +233,11 @@ class RuleStore:
     @property
     def enabled(self) -> bool:
         return self._enabled
+
+    @property
+    def language(self) -> str | None:
+        """The card's own language override, or None for "use HA's own"."""
+        return self._language
 
     @property
     def active_block(self) -> tuple[datetime, datetime] | None:
@@ -305,6 +315,11 @@ class RuleStore:
         # Absent in every store written before Task 11; see
         # `last_outcomes_from_dict` for why that needs no version bump.
         self._last_outcomes = last_outcomes_from_dict(data.get("last_outcomes"))
+        # Absent in every store written before this field existed; None
+        # (use Home Assistant's own language) is exactly the right read for
+        # a key that was never there, so no coercion function is needed the
+        # way `active_block`/`last_outcomes` need one for their richer shape.
+        self._language = data.get("language")
 
     async def async_save(self) -> None:
         self._prune_outcomes()
@@ -324,6 +339,10 @@ class RuleStore:
                 rule_id: dict(outcome)
                 for rule_id, outcome in self._last_outcomes.items()
             }
+        # Same additive treatment again: a store that never set a language
+        # override keeps exactly the shape it has always had.
+        if self._language is not None:
+            data["language"] = self._language
         await self._store.async_save(data)
 
     async def async_set_active_block(
@@ -345,6 +364,12 @@ class RuleStore:
 
     async def async_set_enabled(self, value: bool) -> None:
         self._enabled = value
+        await self.async_save()
+        self._notify_change()
+
+    async def async_set_language(self, value: str | None) -> None:
+        """Set the card's shared language override, or clear it with None."""
+        self._language = value
         await self.async_save()
         self._notify_change()
 

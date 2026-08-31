@@ -264,6 +264,50 @@ describe('shabbat-defaults-dialog', () => {
     expect(saved[0].data).toStrictEqual({});
   });
 
+  it('hands the language ha-selector the current override and Auto/English/Hebrew options', async () => {
+    const el = await render({ languageOverride: 'he' });
+    const sel = el.shadowRoot!.querySelector('ha-selector') as any;
+    expect(sel).not.toBeNull();
+    expect(sel.value).toBe('he');
+    expect(sel.selector.select.options.map((o: any) => o.value)).toEqual(
+      ['', 'en', 'he'],
+    );
+  });
+
+  it('shows Auto (empty string) when no override is set', async () => {
+    const el = await render({ languageOverride: null });
+    expect((el.shadowRoot!.querySelector('ha-selector') as any).value).toBe('');
+  });
+
+  it('emits language-changed immediately on selection, not gated behind Save', async () => {
+    const el = await render({ languageOverride: null });
+    const seen: unknown[] = [];
+    el.addEventListener('language-changed', (e: Event) => {
+      seen.push((e as CustomEvent).detail.language);
+    });
+    el.shadowRoot!.querySelector('ha-selector')!.dispatchEvent(
+      new CustomEvent('value-changed', { detail: { value: 'he' } }),
+    );
+    expect(seen).toEqual(['he']);
+  });
+
+  it('emits null, not an empty string, when Auto is chosen', async () => {
+    const el = await render({ languageOverride: 'he' });
+    const seen: unknown[] = [];
+    el.addEventListener('language-changed', (e: Event) => {
+      seen.push((e as CustomEvent).detail.language);
+    });
+    el.shadowRoot!.querySelector('ha-selector')!.dispatchEvent(
+      new CustomEvent('value-changed', { detail: { value: '' } }),
+    );
+    expect(seen).toEqual([null]);
+  });
+
+  it('disables the language selector when the user cannot write', async () => {
+    const el = await render({ canWrite: false });
+    expect((el.shadowRoot!.querySelector('ha-selector') as any).disabled).toBe(true);
+  });
+
   it('does not re-seed the draft when hass is reassigned', async () => {
     const el = await render({ canWrite: true, defaults: {} });
     el.shadowRoot!.querySelector('shabbat-target-editor')!

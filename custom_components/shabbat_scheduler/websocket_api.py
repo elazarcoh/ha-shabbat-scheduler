@@ -109,6 +109,9 @@ def _state_payload(hass: HomeAssistant, data: dict) -> dict:
         # and cannot be constructed from a unique_id. Guessing it has
         # caused two real bugs in this project already.
         "master_entity_id": _master_entity_id(hass, data["entry_id"]),
+        # None means "use Home Assistant's own language" - card.ts falls
+        # back to `hass.locale.language` when this is absent.
+        "language": store.language,
     }
 
 
@@ -404,6 +407,32 @@ async def ws_defaults(hass: HomeAssistant, connection, msg: dict[str, Any]) -> N
     )
 
 
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "shabbat_scheduler/language/update",
+        # `None` clears the override back to "use Home Assistant's own" -
+        # an explicit `null` in the request, not merely an absent field, so
+        # a client can distinguish "I chose Auto" from "I sent nothing".
+        vol.Required("language"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+async def ws_set_language(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    """A separate door from `defaults/update`, deliberately: language is a
+
+    presentation preference, not a rule-authoring default, and does not
+    belong in `Defaults` (`{target, data}`) or its validation.
+    """
+    data = _entry_data(hass)
+    if data is None:
+        connection.send_error(msg["id"], "not_set_up", "Integration is not set up")
+        return
+    store = data["store"]
+    await store.async_set_language(msg["language"])
+    connection.send_result(msg["id"], {"language": store.language})
+
+
 @callback
 @websocket_api.websocket_command({vol.Required("type"): "shabbat_scheduler/subscribe"})
 def ws_subscribe(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
@@ -448,4 +477,5 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_run_now)
     websocket_api.async_register_command(hass, ws_run_day)
     websocket_api.async_register_command(hass, ws_defaults)
+    websocket_api.async_register_command(hass, ws_set_language)
     websocket_api.async_register_command(hass, ws_subscribe)

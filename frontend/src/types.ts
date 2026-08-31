@@ -160,6 +160,12 @@ export interface CardState {
   warnings: WarningData[];
   block: BlockData | null;
   master_entity_id: string | null;
+  /**
+   * The card's own shared language override, or null to use Home
+   * Assistant's own (`hass.locale.language`) - see card.ts's `_language`.
+   * Shared across every viewer, the same way `enabled`/`defaults` are.
+   */
+  language: string | null;
 }
 
 export interface DayGroup {

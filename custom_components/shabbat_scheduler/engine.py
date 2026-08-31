@@ -246,6 +246,7 @@ class ShabbatEngine:
         store: RuleStore,
         candle_sensor: str = DEFAULT_CANDLE_SENSOR,
         havdalah_sensor: str = DEFAULT_HAVDALAH_SENSOR,
+        auto_disarm: bool = False,
     ) -> None:
         self.hass = hass
         self.store = store
@@ -255,6 +256,11 @@ class ShabbatEngine:
         # pre-existing direct construction of this class keeps working.
         self._candle_sensor = candle_sensor
         self._havdalah_sensor = havdalah_sensor
+        # Off by default for the same reason DEFAULT_AUTO_DISARM is: every
+        # install's history so far never auto-disarmed, and this constructor
+        # default keeps every pre-existing direct construction (mostly
+        # tests) unchanged.
+        self._auto_disarm_enabled = auto_disarm
         self.last_run: list[dict] = []
         self.last_run_at: datetime | None = None
         # Keyed on rule id, not entity_id: a target may be an area or a
@@ -801,6 +807,31 @@ class ShabbatEngine:
                     self.hass, self._make_callback(item), item.when
                 )
             )
+
+        if self._auto_disarm_enabled:
+            # NOT `self._block.havdalah` alone: this integration explicitly
+            # supports a rule scheduled after havdalah (a block held over
+            # past it, above, exists for exactly that case), and disarming
+            # right at havdalah would cut such a rule off before it can
+            # fire. The correct moment is whichever is LATER - havdalah
+            # itself, or the last rule this block still has pending.
+            # `self._upcoming` is already filtered to `> now`, so this stays
+            # correct even mid-hold, when havdalah itself is already past.
+            disarm_at = max([self._block.havdalah, *(item.when for item in self._upcoming)])
+            self._unsubscribes.append(
+                async_track_point_in_time(self.hass, self._auto_disarm, disarm_at)
+            )
+
+    async def _auto_disarm(self, _now: datetime) -> None:
+        """Turn the master switch off - the "actively arm it every time"
+
+        half of auto-disarm's contract. Guarded on `store.enabled` so a
+        household that already turned it off by hand does not get a
+        spurious write (and, more importantly, a spurious
+        `SIGNAL_RULES_CHANGED` push) at havdalah for no reason.
+        """
+        if self.store.enabled:
+            await self.store.async_set_enabled(False)
 
     async def _restore_persisted_block(self, now: datetime) -> None:
         """Re-adopt the pre-restart block, but only while it is still live.

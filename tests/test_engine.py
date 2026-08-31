@@ -2174,3 +2174,149 @@ async def test_recording_an_outcome_re_evaluates_nothing(hass, engine, _rule):
     await hass.async_block_till_done()
 
     assert notified == []
+
+
+# --- auto-disarm: an opt-in reset of the master switch ---------------------
+#
+# Off by default (const.py's DEFAULT_AUTO_DISARM) - these tests build their
+# own engine with it on, rather than using the shared `engine` fixture,
+# which stays at the constructor default so every other test in this file
+# is unaffected.
+
+
+async def test_auto_disarm_off_by_default_never_disarms(hass, engine, freezer):
+    """The shared `engine` fixture never asked for this - the master switch
+
+    must stay exactly as set, well past havdalah and past every rule's own
+    time, matching every install's behaviour before this feature existed.
+    """
+    freezer.move_to("2026-08-14T12:00:00+00:00")
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await engine.store.async_set_enabled(True)
+    await engine.store.async_add(
+        Rule(id="r", profile=1, day="1", time=time(11, 0),
+             action=_ON, target={"entity_id": ["input_boolean.t"]})
+    )
+    await engine.async_refresh()
+
+    # Well past havdalah (20:01 local) and the rule (11:00 local).
+    async_fire_time_changed(
+        hass, dt_util.parse_datetime("2026-08-15T19:00:00+00:00")
+    )
+    await hass.async_block_till_done()
+
+    assert engine.store.enabled is True
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_auto_disarm_fires_at_havdalah_when_no_rule_follows_it(
+    hass, jerusalem, freezer
+):
+    """The simple case: nothing scheduled after havdalah, so havdalah
+
+    itself is the correct moment.
+    """
+    store = RuleStore(hass)
+    await store.async_load()
+    engine = ShabbatEngine(hass, store, auto_disarm=True)
+
+    freezer.move_to("2026-08-14T12:00:00+00:00")
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await store.async_set_enabled(True)
+    await store.async_add(
+        Rule(id="morning-on", profile=1, day="1", time=time(11, 0),
+             action=_ON, target={"entity_id": ["input_boolean.t"]})
+    )
+    await engine.async_refresh()
+    assert store.enabled is True
+
+    # Refreshed one minute before havdalah, not exactly at it: `now` has to
+    # stay strictly before the disarm target for `_async_refresh` to
+    # schedule it at all (`item.when > now`) - refreshing AT the target
+    # would filter it straight back out. A timer registered hours earlier
+    # against the frozen clock does not reliably fire on a later, distant
+    # `freezer.move_to` alone either, the same pairing this file's other
+    # tail-firing tests use throughout - so this re-registers it just
+    # ahead of time, then the actual havdalah moment fires it.
+    freezer.move_to("2026-08-15T17:00:00+00:00")
+    await engine.async_refresh()
+
+    # 20:01 local - havdalah itself. Nothing else is scheduled after it.
+    async_fire_time_changed(
+        hass, dt_util.parse_datetime("2026-08-15T17:01:00+00:00")
+    )
+    await hass.async_block_till_done()
+
+    assert store.enabled is False
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_auto_disarm_waits_for_a_rule_scheduled_after_havdalah(
+    hass, jerusalem, test_booleans, freezer
+):
+    """The exact concern this feature was asked to handle: a rule due
+
+    AFTER havdalah must get to fire before the switch turns itself off -
+    disarming at bare havdalah would cut it off first.
+    """
+    store = RuleStore(hass)
+    await store.async_load()
+    engine = ShabbatEngine(hass, store, auto_disarm=True)
+
+    freezer.move_to("2026-08-14T12:00:00+00:00")
+    _set_zmanim(hass, "2026-08-14T15:44:00+00:00", "2026-08-15T17:01:00+00:00")
+    await store.async_set_enabled(True)
+    hass.states.async_set("input_boolean.t", "on")
+    # 23:00 local == 20:00 UTC - two hours after the 20:01 local havdalah.
+    await store.async_add(
+        Rule(id="late-off", profile=1, day="1", time=time(23, 0),
+             action=_OFF, target={"entity_id": ["input_boolean.t"]})
+    )
+    await engine.async_refresh()
+
+    # Havdalah passes - the switch must still be armed, or the late rule
+    # (which the hold logic elsewhere in this file already protects) would
+    # be pointless to protect: it would fire into a disarmed engine anyway.
+    # Refreshed right before each fire, the same pairing this file's other
+    # tail-firing tests use throughout - see the simpler havdalah-only test
+    # above for why a distant `freezer.move_to` alone is not enough.
+    freezer.move_to("2026-08-15T17:01:30+00:00")
+    await engine.async_refresh()
+    async_fire_time_changed(
+        hass, dt_util.parse_datetime("2026-08-15T17:01:30+00:00")
+    )
+    await hass.async_block_till_done()
+    assert store.enabled is True, "disarmed at havdalah, before the late rule could fire"
+
+    # One minute ahead of the late rule, same reasoning as the havdalah-only
+    # test above: `now` must stay strictly before it for the refresh to
+    # schedule it at all.
+    freezer.move_to("2026-08-15T19:59:00+00:00")
+    await engine.async_refresh()
+    assert store.enabled is True
+
+    # 23:00 local - the late rule fires, and disarm is scheduled for this
+    # exact moment too (the later of havdalah/tail).
+    async_fire_time_changed(
+        hass, dt_util.parse_datetime("2026-08-15T20:00:00+00:00")
+    )
+    await hass.async_block_till_done()
+
+    assert hass.states.get("input_boolean.t").state == "off", "the late rule itself did not fire"
+    assert store.enabled is False
+
+
+async def test_auto_disarm_does_not_write_when_already_off(hass, freezer):
+    """The guard in engine.py's `_auto_disarm`: no spurious save/notify
+
+    for a household that already turned it off by hand before havdalah.
+    """
+    store = RuleStore(hass)
+    await store.async_load()
+    engine = ShabbatEngine(hass, store, auto_disarm=True)
+
+    with patch.object(
+        store, "async_set_enabled", wraps=store.async_set_enabled
+    ) as spy:
+        await engine._auto_disarm(dt_util.utcnow())
+        spy.assert_not_called()

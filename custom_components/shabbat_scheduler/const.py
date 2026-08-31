@@ -77,6 +77,13 @@ NO_REPLAY_NOTE = "replay is switched off for this rule"
 CONF_CANDLE_SENSOR = "candle_sensor"
 CONF_HAVDALAH_SENSOR = "havdalah_sensor"
 
+# Off by default: this is a behaviour change from every install's history
+# so far (the master switch has never auto-reset), and existing installs
+# must not have their armed state silently start disappearing on them.
+# See engine.py's auto-disarm scheduling for what "on" actually does.
+CONF_AUTO_DISARM = "auto_disarm"
+DEFAULT_AUTO_DISARM = False
+
 # The Jewish Calendar integration derives these entity ids from its own
 # config entry's TITLE, not from anything stable - a second instance, for a
 # different location or candle-lighting offset, names its sensors after its

@@ -6,8 +6,10 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.shabbat_scheduler.const import (
+    CONF_AUTO_DISARM,
     CONF_CANDLE_SENSOR,
     CONF_HAVDALAH_SENSOR,
+    DEFAULT_AUTO_DISARM,
     DEFAULT_CANDLE_SENSOR,
     DEFAULT_HAVDALAH_SENSOR,
     DOMAIN,
@@ -29,6 +31,8 @@ async def test_the_flow_offers_the_zmanim_sensors(hass):
     assert result["type"] == "create_entry"
     assert result["data"][CONF_CANDLE_SENSOR] == DEFAULT_CANDLE_SENSOR
     assert result["data"][CONF_HAVDALAH_SENSOR] == DEFAULT_HAVDALAH_SENSOR
+    # Off by default on a fresh install - see const.py's DEFAULT_AUTO_DISARM.
+    assert result["data"][CONF_AUTO_DISARM] == DEFAULT_AUTO_DISARM is False
 
 
 async def test_custom_sensor_names_are_accepted(hass):
@@ -134,3 +138,83 @@ async def test_the_options_flow_can_change_them_later(hass):
     engine = hass.data[DOMAIN][entry.entry_id]["engine"]
     assert engine._candle_sensor == "sensor.jc_home_upcoming_candle_lighting"
     assert engine._havdalah_sensor == "sensor.jc_home_upcoming_havdalah"
+
+
+async def test_auto_disarm_can_be_turned_on_via_options(hass):
+    """The whole point of the option: a household can opt into the master
+
+    switch resetting itself, and the reloaded engine actually picks it up -
+    not just a value sitting unread in the config entry.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Shabbat Scheduler",
+        data={
+            CONF_CANDLE_SENSOR: DEFAULT_CANDLE_SENSOR,
+            CONF_HAVDALAH_SENSOR: DEFAULT_HAVDALAH_SENSOR,
+        },
+    )
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    engine = hass.data[DOMAIN][entry.entry_id]["engine"]
+    assert engine._auto_disarm_enabled is False  # off by default
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_CANDLE_SENSOR: DEFAULT_CANDLE_SENSOR,
+            CONF_HAVDALAH_SENSOR: DEFAULT_HAVDALAH_SENSOR,
+            CONF_AUTO_DISARM: True,
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] == "create_entry"
+    assert entry.options[CONF_AUTO_DISARM] is True
+
+    reloaded_engine = hass.data[DOMAIN][entry.entry_id]["engine"]
+    assert reloaded_engine._auto_disarm_enabled is True
+
+
+async def test_auto_disarm_explicitly_off_in_options_does_not_fall_back_to_data(hass):
+    """Regression guard for `_configured_bool` (__init__.py).
+
+    An `entry.options.get(key) or entry.data.get(key, default)` idiom -
+    correct for a sensor id, where an empty string is not a real value -
+    is WRONG for a bool: `False or entry.data[key]` evaluates the RIGHT
+    side, so an explicit "off" in options would silently read back as
+    whatever "on" the entry was originally created with. This entry is
+    deliberately created with auto_disarm ON in `data`, then turned off
+    via options, to catch exactly that regression.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Shabbat Scheduler",
+        data={
+            CONF_CANDLE_SENSOR: DEFAULT_CANDLE_SENSOR,
+            CONF_HAVDALAH_SENSOR: DEFAULT_HAVDALAH_SENSOR,
+            CONF_AUTO_DISARM: True,
+        },
+    )
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.data[DOMAIN][entry.entry_id]["engine"]._auto_disarm_enabled is True
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_CANDLE_SENSOR: DEFAULT_CANDLE_SENSOR,
+            CONF_HAVDALAH_SENSOR: DEFAULT_HAVDALAH_SENSOR,
+            CONF_AUTO_DISARM: False,
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert entry.options[CONF_AUTO_DISARM] is False
+    reloaded_engine = hass.data[DOMAIN][entry.entry_id]["engine"]
+    assert reloaded_engine._auto_disarm_enabled is False

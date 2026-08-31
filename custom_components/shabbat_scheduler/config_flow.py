@@ -24,8 +24,10 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_AUTO_DISARM,
     CONF_CANDLE_SENSOR,
     CONF_HAVDALAH_SENSOR,
+    DEFAULT_AUTO_DISARM,
     DEFAULT_CANDLE_SENSOR,
     DEFAULT_HAVDALAH_SENSOR,
     DOMAIN,
@@ -37,13 +39,14 @@ def _sensor_selector() -> selector.EntitySelector:
 
 
 def _schema(hass: HomeAssistant, current: dict[str, Any] | None = None) -> vol.Schema:
-    """A form for both zmanim sensors.
+    """A form for both zmanim sensors, plus the auto-disarm option.
 
     `current` is the config entry's already-configured values, when there
     are any (the options flow re-editing them); otherwise the Jewish
     Calendar's own default names are offered, but ONLY while an entity by
     that name actually exists - the whole point of this task is that it
-    often does not.
+    often does not. Auto-disarm defaults to off on first setup exactly as
+    it does everywhere else - see const.py.
     """
     current = current or {}
 
@@ -61,6 +64,10 @@ def _schema(hass: HomeAssistant, current: dict[str, Any] | None = None) -> vol.S
                 CONF_HAVDALAH_SENSOR,
                 default=_default(CONF_HAVDALAH_SENSOR, DEFAULT_HAVDALAH_SENSOR),
             ): _sensor_selector(),
+            vol.Required(
+                CONF_AUTO_DISARM,
+                default=current.get(CONF_AUTO_DISARM, DEFAULT_AUTO_DISARM),
+            ): selector.BooleanSelector(),
         }
     )
 

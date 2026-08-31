@@ -22,8 +22,10 @@ from homeassistant.util import dt as dt_util
 from . import websocket_api
 from .block import preview_payload
 from .const import (
+    CONF_AUTO_DISARM,
     CONF_CANDLE_SENSOR,
     CONF_HAVDALAH_SENSOR,
+    DEFAULT_AUTO_DISARM,
     DEFAULT_CANDLE_SENSOR,
     DEFAULT_HAVDALAH_SENSOR,
     DOMAIN,
@@ -49,6 +51,17 @@ def _configured_sensor(entry: ConfigEntry, key: str, default: str) -> str:
     return entry.options.get(key) or entry.data.get(key, default)
 
 
+def _configured_bool(entry: ConfigEntry, key: str, default: bool) -> bool:
+    """Same precedence as `_configured_sensor`, but `or` is wrong for a
+
+    bool: `entry.options[key] is False` must not fall through to
+    `entry.data`, the way an empty string correctly does for a sensor id.
+    """
+    if key in entry.options:
+        return bool(entry.options[key])
+    return bool(entry.data.get(key, default))
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     store = RuleStore(hass)
     await store.async_load()
@@ -57,7 +70,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     havdalah_sensor = _configured_sensor(
         entry, CONF_HAVDALAH_SENSOR, DEFAULT_HAVDALAH_SENSOR
     )
-    engine = ShabbatEngine(hass, store, candle_sensor, havdalah_sensor)
+    auto_disarm = _configured_bool(entry, CONF_AUTO_DISARM, DEFAULT_AUTO_DISARM)
+    engine = ShabbatEngine(hass, store, candle_sensor, havdalah_sensor, auto_disarm)
 
     @callback
     def _rules_changed() -> None:

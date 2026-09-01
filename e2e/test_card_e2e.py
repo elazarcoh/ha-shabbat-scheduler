@@ -366,7 +366,10 @@ def test_the_add_button_creates_a_rule_on_its_own_day(page, base_url):
             has_text="21:00"
         ).locator(".brief").inner_text()
         assert "switch.turn_on" in brief, brief
-        assert "switch.dev_pump" in brief, brief
+        # The target's own friendly name, not its raw entity id - the
+        # card resolves it through `hass.states` now. "Dev pump" is
+        # `switch.dev_pump`'s friendly_name in dev/config's fixture data.
+        assert "Dev pump" in brief, brief
     finally:
         # Remove it again so the fixture is unchanged.
         if card.locator("shabbat-rule-row").filter(has_text="21:00").count():

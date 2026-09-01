@@ -41,6 +41,15 @@ export class ShabbatRuleRow extends LitElement {
       font-size: 0.9em;
       overflow-wrap: anywhere;
     }
+    /* A rule with no name has no .title to caption, so .brief takes
+       over its exact look instead of staying a small, grey second line
+       with nothing above it to be second TO. Same text either way -
+       only a rule's own name changes which class it renders in. */
+    .brief.promoted {
+      color: inherit;
+      font-size: 1em;
+      font-weight: 500;
+    }
     .conflict { color: var(--warning-color, #d9822b); flex: none; }
     /* Inline and always visible - see the note on render(). */
     .conflict-detail {
@@ -159,7 +168,9 @@ export class ShabbatRuleRow extends LitElement {
         <span class="time">${this.rule.time.slice(0, 5)}</span>
         <div class="body">
           ${title ? html`<div class="title">${title}</div>` : nothing}
-          <div class="brief">${ruleBrief(this.rule, this.defaults)}</div>
+          <div class="brief ${title ? '' : 'promoted'}">
+            ${ruleBrief(this.rule, this.defaults, this.hass)}
+          </div>
           ${this.toggleError !== null
             ? html`<div class="row-error">${this.toggleError}</div>`
             : nothing}

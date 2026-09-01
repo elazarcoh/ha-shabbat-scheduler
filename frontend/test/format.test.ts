@@ -178,6 +178,17 @@ describe('ruleBrief', () => {
     );
     expect(brief).toContain('script.boiler');
   });
+
+  it('shows the target\'s friendly name when hass is given', () => {
+    const hass: any = { states: {
+      'climate.a': { state: 'off', attributes: { friendly_name: 'Living Room AC' } },
+    } };
+    const brief = ruleBrief(
+      rule({ target: { entity_id: ['climate.a'] } }), {}, hass,
+    );
+    expect(brief).toContain('Living Room AC');
+    expect(brief).not.toContain('climate.a');
+  });
 });
 
 describe('describeTarget', () => {
@@ -205,6 +216,66 @@ describe('describeTarget', () => {
     expect(text).toContain('climate.a');
     expect(text).toContain('salon');
     expect(text).toContain('shabbat');
+  });
+
+  it('resolves an entity to its friendly name when hass has it', () => {
+    const hass: any = { states: {
+      'climate.a': { state: 'off', attributes: { friendly_name: 'Living Room AC' } },
+    } };
+    expect(describeTarget({ entity_id: ['climate.a'] }, hass)).toBe('Living Room AC');
+  });
+
+  it('falls back to the raw entity id when hass is not given', () => {
+    expect(describeTarget({ entity_id: ['climate.a'] })).toBe('climate.a');
+  });
+
+  it('falls back to the raw entity id when the entity is unresolvable', () => {
+    const hass: any = { states: {} };
+    expect(describeTarget({ entity_id: ['climate.gone'] }, hass)).toBe('climate.gone');
+  });
+
+  it('falls back to the raw entity id when friendly_name is empty', () => {
+    const hass: any = { states: {
+      'climate.a': { state: 'off', attributes: { friendly_name: '' } },
+    } };
+    expect(describeTarget({ entity_id: ['climate.a'] }, hass)).toBe('climate.a');
+  });
+
+  it('resolves an area to its name', () => {
+    const hass: any = { areas: { salon: { area_id: 'salon', name: 'Living Room' } } };
+    expect(describeTarget({ area_id: ['salon'] }, hass)).toBe('Living Room');
+  });
+
+  it('resolves a device to its name', () => {
+    const hass: any = { devices: {
+      dev1: { id: 'dev1', name: 'Living Room AC', name_by_user: null },
+    } };
+    expect(describeTarget({ device_id: ['dev1'] }, hass)).toBe('Living Room AC');
+  });
+
+  it('prefers a device\'s name_by_user over its given name', () => {
+    const hass: any = { devices: {
+      dev1: { id: 'dev1', name: 'AC Unit 3000', name_by_user: 'Salon AC' },
+    } };
+    expect(describeTarget({ device_id: ['dev1'] }, hass)).toBe('Salon AC');
+  });
+
+  it('resolves a label to its name', () => {
+    const hass: any = { labels: { shabbat: { label_id: 'shabbat', name: 'Shabbat' } } };
+    expect(describeTarget({ label_id: 'shabbat' }, hass)).toBe('Shabbat');
+  });
+
+  it('resolves a floor to its name', () => {
+    const hass: any = { floors: { ground: { floor_id: 'ground', name: 'Ground Floor' } } };
+    expect(describeTarget({ floor_id: 'ground' }, hass)).toBe('Ground Floor');
+  });
+
+  it('falls back to the raw id for area/device/label/floor when unresolvable', () => {
+    const hass: any = { areas: {}, devices: {}, labels: {}, floors: {} };
+    expect(describeTarget({ area_id: 'salon' }, hass)).toBe('salon');
+    expect(describeTarget({ device_id: 'dev1' }, hass)).toBe('dev1');
+    expect(describeTarget({ label_id: 'shabbat' }, hass)).toBe('shabbat');
+    expect(describeTarget({ floor_id: 'ground' }, hass)).toBe('ground');
   });
 
   it('is empty for an empty target', () => {

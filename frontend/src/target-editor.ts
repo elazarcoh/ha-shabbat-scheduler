@@ -32,8 +32,8 @@ export class ShabbatTargetEditor extends LitElement {
   `;
 
   override render() {
-    const own = describeTarget(this.value);
-    const inheritedText = describeTarget(this.inherited);
+    const own = describeTarget(this.value, this.hass);
+    const inheritedText = describeTarget(this.inherited, this.hass);
     const inherits = own === '' && inheritedText !== '';
     return html`
       <div class="wrap">

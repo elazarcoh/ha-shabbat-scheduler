@@ -70,4 +70,15 @@ describe('shabbat-target-editor', () => {
     const el = await render({ disabled: true });
     expect(selector(el).disabled).toBe(true);
   });
+
+  it('shows the inherited target\'s friendly name, not its entity id', async () => {
+    const hass: any = { states: {
+      'switch.shared': { state: 'off', attributes: { friendly_name: 'Dishwasher Plug' } },
+    } };
+    const el = await render({
+      value: {}, inherited: { entity_id: ['switch.shared'] }, hass,
+    });
+    expect(el.shadowRoot!.textContent).toContain('Dishwasher Plug');
+    expect(el.shadowRoot!.textContent).not.toContain('switch.shared');
+  });
 });

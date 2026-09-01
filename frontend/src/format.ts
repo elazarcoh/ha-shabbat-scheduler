@@ -4,6 +4,7 @@ import type {
   CardState,
   DayGroup,
   Defaults,
+  Hass,
   LastOutcome,
   RuleData,
   RuleFormState,
@@ -110,34 +111,62 @@ export function buildGroups(state: CardState, profile?: number): DayGroup[] {
  * happen, where v1's "on" left the reader to remember what "on" meant
  * for that particular device.
  */
-export function ruleBrief(rule: RuleData, defaults: Defaults): string {
+export function ruleBrief(
+  rule: RuleData, defaults: Defaults, hass: Hass | null = null,
+): string {
   const target = Object.keys(rule.target).length
     ? rule.target
     : (defaults.target ?? {});
   const data = { ...(defaults.data ?? {}), ...rule.data };
 
-  const parts = [rule.action, describeTarget(target)];
+  const parts = [rule.action, describeTarget(target, hass)];
   for (const value of Object.values(data)) {
     if (value !== undefined && value !== null) parts.push(String(value));
   }
   return parts.filter((part) => part !== '').join(' \u00b7 ');
 }
 
+/** One id -> display-name lookup, by the target selector key it answers for. */
+const _RESOLVERS: Record<string, (id: string, hass: Hass | null) => string> = {
+  entity_id: (id, hass) => {
+    const name = hass?.states?.[id]?.attributes.friendly_name;
+    return typeof name === 'string' && name !== '' ? name : id;
+  },
+  area_id: (id, hass) => hass?.areas?.[id]?.name ?? id,
+  device_id: (id, hass) => {
+    const device = hass?.devices?.[id];
+    // `name_by_user` first: Home Assistant's own device list shows
+    // whichever name the user set, falling back to the one the
+    // integration gave it - the same precedence everywhere else in HA
+    // that names a device.
+    return device?.name_by_user || device?.name || id;
+  },
+  label_id: (id, hass) => hass?.labels?.[id]?.name ?? id,
+  floor_id: (id, hass) => hass?.floors?.[id]?.name ?? id,
+};
+
 /**
  * A target selector as a flat, readable list of what it names.
  *
  * A selector may hold `entity_id`, `area_id`, `device_id`, `floor_id` or
  * `label_id`, each a string or a list of strings. Everything it names is
- * shown; nothing is guessed at, expanded or filtered. An area target
- * reads as its area id rather than as the entities it will expand to,
- * because the card cannot resolve that and inventing an answer is the
- * one thing it must not do.
+ * shown; nothing is guessed at, expanded or filtered - an area target
+ * still reads as the AREA's own name, never as the entities it will
+ * expand to, because the card cannot resolve that and inventing an
+ * answer is the one thing it must not do. What changed is showing that
+ * one thing's actual NAME instead of its id: `hass` (when given) resolves
+ * each id through the registry its own key names, and an id nothing can
+ * resolve - unavailable, deleted, no `hass` at all - falls back to
+ * itself, exactly as it always rendered before this existed.
  */
-export function describeTarget(target: Record<string, unknown>): string {
+export function describeTarget(
+  target: Record<string, unknown>, hass: Hass | null = null,
+): string {
   const names: string[] = [];
-  for (const value of Object.values(target)) {
-    if (Array.isArray(value)) names.push(...value.map(String));
-    else if (value !== null && value !== undefined) names.push(String(value));
+  for (const [key, value] of Object.entries(target)) {
+    const resolve = _RESOLVERS[key] ?? ((id: string) => id);
+    if (Array.isArray(value)) names.push(...value.map((id) => resolve(String(id), hass)));
+    else if (value !== null && value !== undefined) names.push(resolve(String(value), hass));
   }
   return names.join(', ');
 }

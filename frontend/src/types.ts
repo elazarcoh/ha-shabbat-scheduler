@@ -204,5 +204,19 @@ export interface Hass {
    * override a preference the user set deliberately.
    */
   userData?: { showAdvanced?: boolean };
+  /**
+   * The four id -> name registries a target selector can name besides
+   * entities (`area_id`/`device_id`/`label_id`/`floor_id`) - read only by
+   * `describeTarget` (format.ts), to show a name instead of an opaque id
+   * in the rule list. All four are genuinely present on a real `hass`
+   * object; optional here only because a test stub, or this card
+   * running against a Home Assistant release old enough not to expose
+   * one, must not crash - `describeTarget` falls back to the raw id
+   * exactly the way an unresolvable entity already does.
+   */
+  areas?: Record<string, { area_id: string; name: string }>;
+  devices?: Record<string, { id: string; name: string | null; name_by_user: string | null }>;
+  labels?: Record<string, { label_id: string; name: string }>;
+  floors?: Record<string, { floor_id: string; name: string }>;
   [key: string]: unknown;
 }

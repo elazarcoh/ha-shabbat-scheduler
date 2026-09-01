@@ -35,6 +35,33 @@ describe('shabbat-rule-row', () => {
     expect(el.shadowRoot!.textContent).toContain('Shabbat morning');
   });
 
+  it('shows the target\'s friendly name instead of its entity id', async () => {
+    const hass: any = { states: {
+      'climate.salon': { state: 'off', attributes: { friendly_name: 'Living Room AC' } },
+    } };
+    const el = await render({ rule: rule({}), hass });
+    const text = el.shadowRoot!.textContent!;
+    expect(text).toContain('Living Room AC');
+    expect(text).not.toContain('climate.salon');
+  });
+
+  it('falls back to the raw entity id when hass cannot resolve it', async () => {
+    const el = await render({ rule: rule({}), hass: { states: {} } });
+    expect(el.shadowRoot!.textContent).toContain('climate.salon');
+  });
+
+  it('gives the brief line the title\'s own look when there is no name', async () => {
+    const el = await render({ rule: rule({ name: null }) });
+    expect(el.shadowRoot!.querySelector('.title')).toBeNull();
+    expect(el.shadowRoot!.querySelector('.brief')!.classList).toContain('promoted');
+  });
+
+  it('leaves the brief line as a caption when there IS a name', async () => {
+    const el = await render({ rule: rule({ name: 'Shabbat morning' }) });
+    expect(el.shadowRoot!.querySelector('.title')).not.toBeNull();
+    expect(el.shadowRoot!.querySelector('.brief')!.classList).not.toContain('promoted');
+  });
+
   it('marks a disabled rule as disabled, not merely dim', async () => {
     const el = await render({ rule: rule({ enabled: false }) });
     expect(el.shadowRoot!.querySelector('.row')!.classList).toContain('disabled');

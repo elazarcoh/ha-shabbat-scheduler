@@ -34,20 +34,26 @@ from custom_components.shabbat_scheduler.store import RuleStore
 # Saturday havdalah, Israel summer time (+03:00), one full day.
 #
 # A hardcoded CALENDAR date, not an offset from "now" - which is exactly
-# why this needed bumping once already (2026-08-31: this file's own two
-# non-frozen tests, test_a_future_rule_with_replay_off_reports_nothing_at_all
-# and test_future_rules_are_not_replayed_only_armed, started failing the
-# moment the real date passed 2026-08-29, silently and with no test naming
-# the cause - the comment above already knew this could happen and did not
-# prevent it). Bumped exactly one week forward, same weekdays, same local
-# clock times - if this rots again, bump it forward again; a relative
-# `dt_util.now() + timedelta(...)` would need every literal below
-# (`_local`, any other date arithmetic in this file) re-verified against a
-# non-frozen `now` at collection time, which is a bigger change than this
-# fix warrants on its own.
-_CANDLE = "2026-09-04T15:44:00+00:00"     # 18:44 local, Friday
-_HAVDALAH = "2026-09-05T17:01:00+00:00"   # 20:01 local, Saturday
-_DAY_1 = date(2026, 9, 5)
+# why this needed bumping TWICE already:
+# - 2026-08-31: this file's own two non-frozen tests,
+#   test_a_future_rule_with_replay_off_reports_nothing_at_all and
+#   test_future_rules_are_not_replayed_only_armed, failed the moment the
+#   real date passed 2026-08-29. Bumped one week forward.
+# - 2026-09-05: the SAME two tests, same reason - one week of margin was
+#   not enough; the real date passed 2026-09-05 (this bump's own target
+#   day) less than a week later. That is the second time this exact
+#   comment's own prediction ("if this rots again, bump it forward
+#   again") came true almost immediately, which is worth more margin
+#   than another single week: bumped FOUR weeks forward this time (28
+#   days - a multiple of 7, so the weekdays and every `_local` offset
+#   below stay exactly as they were).
+# A relative `dt_util.now() + timedelta(...)` would need every literal
+# below (`_local`, any other date arithmetic in this file) re-verified
+# against a non-frozen `now` at collection time - a bigger change than a
+# date bump, and one worth doing if this rots a third time.
+_CANDLE = "2026-10-02T15:44:00+00:00"     # 18:44 local, Friday
+_HAVDALAH = "2026-10-03T17:01:00+00:00"   # 20:01 local, Saturday
+_DAY_1 = date(2026, 10, 3)
 _LOCAL_OFFSET = timedelta(hours=3)  # Israel summer time
 
 

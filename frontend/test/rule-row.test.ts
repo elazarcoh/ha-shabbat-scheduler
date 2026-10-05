@@ -194,9 +194,9 @@ describe('shabbat-rule-row', () => {
     };
     const lines = await Promise.all(
       ['called', 'would_call', 'failed', 'blocked', 'skipped_stale',
-       'skipped_no_replay'].map(lineFor),
+       'skipped_no_replay', 'skipped_superseded'].map(lineFor),
     );
-    expect(new Set(lines).size).toBe(6);
+    expect(new Set(lines).size).toBe(7);
     for (const line of lines) expect(line).not.toBe('');
   });
 
@@ -224,6 +224,8 @@ describe('shabbat-rule-row', () => {
     // and gave a window, and the window was missed: a request unmet rather
     // than a setting behaving as set.
     expect(await classFor('skipped_no_replay')).not.toContain('bad');
+    // Superseded is the schedule working as written, not a fault.
+    expect(await classFor('skipped_superseded')).not.toContain('bad');
   });
 
   it('marks a diagnostic on an otherwise-successful call as bad', async () => {

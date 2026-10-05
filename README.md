@@ -4,7 +4,7 @@
 
 # Shabbat Scheduler
 
-*Alpha. 840 tests passing (464 Python + 15 end-to-end, 361 frontend).*
+*Alpha. 850 tests passing (474 Python + 15 end-to-end, 361 frontend).*
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge)](https://github.com/hacs/integration)
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=elazarcoh&repository=ha-shabbat-scheduler&category=integration)

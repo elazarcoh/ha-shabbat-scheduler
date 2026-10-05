@@ -282,6 +282,7 @@ const OUTCOME_LABELS: Record<string, StringKey> = {
   blocked: 'outcome_blocked',
   skipped_stale: 'outcome_skipped_stale',
   skipped_no_replay: 'outcome_skipped_no_replay',
+  skipped_superseded: 'outcome_skipped_superseded',
 };
 
 /**
@@ -394,7 +395,8 @@ export function formatOutcomeAt(at: string, language?: string): string {
  * exact order matters and why the two must never drift apart.
  */
 const OUTCOME_PRECEDENCE = [
-  'failed', 'blocked', 'skipped_stale', 'skipped_no_replay', 'would_call', 'called',
+  'failed', 'blocked', 'skipped_stale', 'skipped_no_replay', 'skipped_superseded',
+  'would_call', 'called',
 ] as const;
 
 /**

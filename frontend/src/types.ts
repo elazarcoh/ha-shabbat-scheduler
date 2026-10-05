@@ -58,7 +58,7 @@ export interface RuleData {
 export interface LastOutcome {
   /**
    * `called` | `would_call` | `failed` | `blocked` | `skipped_stale` |
-   * `skipped_no_replay`.
+   * `skipped_no_replay` | `skipped_superseded`.
    *
    * Typed as `string`, not a union, on purpose: this arrives over a socket
    * from a server that may be a version ahead, and the card must render

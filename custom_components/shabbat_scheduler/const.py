@@ -56,6 +56,7 @@ OUTCOME_PRECEDENCE = (
     "blocked",
     "skipped_stale",
     "skipped_no_replay",
+    "skipped_superseded",
     "would_call",
     "called",
 )
@@ -73,6 +74,11 @@ OUTCOME_PRECEDENCE = (
 # logbook row - and the catch-up summary then reported "no rule was due for
 # replay" about a restart where several were.
 NO_REPLAY_NOTE = "replay is switched off for this rule"
+
+# The prefix of a superseded replay's reason; the engine appends the later
+# rule(s) that superseded it. A restart replays nothing that a later rule for
+# the same device has already overridden - see `engine._superseded_by`.
+SUPERSEDED_NOTE = "superseded by a later rule for the same device: "
 
 CONF_CANDLE_SENSOR = "candle_sensor"
 CONF_HAVDALAH_SENSOR = "havdalah_sensor"

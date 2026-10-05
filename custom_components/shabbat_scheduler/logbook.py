@@ -64,6 +64,10 @@ _ICON_STALE = "mdi:clock-alert-outline"
 # as a blank space, which is a silent loss of exactly the at-a-glance
 # distinction this line is for.
 _ICON_NO_REPLAY = "mdi:restart-off"
+# A superseded replay is the schedule working as written - a later rule for
+# the same device already said what it should be doing - so it gets a
+# neutral "skipped" icon rather than one that reads as a problem.
+_ICON_SUPERSEDED = "mdi:skip-forward"
 _ICON_DRY_RUN = "mdi:test-tube"
 _ICON_CATCH_UP = "mdi:restart"
 
@@ -220,6 +224,9 @@ def _catch_up_message(results: list[dict]) -> str:
     no_replay = sum(
         1 for item in results if item.get("outcome") == "skipped_no_replay"
     )
+    superseded = sum(
+        1 for item in results if item.get("outcome") == "skipped_superseded"
+    )
     blocked = sum(1 for item in results if item.get("outcome") == "blocked")
     failed = sum(1 for item in results if item.get("outcome") == "failed")
     would = sum(1 for item in results if item.get("outcome") == "would_call")
@@ -234,6 +241,7 @@ def _catch_up_message(results: list[dict]) -> str:
             (failed, "failed"),
             (skipped, "skipped as stale"),
             (no_replay, "due but replay is off"),
+            (superseded, "superseded by a later rule"),
         )
         if count
     ]
@@ -335,6 +343,13 @@ def async_describe_events(
             if reason:
                 message = f"{message}: {reason}"
             return {"name": _NAME, "message": message, "icon": _ICON_STALE}
+
+        if outcome == "skipped_superseded":
+            reason = _detail(results, "skipped_superseded", "reason")
+            message = f"rule '{rule}' did not run — {reason}" if reason else (
+                f"rule '{rule}' did not run — superseded by a later rule"
+            )
+            return {"name": _NAME, "message": message, "icon": _ICON_SUPERSEDED}
 
         if outcome == "skipped_no_replay":
             # The row this whole outcome exists for. Same "did not run —"

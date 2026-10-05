@@ -65,6 +65,10 @@ const STRINGS = {
     // `detail` alongside it ("replay is switched off for this rule"), the
     // same words the logbook row carries.
     outcome_skipped_no_replay: 'Did not run — was due after a restart, replay is off',
+    // Not a fault: a later rule for the same device was already due, so
+    // replaying this one would only undo it. The server's `detail` names
+    // that later rule.
+    outcome_skipped_superseded: 'Did not run — a later rule for the same device replaced it',
     // A verdict from a server one version ahead of this card. Saying this
     // beats rendering an empty line that looks like nothing happened.
     outcome_unknown: 'Finished with no reported outcome',
@@ -153,6 +157,7 @@ const STRINGS = {
     outcome_blocked: 'לא רץ — נחסם',
     outcome_skipped_stale: 'לא רץ — דולג כמיושן',
     outcome_skipped_no_replay: 'לא רץ — היה אמור לרוץ לאחר אתחול, הפעלה חוזרת כבויה',
+    outcome_skipped_superseded: 'לא רץ — כלל מאוחר יותר לאותו מכשיר החליף אותו',
     outcome_unknown: 'הסתיים ללא תוצאה מדווחת',
     outcome_no_such_entity: 'אין ישות כזו: ',
     outcome_reached_nothing: 'לא הגיע לאף ישות קיימת',

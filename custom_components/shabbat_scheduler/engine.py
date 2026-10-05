@@ -36,6 +36,7 @@ from .const import (
     NO_LIVE_TARGETS_NOTE,
     NO_REPLAY_NOTE,
     OUTCOME_PRECEDENCE,
+    SUPERSEDED_NOTE,
     RETRY_ATTEMPTS,
     RETRY_DELAY_SECONDS,
     SIGNAL_RULES_CHANGED,
@@ -68,6 +69,40 @@ _CONTEXT_HISTORY = 200
 # fall on the far side of the hold condition (`now <= tail`) and can never
 # re-arm itself.
 _HOLD_RELEASE_GRACE = timedelta(seconds=1)
+
+# Which commands replace one another on the same entity, for replay
+# supersession (see `async_catch_up`). Two commands in one family set the
+# same piece of a device's state, so only the later one still matters: a
+# light's 18:00 OFF makes its 17:00 ON history. Anything not listed here is
+# its own family, so a repeat of the identical action supersedes, but a
+# 17:00 `set_hvac_mode` and an 18:00 `set_temperature` - two DIFFERENT
+# pieces of the AC's state - both stay wanted.
+_STATE_FAMILIES = {
+    "turn_on": "power",
+    "turn_off": "power",
+    "set_hvac_mode": "power",
+    "open_cover": "position",
+    "close_cover": "position",
+    "set_cover_position": "position",
+    "lock": "lock",
+    "unlock": "lock",
+}
+
+# A toggle's effect depends on the state before it, so neither dropping it
+# nor dropping what came before it is safe. It never takes part.
+_NO_FAMILY = {"toggle"}
+
+
+def _state_family(rule: Rule) -> str | None:
+    """The piece of device state `rule` sets, or None if it cannot say."""
+    domain, _, service = rule.action.partition(".")
+    if service in _NO_FAMILY:
+        return None
+    # A `set_temperature` carrying `hvac_mode` also switches the AC on or
+    # off - see `expand_action` - so it competes with turn_on/turn_off.
+    if "hvac_mode" in rule.data:
+        return "power"
+    return _STATE_FAMILIES.get(service, f"{domain}.{service}")
 
 
 def _condition_label(index: int, total: int, item) -> str:
@@ -156,7 +191,8 @@ def build_outcome(
 
     THE SHAPE, and why it has more than one axis. `outcome` answers "did
     the call happen, and if not why not" - one of `called`, `would_call`,
-    `failed`, `blocked`, `skipped_stale`, `skipped_no_replay`. The two
+    `failed`, `blocked`, `skipped_stale`, `skipped_no_replay`,
+    `skipped_superseded`. The two
     optional keys answer a
     DIFFERENT question: "did it reach anything?". They are not outcomes and
     must not be flattened into one, because a call can genuinely have been
@@ -943,9 +979,37 @@ class ShabbatEngine:
 
         now = dt_util.now()
         results: list[dict] = []
-        for item in resolve_rules(self._merged_rules(), self._block, self._tz()):
+        resolved = resolve_rules(self._merged_rules(), self._block, self._tz())
+        due = [item for item in resolved if item.when <= now]
+        for item in resolved:
             if item.when > now:
                 continue                      # future: armed, not replayed
+            superseded_by = await self._superseded_by(item, due)
+            if superseded_by:
+                # Checked before replay and staleness: whatever this rule's
+                # own settings, a later command for the same device has
+                # already said what the device should be doing now.
+                # Replaying it anyway is how a restart at 21:30 used to turn
+                # a light back ON that the schedule turned off at 18:00,
+                # because the OFF was past its window and the ON was not.
+                skipped = {
+                    "rule_id": item.rule.id,
+                    "outcome": "skipped_superseded",
+                    "reason": SUPERSEDED_NOTE + ", ".join(
+                        f"'{later.rule.name or later.rule.id}' at "
+                        f"{later.when.strftime('%H:%M')}"
+                        for later in superseded_by
+                    ),
+                }
+                results.append(skipped)
+                await self._async_record_outcome(
+                    item.rule,
+                    build_outcome(
+                        "skipped_superseded", dt_util.utcnow(), skipped["reason"]
+                    ),
+                )
+                self._fire_completed(item.rule, [skipped])
+                continue
             if not item.rule.replay.enabled:
                 # The author did not opt in. Reported exactly the way the
                 # stale skip below is - own result, own durable outcome, own
@@ -1017,6 +1081,70 @@ class ShabbatEngine:
             {"rule_id": None, "catch_up": True, "results": results},
         )
         return results
+
+    async def _superseded_by(
+        self, item: ResolvedRule, due: list[ResolvedRule]
+    ) -> list[ResolvedRule]:
+        """The later due rules that together make `item` history, or [].
+
+        `item` is superseded when EVERY entity it reaches is also reached by
+        some strictly later rule in `due` that sets the same piece of state
+        (`_state_family`). Whether that later rule will itself be replayed
+        does not matter - stale or replay-off, it is still the newest thing
+        the schedule said about the device.
+
+        Conservative everywhere it cannot be sure, falling back to replaying
+        `item` exactly as before:
+        - a target it cannot resolve to concrete entities (none, `all`,
+          unparseable);
+        - a later rule covering only SOME of `item`'s entities;
+        - a later rule whose condition does not pass, evaluated as of that
+          rule's own time - a blocked OFF never replaced the ON.
+        Same-minute rules are conflicts (`find_conflicts`), not history, and
+        are left alone.
+        """
+        family = _state_family(item.rule)
+        if family is None:
+            return []
+        remaining = self._entities_of(item.rule)
+        if not remaining:
+            return []
+        covering: list[ResolvedRule] = []
+        for later in due:
+            if later.when <= item.when or _state_family(later.rule) != family:
+                continue
+            overlap = remaining & self._entities_of(later.rule)
+            if not overlap:
+                continue
+            if await self._condition_block_reason(later.rule, at=later.when):
+                continue
+            remaining -= overlap
+            covering.append(later)
+            if not remaining:
+                return covering
+        return []
+
+    def _entities_of(self, rule: Rule) -> set[str]:
+        """Every entity `rule` acts on, or an empty set if that is unknowable.
+
+        Narrowed to the action's own domain when it has one: `light.turn_on`
+        on an area only reaches that area's lights, and counting its sensors
+        too would stop a later `light.turn_off` on the same lights from ever
+        covering it.
+        """
+        if not rule.target or _targets_every_entity(rule.target):
+            return set()
+        try:
+            selected = target_helper.async_extract_referenced_entity_ids(
+                self.hass, target_helper.TargetSelection(rule.target),
+            )
+        except Exception:  # noqa: BLE001 - unknowable means "do not supersede"
+            return set()
+        entities = selected.referenced | selected.indirectly_referenced
+        domain = rule.action.partition(".")[0]
+        if domain != "homeassistant":
+            entities = {e for e in entities if e.startswith(f"{domain}.")}
+        return set(entities)
 
     async def async_shutdown(self) -> None:
         """Cancel every pending timer."""

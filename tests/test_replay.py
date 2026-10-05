@@ -47,13 +47,15 @@ from custom_components.shabbat_scheduler.store import RuleStore
 #   than another single week: bumped FOUR weeks forward this time (28
 #   days - a multiple of 7, so the weekdays and every `_local` offset
 #   below stay exactly as they were).
+# - 2026-10-05: rotted a third time. Bumped 520 weeks (ten years: still a
+#   multiple of 7, still Israel summer time) so it stops being a chore.
 # A relative `dt_util.now() + timedelta(...)` would need every literal
 # below (`_local`, any other date arithmetic in this file) re-verified
 # against a non-frozen `now` at collection time - a bigger change than a
 # date bump, and one worth doing if this rots a third time.
-_CANDLE = "2026-10-02T15:44:00+00:00"     # 18:44 local, Friday
-_HAVDALAH = "2026-10-03T17:01:00+00:00"   # 20:01 local, Saturday
-_DAY_1 = date(2026, 10, 3)
+_CANDLE = "2036-09-19T15:44:00+00:00"     # 18:44 local, Friday
+_HAVDALAH = "2036-09-20T17:01:00+00:00"   # 20:01 local, Saturday
+_DAY_1 = date(2036, 9, 20)
 _LOCAL_OFFSET = timedelta(hours=3)  # Israel summer time
 
 
@@ -396,3 +398,225 @@ def test_the_action_enum_is_finally_gone():
     import custom_components.shabbat_scheduler.models as models
 
     assert not hasattr(models, "Action")
+
+
+# --- Superseded replays ---------------------------------------------------
+#
+# The owner's own schedule: a light ON at 17:00 replayable for 5h, the same
+# light OFF at 18:00 replayable for 3h. Each rule used to be judged alone,
+# so a restart at 21:30 replayed the ON (4.5h late, inside 5h) and skipped
+# the OFF (3.5h late, outside 3h) - turning the light ON hours after the
+# schedule had turned it off. And a restart at 19:00 replayed both, in
+# order: the light flashed on, then off. Only the LATEST due command for a
+# device states what the schedule wants now; anything earlier on that same
+# device is history.
+
+
+def _switch(rule_id, at: time, service: str, entity_id: str = "input_boolean.t",
+            replay: Replay = Replay(), condition=()):
+    return Rule(
+        id=rule_id, profile=1, day="1", time=at,
+        action=f"input_boolean.{service}",
+        target={"entity_id": [entity_id]},
+        replay=replay,
+        condition=condition,
+    )
+
+
+_OWNERS_SCHEDULE = [
+    _switch("on17", time(17, 0), "turn_on",
+            replay=Replay(enabled=True, within=timedelta(hours=5))),
+    _switch("off18", time(18, 0), "turn_off",
+            replay=Replay(enabled=True, within=timedelta(hours=3))),
+]
+
+
+async def _states_during_catch_up(hass, engine, clock: str) -> tuple[list, list]:
+    seen: list[str] = []
+    hass.bus.async_listen(
+        "state_changed",
+        lambda e: e.data["entity_id"] == "input_boolean.t"
+        and seen.append(e.data["new_state"].state),
+    )
+    with freeze_time(_local(clock)):
+        results = await engine.async_catch_up()
+    await hass.async_block_till_done()
+    return seen, results
+
+
+async def test_a_stale_later_off_still_supersedes_an_earlier_on(
+    hass, engine, test_booleans
+):
+    """21:30: the OFF is too stale to replay, and the ON must not replay
+    either - the light stays off, as the schedule has it since 18:00."""
+    await _prepare(engine, hass, _OWNERS_SCHEDULE)
+
+    seen, results = await _states_during_catch_up(hass, engine, "21:30")
+
+    assert seen == []
+    assert hass.states.get("input_boolean.t").state == "off"
+    by_rule = {r["rule_id"]: r for r in results}
+    assert by_rule["on17"]["outcome"] == "skipped_superseded"
+    assert "off18" in by_rule["on17"]["reason"]
+    assert by_rule["off18"]["outcome"] == "skipped_stale"
+    assert engine.store.last_outcome("on17")["outcome"] == "skipped_superseded"
+
+
+async def test_both_in_window_replays_only_the_latest_no_flash(
+    hass, engine, test_booleans
+):
+    await _prepare(engine, hass, _OWNERS_SCHEDULE)
+
+    seen, results = await _states_during_catch_up(hass, engine, "19:00")
+
+    # Replaying both used to give ["on", "off"]: a visible flash.
+    assert seen == []
+    assert hass.states.get("input_boolean.t").state == "off"
+    assert [r["outcome"] for r in results] == ["skipped_superseded", "called"]
+
+
+async def test_a_later_rule_still_in_the_future_supersedes_nothing(
+    hass, engine, test_booleans
+):
+    await _prepare(engine, hass, _OWNERS_SCHEDULE)
+
+    seen, _ = await _states_during_catch_up(hass, engine, "17:30")
+
+    assert seen == ["on"]
+
+
+async def test_a_later_rule_with_replay_off_still_supersedes(
+    hass, engine, test_booleans
+):
+    """Not replaying the OFF is the author's call; resurrecting the ON it
+    replaced is not."""
+    await _prepare(engine, hass, [
+        _switch("on17", time(17, 0), "turn_on", replay=Replay(enabled=True)),
+        _switch("off18", time(18, 0), "turn_off", replay=Replay(enabled=False)),
+    ])
+
+    seen, results = await _states_during_catch_up(hass, engine, "19:00")
+
+    assert seen == []
+    assert [r["outcome"] for r in results] == [
+        "skipped_superseded", "skipped_no_replay",
+    ]
+
+
+async def test_a_later_rule_whose_condition_fails_supersedes_nothing(
+    hass, engine, test_booleans
+):
+    """An OFF that would have been blocked never replaced the ON."""
+    hass.states.async_set("binary_sensor.away", "off")
+    await _prepare(engine, hass, [
+        _switch("on17", time(17, 0), "turn_on", replay=Replay(enabled=True)),
+        _switch(
+            "off18", time(18, 0), "turn_off", replay=Replay(enabled=True),
+            condition=({"condition": "state", "entity_id": "binary_sensor.away",
+                        "state": "on"},),
+        ),
+    ])
+
+    seen, results = await _states_during_catch_up(hass, engine, "19:00")
+
+    assert seen == ["on"]
+    assert [r["outcome"] for r in results] == ["called", "blocked"]
+
+
+async def test_a_later_rule_on_only_some_of_the_targets_supersedes_nothing(
+    hass, engine, test_booleans
+):
+    await _prepare(engine, hass, [
+        Rule(
+            id="on17", profile=1, day="1", time=time(17, 0),
+            action="input_boolean.turn_on",
+            target={"entity_id": ["input_boolean.t", "input_boolean.salon"]},
+            replay=Replay(enabled=True),
+        ),
+        _switch("off18", time(18, 0), "turn_off", replay=Replay(enabled=False)),
+    ])
+
+    with freeze_time(_local("19:00")):
+        results = await engine.async_catch_up()
+    await hass.async_block_till_done()
+
+    assert results[0]["outcome"] == "called"
+    assert hass.states.get("input_boolean.salon").state == "on"
+
+
+async def test_a_toggle_neither_supersedes_nor_is_superseded(
+    hass, engine, test_booleans
+):
+    """A toggle's effect depends on the state before it, so dropping
+    either side of a toggle changes the outcome."""
+    await _prepare(engine, hass, [
+        _switch("on17", time(17, 0), "turn_on", replay=Replay(enabled=True)),
+        _switch("tog18", time(18, 0), "toggle", replay=Replay(enabled=True)),
+    ])
+
+    seen, _ = await _states_during_catch_up(hass, engine, "19:00")
+
+    assert seen == ["on", "off"]
+
+
+async def test_a_different_kind_of_command_supersedes_nothing(hass, engine):
+    """A 17:00 mode and an 18:00 temperature on the same AC are both
+    still wanted; replaying only the temperature would lose the mode."""
+    mode = async_mock_service(hass, "climate", "set_hvac_mode")
+    temp = async_mock_service(hass, "climate", "set_temperature")
+    hass.states.async_set("climate.ac", "off")
+    target = {"entity_id": ["climate.ac"]}
+    await _prepare(engine, hass, [
+        Rule(id="mode17", profile=1, day="1", time=time(17, 0),
+             action="climate.set_hvac_mode", target=target,
+             data={"hvac_mode": "cool"}, replay=Replay(enabled=True)),
+        Rule(id="temp18", profile=1, day="1", time=time(18, 0),
+             action="climate.set_temperature", target=target,
+             data={"temperature": 24}, replay=Replay(enabled=True)),
+    ])
+
+    with freeze_time(_local("19:00")):
+        await engine.async_catch_up()
+    await hass.async_block_till_done()
+
+    assert len(mode) == 1
+    assert len(temp) == 1
+
+
+async def test_turning_an_ac_off_supersedes_setting_its_mode(hass, engine):
+    mode = async_mock_service(hass, "climate", "set_hvac_mode")
+    off = async_mock_service(hass, "climate", "turn_off")
+    hass.states.async_set("climate.ac", "cool")
+    target = {"entity_id": ["climate.ac"]}
+    await _prepare(engine, hass, [
+        Rule(id="mode17", profile=1, day="1", time=time(17, 0),
+             action="climate.set_hvac_mode", target=target,
+             data={"hvac_mode": "cool"}, replay=Replay(enabled=True)),
+        Rule(id="off18", profile=1, day="1", time=time(18, 0),
+             action="climate.turn_off", target=target,
+             replay=Replay(enabled=True, within=timedelta(hours=1))),
+    ])
+
+    with freeze_time(_local("21:30")):
+        results = await engine.async_catch_up()
+    await hass.async_block_till_done()
+
+    assert mode == [] and off == []
+    assert [r["outcome"] for r in results] == ["skipped_superseded", "skipped_stale"]
+
+
+async def test_a_superseded_skip_reaches_the_logbook(hass, engine, test_booleans):
+    events = async_capture_events(hass, EVENT_RULE_COMPLETED)
+    described = {}
+    async_describe_events(hass, lambda d, e, f: described.__setitem__(e, f))
+    await _prepare(engine, hass, _OWNERS_SCHEDULE)
+
+    await _states_during_catch_up(hass, engine, "21:30")
+
+    per_rule = [e for e in events if e.data.get("rule_id") == "on17"]
+    assert len(per_rule) == 1
+    row = described[EVENT_RULE_COMPLETED](per_rule[0])["message"]
+    assert "did not run" in row and "superseded" in row and "off18" in row
+    summary = [e for e in events if e.data.get("catch_up")]
+    message = described[EVENT_RULE_COMPLETED](summary[0])["message"]
+    assert "1 superseded by a later rule" in message

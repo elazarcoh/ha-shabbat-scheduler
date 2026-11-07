@@ -379,6 +379,32 @@ export class ShabbatSchedulerCard extends LitElement {
     void this._toggleRuleEnabled(rule);
   };
 
+  /**
+   * Delete straight from a row's menu (right-click / long press). Same
+   * no-dialog error path as the row toggle above: a refusal shows on the
+   * row itself, since there is no dialog open to carry it.
+   */
+  private _onRuleDelete = async (event: Event) => {
+    const { rule } = (event as CustomEvent).detail as { rule: RuleData };
+    try {
+      await this._hass.callWS({
+        type: 'shabbat_scheduler/rules/delete',
+        rule_id: rule.id,
+      });
+      if (rule.id in this._toggleErrors) {
+        const rest = { ...this._toggleErrors };
+        delete rest[rule.id];
+        this._toggleErrors = rest;
+      }
+    } catch (err) {
+      const detail = err as { message?: string } | null;
+      this._toggleErrors = {
+        ...this._toggleErrors,
+        [rule.id]: detail?.message ?? String(err),
+      };
+    }
+  };
+
   private _onRuleAdd = (event: Event) => {
     this._creatingDay = (event as CustomEvent).detail.day as string;
     this._editing = null;
@@ -762,6 +788,7 @@ export class ShabbatSchedulerCard extends LitElement {
       <ha-card
         @rule-open=${this._onRuleOpen}
         @rule-toggle-enabled=${this._onRuleToggleEnabled}
+        @rule-delete=${this._onRuleDelete}
         @simulate-open=${() => { this._simulateOpen = true; }}
         @clone-open=${this._onCloneOpen}
       >

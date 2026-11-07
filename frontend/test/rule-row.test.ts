@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import '../src/rule-row';
 import { ShabbatRuleRow } from '../src/rule-row';
 import { t } from '../src/strings';
@@ -499,5 +499,82 @@ describe('shabbat-rule-row mobile layout', () => {
     const cssText = (ShabbatRuleRow.styles as unknown as { cssText: string }).cssText;
     expect(cssText).toContain('@media (max-width: 599px)');
     expect(cssText).toContain('display: contents');
+  });
+
+  describe('row menu', () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    const menu = (el: HTMLElement) => el.shadowRoot!.querySelector('.menu');
+    const rowOf = (el: HTMLElement) => el.shadowRoot!.querySelector('.row') as HTMLElement;
+
+    it('opens on right-click and deletes from the menu', async () => {
+      const el = await render({ rule: rule({}), canWrite: true });
+      const deleted = vi.fn();
+      const opened = vi.fn();
+      el.addEventListener('rule-delete', deleted);
+      el.addEventListener('rule-open', opened);
+      const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+      rowOf(el).dispatchEvent(event);
+      await (el as any).updateComplete;
+      expect(event.defaultPrevented).toBe(true);
+      expect(menu(el)).not.toBeNull();
+
+      (el.shadowRoot!.querySelector('.menu-delete') as HTMLElement).click();
+      await (el as any).updateComplete;
+      expect(deleted).toHaveBeenCalledTimes(1);
+      expect(deleted.mock.calls[0][0].detail.rule.id).toBe('r');
+      expect(opened).not.toHaveBeenCalled();
+      expect(menu(el)).toBeNull();
+    });
+
+    it('opens on a long touch, and the click after it does not open the dialog', async () => {
+      vi.useFakeTimers();
+      const el = await render({ rule: rule({}), canWrite: true });
+      const opened = vi.fn();
+      el.addEventListener('rule-open', opened);
+      rowOf(el).dispatchEvent(new PointerEvent('pointerdown', {
+        pointerType: 'touch', clientX: 20, clientY: 20, bubbles: true,
+      }));
+      vi.advanceTimersByTime(600);
+      await (el as any).updateComplete;
+      expect(menu(el)).not.toBeNull();
+      rowOf(el).click();
+      expect(opened).not.toHaveBeenCalled();
+    });
+
+    it('a short tap still opens the dialog, not the menu', async () => {
+      vi.useFakeTimers();
+      const el = await render({ rule: rule({}), canWrite: true });
+      const opened = vi.fn();
+      el.addEventListener('rule-open', opened);
+      rowOf(el).dispatchEvent(new PointerEvent('pointerdown', {
+        pointerType: 'touch', clientX: 20, clientY: 20, bubbles: true,
+      }));
+      vi.advanceTimersByTime(100);
+      rowOf(el).dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+      vi.advanceTimersByTime(1000);
+      rowOf(el).click();
+      await (el as any).updateComplete;
+      expect(menu(el)).toBeNull();
+      expect(opened).toHaveBeenCalledTimes(1);
+    });
+
+    it('closes when tapping outside it', async () => {
+      const el = await render({ rule: rule({}), canWrite: true });
+      rowOf(el).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+      await (el as any).updateComplete;
+      (el.shadowRoot!.querySelector('.menu-backdrop') as HTMLElement).click();
+      await (el as any).updateComplete;
+      expect(menu(el)).toBeNull();
+    });
+
+    it('offers no menu to a read-only user, and leaves the browser menu alone', async () => {
+      const el = await render({ rule: rule({}), canWrite: false });
+      const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+      rowOf(el).dispatchEvent(event);
+      await (el as any).updateComplete;
+      expect(event.defaultPrevented).toBe(false);
+      expect(menu(el)).toBeNull();
+    });
   });
 });

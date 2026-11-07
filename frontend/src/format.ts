@@ -216,7 +216,7 @@ export function unattachedWarnings(
 }
 
 /** 'erev' -> 'Erev' / 'ערב'; '1' -> 'Day 1' / 'יום 1'. */
-function dayLabel(day: string, language: string | undefined): string {
+export function dayLabel(day: string, language: string | undefined): string {
   return day === 'erev' ? t(language, 'erev') : `${t(language, 'day')} ${day}`;
 }
 

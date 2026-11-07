@@ -1,5 +1,5 @@
 import { LitElement, css, html, nothing } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
+import { customElement, property, state } from 'lit/decorators.js';
 import {
   formatOutcome,
   formatOutcomeAt,
@@ -21,6 +21,16 @@ export class ShabbatRuleRow extends LitElement {
   @property({ type: Boolean }) canWrite = false;
   @property() toggleError: string | null = null;
   @property() language = 'en';
+
+  /** Where the row menu is open, in viewport pixels; null when closed. */
+  @state() private _menu: { x: number; y: number } | null = null;
+  private _pressTimer: ReturnType<typeof setTimeout> | null = null;
+  private _pressStart: { x: number; y: number } | null = null;
+  /** A long press just opened the menu: swallow the click that follows. */
+  private _suppressClick = false;
+
+  /** How long a touch must be held to open the menu. */
+  static LONG_PRESS_MS = 500;
 
   static override styles = css`
     .row {
@@ -90,12 +100,147 @@ export class ShabbatRuleRow extends LitElement {
        while .brief/.last-outcome/.conflict-detail wrap onto their
        own full-width lines below. .body itself has no visual box (no
        padding/border/background), so nothing is lost by unwrapping it. */
+    /* A long press on a touch screen must open OUR menu, not select the
+       row's text or pop the browser's own callout. */
+    .row { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
+    .menu-backdrop { position: fixed; inset: 0; z-index: 9; }
+    .menu {
+      position: fixed;
+      z-index: 10;
+      min-inline-size: 9em;
+      background: var(--card-background-color, #fff);
+      color: var(--primary-text-color, #111);
+      border: 1px solid var(--divider-color, #e0e0e0);
+      border-radius: 8px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+      padding-block: 4px;
+    }
+    .menu button {
+      display: block;
+      inline-size: 100%;
+      font: inherit;
+      text-align: start;
+      background: none;
+      border: none;
+      color: inherit;
+      padding-block: 10px;
+      padding-inline: 16px;
+      cursor: pointer;
+    }
+    .menu button:hover { background: var(--secondary-background-color, #f4f4f4); }
+    .menu .menu-delete { color: var(--error-color, #c62828); }
     @media (max-width: 599px) {
       .row { flex-wrap: wrap; row-gap: 4px; }
       .body { display: contents; }
       .brief, .last-outcome, .conflict-detail { flex-basis: 100%; }
     }
   `;
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    this._cancelPress();
+  }
+
+  private _openMenu(x: number, y: number) {
+    if (!this.canWrite) return;
+    // Keep the menu on screen near the pointer: it is ~10em wide and two
+    // items tall, so pull it back from the right and bottom edges.
+    const maxX = Math.max(0, window.innerWidth - 180);
+    const maxY = Math.max(0, window.innerHeight - 110);
+    this._menu = { x: Math.min(x, maxX), y: Math.min(y, maxY) };
+  }
+
+  private _closeMenu() {
+    this._menu = null;
+  }
+
+  private _cancelPress() {
+    if (this._pressTimer !== null) clearTimeout(this._pressTimer);
+    this._pressTimer = null;
+    this._pressStart = null;
+  }
+
+  /**
+   * Touch only. A mouse already has right-click (`contextmenu`), and
+   * Android Chrome fires `contextmenu` on a long press too - but iOS
+   * Safari never does, so the timer is what makes it work on an iPad.
+   * Both paths just set `_menu`, so a browser that fires both opens it
+   * once.
+   */
+  private _onPointerDown(event: PointerEvent) {
+    if (!this.canWrite || event.pointerType === 'mouse') return;
+    this._cancelPress();
+    this._pressStart = { x: event.clientX, y: event.clientY };
+    this._pressTimer = setTimeout(() => {
+      const start = this._pressStart;
+      this._pressTimer = null;
+      if (start === null) return;
+      this._suppressClick = true;
+      this._openMenu(start.x, start.y);
+    }, ShabbatRuleRow.LONG_PRESS_MS);
+  }
+
+  private _onPointerMove(event: PointerEvent) {
+    // A scroll, not a hold.
+    const start = this._pressStart;
+    if (start === null) return;
+    if (Math.abs(event.clientX - start.x) > 10 || Math.abs(event.clientY - start.y) > 10) {
+      this._cancelPress();
+    }
+  }
+
+  private _onContextMenu(event: MouseEvent) {
+    if (!this.canWrite) return;
+    event.preventDefault();
+    this._cancelPress();
+    this._openMenu(event.clientX, event.clientY);
+  }
+
+  private _onRowClick() {
+    if (this._suppressClick) {
+      this._suppressClick = false;
+      return;
+    }
+    this._open();
+  }
+
+  private _delete() {
+    this._closeMenu();
+    this.dispatchEvent(
+      new CustomEvent('rule-delete', {
+        detail: { rule: this.rule },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  private _renderMenu() {
+    if (this._menu === null) return nothing;
+    return html`<div class="menu-layer">
+      <div
+        class="menu-backdrop"
+        @click=${(event: Event) => { event.stopPropagation(); this._closeMenu(); }}
+        @contextmenu=${(event: Event) => { event.preventDefault(); this._closeMenu(); }}
+      ></div>
+      <div
+        class="menu"
+        role="menu"
+        style="left:${this._menu.x}px;top:${this._menu.y}px"
+      >
+        <button
+          class="menu-edit"
+          role="menuitem"
+          @click=${(event: Event) => { event.stopPropagation(); this._closeMenu(); this._open(); }}
+        >${t(this.language, 'edit_rule')}</button>
+        <button
+          class="menu-delete"
+          role="menuitem"
+          @click=${(event: Event) => { event.stopPropagation(); this._delete(); }}
+        >${t(this.language, 'delete_rule')}</button>
+      </div>
+    </div>`;
+  }
 
   private _open() {
     this.dispatchEvent(
@@ -133,15 +278,26 @@ export class ShabbatRuleRow extends LitElement {
     const outcome = this.rule.last_outcome ?? null;
     const when = outcome === null ? '' : formatOutcomeAt(outcome.at, this.language);
     return html`
+      <div class="row-wrap">
       <div
         class="row ${this.rule.enabled ? '' : 'disabled'}"
         tabindex="0"
         role="button"
-        @click=${() => this._open()}
+        @click=${() => this._onRowClick()}
+        @contextmenu=${(event: MouseEvent) => this._onContextMenu(event)}
+        @pointerdown=${(event: PointerEvent) => this._onPointerDown(event)}
+        @pointermove=${(event: PointerEvent) => this._onPointerMove(event)}
+        @pointerup=${() => this._cancelPress()}
+        @pointercancel=${() => this._cancelPress()}
+        @pointerleave=${() => this._cancelPress()}
         @keydown=${(event: KeyboardEvent) => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
             this._open();
+          } else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+            event.preventDefault();
+            const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
+            this._openMenu(box.left + 16, box.top + box.height / 2);
           }
         }}
       >
@@ -203,6 +359,8 @@ export class ShabbatRuleRow extends LitElement {
               >⚠</span
             >`
           : nothing}
+      </div>
+      ${this._renderMenu()}
       </div>
     `;
   }

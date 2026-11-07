@@ -454,6 +454,45 @@ describe('authoring', () => {
     expect(el.shadowRoot!.querySelector('shabbat-rule-dialog')).not.toBeNull();
   });
 
+  it('deletes a rule straight from a row menu, without opening a dialog', async () => {
+    const { hass, send } = fakeHass();
+    const el = await mount(hass);
+    send(withRules());
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-day-group')!.dispatchEvent(
+      new CustomEvent('rule-delete', {
+        detail: { rule: withRules().rules[0] }, bubbles: true, composed: true,
+      }),
+    );
+    await flush();
+
+    expect(hass.callWS).toHaveBeenCalledWith({
+      type: 'shabbat_scheduler/rules/delete', rule_id: 'r1',
+    });
+    expect(el.shadowRoot!.querySelector('shabbat-rule-dialog')).toBeNull();
+  });
+
+  it('shows a refused row-menu delete on the row itself', async () => {
+    const { hass, send } = fakeHass();
+    hass.callWS = vi.fn(async () => { throw { message: 'nope' }; });
+    const el = await mount(hass);
+    send(withRules());
+    await el.updateComplete;
+
+    el.shadowRoot!.querySelector('shabbat-day-group')!.dispatchEvent(
+      new CustomEvent('rule-delete', {
+        detail: { rule: withRules().rules[0] }, bubbles: true, composed: true,
+      }),
+    );
+    await flush();
+    await el.updateComplete;
+
+    const row = (await ruleRows(el))[0] as any;
+    await row.updateComplete;
+    expect(row.toggleError).toBe('nope');
+  });
+
   it('toggles a rule enabled/disabled from the row, non-optimistically', async () => {
     const { hass, send } = fakeHass();
     const el = await mount(hass);

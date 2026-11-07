@@ -105,6 +105,9 @@ const STRINGS = {
     clone_landed: 'Cloned',
     clone_failed: 'Not cloned',
     clone_none: 'none',
+    section_action: 'Action',
+    section_conditions: 'Only if',
+    section_options: 'Options',
   },
   he: {
     erev: 'ערב',
@@ -185,6 +188,9 @@ const STRINGS = {
     clone_landed: 'שוכפלו',
     clone_failed: 'לא שוכפלו',
     clone_none: 'ללא',
+    section_action: 'פעולה',
+    section_conditions: 'רק אם',
+    section_options: 'אפשרויות',
   },
 } as const;
 

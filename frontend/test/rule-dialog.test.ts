@@ -159,6 +159,38 @@ describe('shabbat-rule-dialog', () => {
   // on erev while every other assertion in the suite stayed green, and an
   // air conditioner would run on the wrong day of a three-day Chag.
 
+  it('shows the day the edited rule lives on, not the first option', async () => {
+    const el = await render();
+    const select = el.shadowRoot!.querySelector('select.day') as HTMLSelectElement;
+    expect(select.value).toBe('1');
+    expect([...select.options].map((o) => o.value)).toEqual(['erev', '1']);
+  });
+
+  it('offers every day of the rule\'s own profile', async () => {
+    const el = await render({ rule: { ...existing, profile: 3, day: '2' }, profile: 1 });
+    const select = el.shadowRoot!.querySelector('select.day') as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).toEqual(['erev', '1', '2', '3']);
+    expect(select.value).toBe('2');
+  });
+
+  it('moves a rule to another day only when the day is picked', async () => {
+    const el = await render();
+    const saved = vi.fn();
+    el.addEventListener('dialog-save', saved);
+    const select = el.shadowRoot!.querySelector('select.day') as HTMLSelectElement;
+    select.value = 'erev';
+    select.dispatchEvent(new Event('change'));
+    await el.updateComplete;
+    (el.shadowRoot!.querySelector('.save') as HTMLElement).click();
+    expect(saved.mock.calls[0][0].detail.form.day).toBe('erev');
+  });
+
+  it('pre-selects the day a create was opened for', async () => {
+    const el = await render({ rule: null, day: '1' });
+    const select = el.shadowRoot!.querySelector('select.day') as HTMLSelectElement;
+    expect(select.value).toBe('1');
+  });
+
   it('creates on the day it was opened for, not on erev', async () => {
     const el = await render({ rule: null, seed: null, day: '2' });
     const listener = vi.fn();

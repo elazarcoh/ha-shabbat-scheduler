@@ -1,6 +1,8 @@
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { foldCallResults, formatOutcome, formToChanges, ruleToForm } from './format';
+import {
+  dayLabel, daysFor, foldCallResults, formatOutcome, formToChanges, ruleToForm,
+} from './format';
 import { t } from './strings';
 import type { Defaults, Hass, RuleData, RuleFormState } from './types';
 import './condition-editor';
@@ -66,50 +68,120 @@ export class ShabbatRuleDialog extends LitElement {
       background: rgba(0, 0, 0, 0.4);
       z-index: 10;
     }
+    /* Header, scrolling content, footer: the title and the Save button
+       stay put however long the form gets. */
     .panel {
+      display: flex;
+      flex-direction: column;
       background: var(--card-background-color, #fff);
       color: var(--primary-text-color, #111);
       border-radius: 12px;
-      padding: 16px;
-      inline-size: min(28rem, 92vw);
-      max-block-size: 88vh;
-      overflow: auto;
+      inline-size: min(30rem, 94vw);
+      max-block-size: 90vh;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
     }
-    h2 { margin-block: 0 12px; font-size: 1.1em; }
-    .field { display: flex; align-items: center; gap: 12px; margin-block: 8px; }
-    .field label { min-inline-size: 7em; }
+    .head {
+      padding-block: 16px 8px;
+      padding-inline: 20px;
+      border-block-end: 1px solid var(--divider-color, #e0e0e0);
+    }
+    h2 { margin: 0; font-size: 1.2em; font-weight: 500; }
+    .content {
+      flex: 1;
+      min-block-size: 0;
+      overflow: auto;
+      padding-block: 4px 16px;
+      padding-inline: 20px;
+    }
+    .section { padding-block: 12px; }
+    .section + .section { border-block-start: 1px solid var(--divider-color, #e0e0e0); }
+    .section-title {
+      margin-block: 0 8px;
+      font-size: 0.75em;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--secondary-text-color, #666);
+    }
+    /* Label above its control: no 7em label column eating a phone's
+       width. Toggles are the exception - label left, switch right. */
+    .field { display: flex; flex-direction: column; gap: 4px; margin-block: 8px; }
+    .field label { font-size: 0.85em; color: var(--secondary-text-color, #666); }
+    .field.inline { flex-direction: row; align-items: center; justify-content: space-between; }
+    .field.inline label { font-size: 1em; color: inherit; }
+    /* Day and time side by side - together they ARE "when". */
+    .when {
+      display: grid;
+      grid-template-columns: minmax(6.5em, 1fr) auto;
+      gap: 12px;
+      align-items: end;
+    }
+    .when .field { margin-block: 0; }
+    /* Match Home Assistant's own text field height, so the select and
+       the time picker beside it line up. */
+    .when select { min-block-size: 56px; }
     input, select {
       font: inherit;
-      padding-block: 4px;
-      padding-inline: 6px;
-      flex: 1;
+      box-sizing: border-box;
+      min-block-size: 40px;
+      padding-block: 6px;
+      padding-inline: 10px;
+      border: 1px solid var(--divider-color, #c8c8c8);
+      border-radius: 8px;
+      background: var(--card-background-color, #fff);
+      color: inherit;
+      inline-size: 100%;
       min-inline-size: 0;
+    }
+    input[type='color'] { padding: 2px; inline-size: 4em; }
+    .foot {
+      border-block-start: 1px solid var(--divider-color, #e0e0e0);
+      padding-block: 10px;
+      padding-inline: 16px;
+      background: var(--card-background-color, #fff);
     }
     .actions {
       display: flex;
       gap: 8px;
-      justify-content: flex-end;
-      margin-block-start: 16px;
+      align-items: center;
       flex-wrap: wrap;
     }
-    .actions .delete { margin-inline-end: auto; color: var(--error-color, #d64545); }
+    /* Secondary actions are quiet text buttons on the start side; Cancel
+       and Save sit together at the end, Save the only filled one. */
+    .actions .spacer { flex: 1; }
+    .actions .delete, .actions .duplicate, .actions .run-now {
+      border-color: transparent;
+      background: none;
+      padding-inline: 8px;
+    }
+    .actions .delete { color: var(--error-color, #d64545); }
+    .actions .save {
+      background: var(--primary-color, #03a9f4);
+      border-color: var(--primary-color, #03a9f4);
+      color: var(--text-primary-color, #fff);
+      font-weight: 500;
+    }
     button {
       font: inherit;
+      min-block-size: 36px;
       padding-block: 6px;
-      padding-inline: 12px;
-      border-radius: 6px;
+      padding-inline: 14px;
+      border-radius: 8px;
       border: 1px solid var(--divider-color, #e0e0e0);
       background: var(--card-background-color, #fff);
       color: inherit;
       cursor: pointer;
     }
     button[disabled] { opacity: 0.5; cursor: not-allowed; }
+    .run-confirm { display: flex; gap: 8px; margin-block-start: 8px; flex-wrap: wrap; }
+    .run-now-result { font-size: 0.9em; margin-block-start: 8px; }
     .error {
       color: var(--error-color, #d64545);
       margin-block: 8px;
       font-size: 0.9em;
     }
-    .note { color: var(--secondary-text-color, #666); font-size: 0.85em; }
+    .note { color: var(--secondary-text-color, #666); font-size: 0.85em; margin-block: 8px; }
     /* The wrapper around the advanced fields is load-bearing under this
        repo's pinned lit-html + happy-dom: a template whose root holds
        several top-level expressions renders NONE of them. Same constraint
@@ -120,6 +192,22 @@ export class ShabbatRuleDialog extends LitElement {
       border: none;
       padding-inline: 0;
       color: var(--primary-color, #03a9f4);
+    }
+    /* A phone: the dialog IS the screen. */
+    @media (max-width: 600px) {
+      .sheet { align-items: stretch; }
+      .panel {
+        inline-size: 100vw;
+        max-block-size: none;
+        block-size: 100%;
+        border-radius: 0;
+      }
+      .head { padding-inline: 16px; }
+      .content { padding-inline: 16px; }
+      .foot { padding-block-end: max(10px, env(safe-area-inset-bottom)); }
+      /* Secondary actions on their own row, primary row full width. */
+      .actions .spacer { flex-basis: 100%; block-size: 0; }
+      .actions button:not(.delete):not(.duplicate):not(.run-now) { flex: 1; }
     }
   `;
 
@@ -152,6 +240,15 @@ export class ShabbatRuleDialog extends LitElement {
       this._advanced = false;
       this._runConfirmOpen = false;
     }
+  }
+
+  override updated() {
+    // Belt and braces with the per-option `?selected` in `_dayField`: the
+    // select's own value is pinned to the form after every render, so
+    // whatever order the options were (re)built in, it shows the day a
+    // save will write.
+    const select = this.shadowRoot?.querySelector('select.day') as HTMLSelectElement | null;
+    if (select && select.value !== this._form.day) select.value = this._form.day;
   }
 
   private _patch(patch: Partial<RuleFormState>) {
@@ -240,9 +337,45 @@ export class ShabbatRuleDialog extends LitElement {
     `;
   }
 
-  private _enabledField() {
+  /**
+   * Which day of the block the rule belongs to. Shown on every open, edit
+   * and create alike, so the day a save will write is always on screen
+   * rather than implied by which group the dialog was opened from.
+   *
+   * The options are the PROFILE's days (`daysFor`), plus the rule's own
+   * day if it is somehow outside them - a rule must never be silently
+   * re-homed just because the picker could not show where it lives.
+   * Selection uses `?selected` per option, not `.value` on the select:
+   * setting `.value` before the options exist leaves the first option
+   * (Erev) showing, which is exactly the "jumped to Erev" this field is
+   * here to rule out.
+   */
+  private _dayField() {
+    const days = daysFor(this.rule?.profile ?? this.profile);
+    if (!days.includes(this._form.day)) days.push(this._form.day);
     return html`
       <div class="field">
+        <label for="day">${t(this.language, 'day')}</label>
+        <select
+          id="day"
+          class="day"
+          ?disabled=${!this.canWrite}
+          @change=${(event: Event) =>
+            this._patch({ day: (event.target as HTMLSelectElement).value })}
+        >
+          ${days.map(
+            (day) => html`<option value=${day} ?selected=${day === this._form.day}>
+              ${dayLabel(day, this.language)}
+            </option>`,
+          )}
+        </select>
+      </div>
+    `;
+  }
+
+  private _enabledField() {
+    return html`
+      <div class="field inline">
         <label for="enabled">${t(this.language, 'enabled')}</label>
         <ha-selector
           id="enabled"
@@ -280,7 +413,7 @@ export class ShabbatRuleDialog extends LitElement {
 
   private _colorField() {
     return html`
-      <div class="field">
+      <div class="field inline">
         <label for="color">${t(this.language, 'colour')}</label>
         <input
           id="color"
@@ -335,7 +468,10 @@ export class ShabbatRuleDialog extends LitElement {
         }
       }}>
         <div class="panel">
-          <h2>${t(this.language, editing ? 'edit_rule' : 'add_rule')}</h2>
+          <div class="head">
+            <h2>${t(this.language, editing ? 'edit_rule' : 'add_rule')}</h2>
+          </div>
+          <div class="content">
 
           ${this.canWrite
             ? nothing
@@ -350,10 +486,16 @@ export class ShabbatRuleDialog extends LitElement {
             : nothing}
 
           <div class="form">
-            ${this._timeField()}
-            ${this._text('name', t(this.language, 'name'))}
+            <div class="section">
+              ${this._text('name', t(this.language, 'name'))}
+              <div class="when">
+                ${this._dayField()}
+                ${this._timeField()}
+              </div>
+            </div>
 
-            ${this._enabledField()}
+            <div class="section">
+            <h3 class="section-title">${t(this.language, 'section_action')}</h3>
 
             <!-- \`data: … ?? {}\` below is on purpose, and it must NOT
                  become "preserve the old data" the way the defaults
@@ -384,6 +526,10 @@ export class ShabbatRuleDialog extends LitElement {
               @target-changed=${(event: CustomEvent) =>
                 this._patch({ target: event.detail.value })}
             ></shabbat-target-editor>
+            </div>
+
+            <div class="section">
+            <h3 class="section-title">${t(this.language, 'section_conditions')}</h3>
 
             <shabbat-condition-editor
               .value=${this._form.condition}
@@ -400,6 +546,11 @@ export class ShabbatRuleDialog extends LitElement {
                 this._patch({ condition: event.detail.value });
               }}
             ></shabbat-condition-editor>
+            </div>
+
+            <div class="section">
+            <h3 class="section-title">${t(this.language, 'section_options')}</h3>
+            ${this._enabledField()}
 
             <shabbat-replay-editor
               .hass=${this.hass}
@@ -424,50 +575,11 @@ export class ShabbatRuleDialog extends LitElement {
                   </div>
                 `
               : nothing}
+            </div>
+          </div>
           </div>
 
-          <div class="actions">
-            ${this.canWrite && editing
-              ? html`<button
-                  class="delete"
-                  ?disabled=${this.busy}
-                  @click=${() => this._emit('dialog-delete')}
-                >
-                  ${t(this.language, 'delete_rule')}
-                </button>`
-              : nothing}
-            <button @click=${() => this.dispatchEvent(new CustomEvent('dialog-close'))}>
-              ${t(this.language, 'cancel')}
-            </button>
-            ${this.canWrite && editing
-              ? html`<button
-                  class="duplicate"
-                  ?disabled=${this.busy}
-                  @click=${() => this._emit('dialog-duplicate')}
-                >
-                  ${t(this.language, 'duplicate')}
-                </button>`
-              : nothing}
-            ${this.canWrite && editing
-              ? html`<button
-                  class="run-now"
-                  ?disabled=${this.busy || this._dirty}
-                  title=${this._dirty ? t(this.language, 'run_now_disabled_dirty') : ''}
-                  @click=${() => { this._runConfirmOpen = !this._runConfirmOpen; }}
-                >
-                  ▶ ${t(this.language, 'run_now_button')}
-                </button>`
-              : nothing}
-            ${this.canWrite
-              ? html`<button
-                  class="save"
-                  ?disabled=${this.busy}
-                  @click=${() => this._onSave()}
-                >
-                  ${t(this.language, 'save')}
-                </button>`
-              : nothing}
-          </div>
+          <div class="foot">
           ${this._runConfirmOpen
             ? html`<div class="run-confirm">
                 <button
@@ -489,6 +601,50 @@ export class ShabbatRuleDialog extends LitElement {
                 )}
               </div>`
             : nothing}
+          <div class="actions">
+            ${this.canWrite && editing
+              ? html`<button
+                  class="delete"
+                  ?disabled=${this.busy}
+                  @click=${() => this._emit('dialog-delete')}
+                >
+                  ${t(this.language, 'delete_rule')}
+                </button>`
+              : nothing}
+            ${this.canWrite && editing
+              ? html`<button
+                  class="duplicate"
+                  ?disabled=${this.busy}
+                  @click=${() => this._emit('dialog-duplicate')}
+                >
+                  ${t(this.language, 'duplicate')}
+                </button>`
+              : nothing}
+            ${this.canWrite && editing
+              ? html`<button
+                  class="run-now"
+                  ?disabled=${this.busy || this._dirty}
+                  title=${this._dirty ? t(this.language, 'run_now_disabled_dirty') : ''}
+                  @click=${() => { this._runConfirmOpen = !this._runConfirmOpen; }}
+                >
+                  ▶ ${t(this.language, 'run_now_button')}
+                </button>`
+              : nothing}
+            <span class="spacer"></span>
+            <button @click=${() => this.dispatchEvent(new CustomEvent('dialog-close'))}>
+              ${t(this.language, 'cancel')}
+            </button>
+            ${this.canWrite
+              ? html`<button
+                  class="save"
+                  ?disabled=${this.busy}
+                  @click=${() => this._onSave()}
+                >
+                  ${t(this.language, 'save')}
+                </button>`
+              : nothing}
+          </div>
+          </div>
         </div>
       </div>
     `;

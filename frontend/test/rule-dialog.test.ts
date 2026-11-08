@@ -708,3 +708,20 @@ describe('Run Now', () => {
     });
   });
 });
+
+describe('shabbat-rule-dialog action editor context', () => {
+  it("gives the action editor the rule's target as context", async () => {
+    const el = await render();
+    const service = el.shadowRoot!.querySelector('shabbat-service-editor') as any;
+    expect(service.target).toEqual({ entity_id: ['climate.salon'] });
+  });
+
+  it('falls back to the defaults target when the rule has none, as the backend does', async () => {
+    const el = await render({
+      rule: { ...existing, target: {} },
+      defaults: { target: { entity_id: ['climate.kids'] } },
+    });
+    const service = el.shadowRoot!.querySelector('shabbat-service-editor') as any;
+    expect(service.target).toEqual({ entity_id: ['climate.kids'] });
+  });
+});

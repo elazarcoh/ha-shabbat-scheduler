@@ -28,9 +28,17 @@ describe('shabbat-service-editor', () => {
     expect(control(el).hass).toBe(el.hass);
   });
 
-  it('never hands it a target, which this card owns separately', async () => {
+  it('hands it no target when none is chosen', async () => {
     const el = await render({ action: 'switch.turn_on' });
     expect(control(el).value.target).toBeUndefined();
+  });
+
+  it('hands it the chosen target as context, so device fields work', async () => {
+    // Without it HA greys out state selectors (hvac_mode, fan_mode) and
+    // hides fields filtered by the device's features (temperature).
+    const target = { entity_id: ['climate.kids'] };
+    const el = await render({ action: 'climate.set_temperature', target });
+    expect(control(el).value).toEqual({ action: 'climate.set_temperature', target, data: {} });
   });
 
   it('splits value-changed back into action and data', async () => {

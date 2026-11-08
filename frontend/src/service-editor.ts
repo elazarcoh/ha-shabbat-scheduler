@@ -12,8 +12,11 @@ import type { Hass } from './types';
  *
  * `<ha-service-control>` speaks a single `{action, target, data}` value,
  * and it HAS internal target logic. This card owns the target separately
- * (see `target-editor.ts`), so this element neither passes a target down
- * nor lets one back up. Dropping it on the way out is not defensive
+ * (see `target-editor.ts`). The chosen target IS passed down, read-only,
+ * because HA's form needs it as context: without it every state selector
+ * (hvac_mode, fan_mode, ...) is greyed out and fields filtered by the
+ * device's supported features (set_temperature's temperature) are hidden,
+ * so the form cannot be filled in at all. A target is never let back up. Dropping it on the way out is not defensive
  * coding: without it, a stray target from HA's element would silently
  * overwrite what the user chose in the target editor.
  *
@@ -72,6 +75,8 @@ export class ShabbatServiceEditor extends LitElement {
   @property({ attribute: false }) hass: Hass | null = null;
   @property() action = '';
   @property({ attribute: false }) data: Record<string, unknown> = {};
+  /** Context only: tells HA's form which device the action is for. */
+  @property({ attribute: false }) target: Record<string, unknown> | null = null;
   @property({ type: Boolean }) disabled = false;
 
   static override styles = css`
@@ -92,7 +97,9 @@ export class ShabbatServiceEditor extends LitElement {
              decision, made inside its own element. -->
         <ha-service-control
           .hass=${this.hass}
-          .value=${{ action: this.action, data: this.data }}
+          .value=${this.target && Object.keys(this.target).length
+            ? { action: this.action, target: this.target, data: this.data }
+            : { action: this.action, data: this.data }}
           .disabled=${this.disabled}
           @value-changed=${this._onChange}
         ></ha-service-control>

@@ -509,6 +509,9 @@ export class ShabbatRuleDialog extends LitElement {
             <shabbat-service-editor
               .hass=${this.hass}
               .action=${this._form.action}
+              .target=${Object.keys(this._form.target ?? {}).length
+                ? this._form.target
+                : (this.defaults.target ?? {})}
               .data=${this._form.data}
               .disabled=${!this.canWrite}
               @service-changed=${(event: CustomEvent) =>

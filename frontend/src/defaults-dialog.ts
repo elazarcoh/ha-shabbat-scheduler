@@ -232,6 +232,7 @@ export class ShabbatDefaultsDialog extends LitElement {
               <shabbat-service-editor
                 .hass=${this.hass}
                 .action=${this._action}
+                .target=${this._draft.target ?? {}}
                 .data=${this._draft.data ?? {}}
                 .disabled=${!this.canWrite}
                 @service-changed=${this._onServiceChanged}

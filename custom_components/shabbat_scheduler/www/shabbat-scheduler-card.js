@@ -516,7 +516,7 @@ function Pe(e){return null==e}Me.styles=s`
     .field { display: flex; align-items: center; gap: 12px; margin-block: 8px; }
     .field label { min-inline-size: 9em; }
     .help { color: var(--secondary-text-color, #666); font-size: 0.85em; }
-  `,e([he({attribute:!1})],ji.prototype,"hass",void 0),e([he({attribute:!1})],ji.prototype,"value",void 0),e([he({type:Boolean})],ji.prototype,"disabled",void 0),e([he()],ji.prototype,"language",void 0),ji=e([ce("shabbat-replay-editor")],ji);let Ri=class extends ae{constructor(){super(...arguments),this.hass=null,this.action="",this.data={},this.disabled=!1,this._onChange=e=>{const t=e.detail?.value??{},i={action:"string"==typeof t.action?t.action:""};"object"==typeof t.data&&null!==t.data&&(i.data=t.data),this.dispatchEvent(new CustomEvent("service-changed",{detail:i}))},this._observer=null}render(){return B`
+  `,e([he({attribute:!1})],ji.prototype,"hass",void 0),e([he({attribute:!1})],ji.prototype,"value",void 0),e([he({type:Boolean})],ji.prototype,"disabled",void 0),e([he()],ji.prototype,"language",void 0),ji=e([ce("shabbat-replay-editor")],ji);let Ri=class extends ae{constructor(){super(...arguments),this.hass=null,this.action="",this.data={},this.target=null,this.disabled=!1,this._onChange=e=>{const t=e.detail?.value??{},i={action:"string"==typeof t.action?t.action:""};"object"==typeof t.data&&null!==t.data&&(i.data=t.data),this.dispatchEvent(new CustomEvent("service-changed",{detail:i}))},this._observer=null}render(){return B`
       <div class="wrap">
         <!-- No \`showAdvanced\`. It was passed here for a while, first
              hard-coded true and then following the user's own preference -
@@ -529,14 +529,14 @@ function Pe(e){return null==e}Me.styles=s`
              decision, made inside its own element. -->
         <ha-service-control
           .hass=${this.hass}
-          .value=${{action:this.action,data:this.data}}
+          .value=${this.target&&Object.keys(this.target).length?{action:this.action,target:this.target,data:this.data}:{action:this.action,data:this.data}}
           .disabled=${this.disabled}
           @value-changed=${this._onChange}
         ></ha-service-control>
       </div>
     `}get _control(){return this.shadowRoot?.querySelector("ha-service-control")??null}async updated(){const e=this._control;e?.updateComplete&&await e.updateComplete,this.suppressTargetRows(),this._watch()}disconnectedCallback(){super.disconnectedCallback(),this._observer?.disconnect(),this._observer=null}_watch(){const e=this._control?.shadowRoot;!this._observer&&e&&(this._observer=new MutationObserver(()=>this.suppressTargetRows()),this._observer.observe(e,{childList:!0}))}suppressTargetRows(){const e=this._control?.shadowRoot;if(!e)return 0;const t=[...e.querySelectorAll("ha-selector")].filter(e=>{const t=e.selector;return"object"==typeof t&&null!==t&&"target"in t});for(const e of t)e.style.setProperty("display","none","important");return this.setAttribute("data-target-rows-suppressed",String(t.length)),t.length}};Ri.styles=s`
     :host { display: block; }
-  `,e([he({attribute:!1})],Ri.prototype,"hass",void 0),e([he()],Ri.prototype,"action",void 0),e([he({attribute:!1})],Ri.prototype,"data",void 0),e([he({type:Boolean})],Ri.prototype,"disabled",void 0),Ri=e([ce("shabbat-service-editor")],Ri);let Mi=class extends ae{constructor(){super(...arguments),this.hass=null,this.value={},this.inherited={},this.disabled=!1,this.language="en",this._onChange=e=>{const t=e.detail?.value??{};this.dispatchEvent(new CustomEvent("target-changed",{detail:{value:t}}))}}render(){const e=$e(this.value,this.hass),t=$e(this.inherited,this.hass),i=""===e&&""!==t;return B`
+  `,e([he({attribute:!1})],Ri.prototype,"hass",void 0),e([he()],Ri.prototype,"action",void 0),e([he({attribute:!1})],Ri.prototype,"data",void 0),e([he({attribute:!1})],Ri.prototype,"target",void 0),e([he({type:Boolean})],Ri.prototype,"disabled",void 0),Ri=e([ce("shabbat-service-editor")],Ri);let Mi=class extends ae{constructor(){super(...arguments),this.hass=null,this.value={},this.inherited={},this.disabled=!1,this.language="en",this._onChange=e=>{const t=e.detail?.value??{};this.dispatchEvent(new CustomEvent("target-changed",{detail:{value:t}}))}}render(){const e=$e(this.value,this.hass),t=$e(this.inherited,this.hass),i=""===e&&""!==t;return B`
       <div class="wrap">
         <ha-selector
           .hass=${this.hass}
@@ -671,6 +671,7 @@ function Pe(e){return null==e}Me.styles=s`
             <shabbat-service-editor
               .hass=${this.hass}
               .action=${this._form.action}
+              .target=${Object.keys(this._form.target??{}).length?this._form.target:this.defaults.target??{}}
               .data=${this._form.data}
               .disabled=${!this.canWrite}
               @service-changed=${e=>this._patch({action:e.detail.action,data:e.detail.data??{}})}
@@ -964,6 +965,7 @@ function Pe(e){return null==e}Me.styles=s`
               <shabbat-service-editor
                 .hass=${this.hass}
                 .action=${this._action}
+                .target=${this._draft.target??{}}
                 .data=${this._draft.data??{}}
                 .disabled=${!this.canWrite}
                 @service-changed=${this._onServiceChanged}
@@ -1348,4 +1350,4 @@ function Pe(e){return null==e}Me.styles=s`
       margin-block: 8px;
       font-size: 0.9em;
     }
-  `,e([pe()],Ui.prototype,"_state",void 0),e([pe()],Ui.prototype,"_error",void 0),e([he({attribute:!1})],Ui.prototype,"_config",void 0),e([pe()],Ui.prototype,"_selectedProfile",void 0),e([pe()],Ui.prototype,"_editing",void 0),e([pe()],Ui.prototype,"_creatingDay",void 0),e([pe()],Ui.prototype,"_defaultsOpen",void 0),e([pe()],Ui.prototype,"_simulateOpen",void 0),e([pe()],Ui.prototype,"_dialogError",void 0),e([pe()],Ui.prototype,"_toggleErrors",void 0),e([pe()],Ui.prototype,"_busy",void 0),e([pe()],Ui.prototype,"_duplicateSeed",void 0),e([pe()],Ui.prototype,"_runNowResult",void 0),e([pe()],Ui.prototype,"_cloneSource",void 0),e([pe()],Ui.prototype,"_cloneLanded",void 0),e([pe()],Ui.prototype,"_cloneFailed",void 0),Ui=e([ce("shabbat-scheduler-card")],Ui),window.customCards=window.customCards??[],window.customCards.push({type:"shabbat-scheduler-card",name:"Shabbat Scheduler",description:"The coming Shabbat or Chag as a timeline."}),console.info("shabbat-scheduler-card 0.12.0");export{Ui as ShabbatSchedulerCard};
+  `,e([pe()],Ui.prototype,"_state",void 0),e([pe()],Ui.prototype,"_error",void 0),e([he({attribute:!1})],Ui.prototype,"_config",void 0),e([pe()],Ui.prototype,"_selectedProfile",void 0),e([pe()],Ui.prototype,"_editing",void 0),e([pe()],Ui.prototype,"_creatingDay",void 0),e([pe()],Ui.prototype,"_defaultsOpen",void 0),e([pe()],Ui.prototype,"_simulateOpen",void 0),e([pe()],Ui.prototype,"_dialogError",void 0),e([pe()],Ui.prototype,"_toggleErrors",void 0),e([pe()],Ui.prototype,"_busy",void 0),e([pe()],Ui.prototype,"_duplicateSeed",void 0),e([pe()],Ui.prototype,"_runNowResult",void 0),e([pe()],Ui.prototype,"_cloneSource",void 0),e([pe()],Ui.prototype,"_cloneLanded",void 0),e([pe()],Ui.prototype,"_cloneFailed",void 0),Ui=e([ce("shabbat-scheduler-card")],Ui),window.customCards=window.customCards??[],window.customCards.push({type:"shabbat-scheduler-card",name:"Shabbat Scheduler",description:"The coming Shabbat or Chag as a timeline."}),console.info("shabbat-scheduler-card 0.12.1");export{Ui as ShabbatSchedulerCard};

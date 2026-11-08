@@ -465,19 +465,14 @@ def test_the_service_control_renders_a_real_service_schema(page, base_url):
     Choosing a service that HA says takes data must produce a field that
     a service HA says takes none does not.
 
-    WHAT IS ASSERTED, AND WHY IT IS NOT `temperature`. The brief asks for
-    a temperature field. `climate.set_temperature` declares `temperature`
-    behind a `supported_features` filter, and `ha-service-control` only
-    renders a filtered field once its OWN internal target selector names
-    an entity with that feature. This card deliberately does not pass a
-    target down to `ha-service-control` (see service-editor.ts: its
-    target UI depends on `ha-target-picker`, which is not pre-registered
-    on a dashboard, so the card owns the target separately), so
-    `temperature` never appears here and asserting on it would assert on
-    a field this card can never show. `hvac_mode` is the unfiltered field
-    of the same service and carries exactly the same proof: it is present
-    for `climate.set_temperature`, absent for `switch.turn_on`, and only
-    Home Assistant's schema knows the difference.
+    WHAT IS ASSERTED, AND WHY IT IS NOT `temperature`. `climate.set_temperature`
+    declares `temperature` behind a `supported_features` filter, and
+    `ha-service-control` only renders a filtered field once it knows a
+    target entity with that feature. This test sets no target, so
+    `temperature` does not appear; `hvac_mode` is the unfiltered field of
+    the same service and carries exactly the same proof. The card does pass
+    the chosen target down as context (service-editor.ts), and
+    `test_action_fields_follow_the_chosen_device` covers the filtered field.
 
     The difference is asserted in BOTH directions - the field appears,
     then goes away again when the action changes back. A one-way check
@@ -1022,3 +1017,25 @@ def test_overwrite_cloning_a_day_onto_itself_preserves_its_own_rules(page, base_
             rule_dialog.wait_for(state="attached", timeout=10_000)
             rule_dialog.locator("button.delete").click()
             rule_dialog.wait_for(state="detached", timeout=15_000)
+
+
+def test_action_fields_follow_the_chosen_device(page, base_url):
+    """HA's action form needs the target as context: without it the mode
+    dropdowns are greyed out and set_temperature shows no temperature, so
+    an AC rule cannot be authored in the card. Nothing is saved."""
+    card = _card(page, base_url)
+    dialog = _open_create(card)
+    _set_target_entity(dialog, "Dev kids", "climate")
+    _set_action(dialog, "climate.set_temperature", "set_temperature", "climate")
+    control = dialog.locator("shabbat-service-editor ha-service-control")
+    expect(control.locator("ha-selector-number")).to_have_count(1, timeout=15_000)
+
+    _set_action(dialog, "climate.set_hvac_mode", "set_hvac_mode", "climate")
+    mode = control.locator("ha-selector-state")
+    expect(mode).to_have_count(1, timeout=15_000)
+    control.locator("ha-checkbox").first.click()  # optional in HA's schema
+    assert mode.evaluate("el => el.context && el.context.filter_entity") == ["climate.dev_kids"]
+    assert mode.evaluate("el => !el.disabled")
+
+    dialog.locator(CANCEL).click()
+    dialog.wait_for(state="detached", timeout=10_000)

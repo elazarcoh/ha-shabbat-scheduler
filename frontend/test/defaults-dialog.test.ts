@@ -323,3 +323,11 @@ describe('shabbat-defaults-dialog', () => {
     ).toEqual({ area_id: ['salon'] });
   });
 });
+
+describe('shabbat-defaults-dialog action editor context', () => {
+  it("gives the data editor the defaults' target as context", async () => {
+    const el = await render();
+    const service = el.shadowRoot!.querySelector('shabbat-service-editor') as any;
+    expect(service.target).toEqual({ entity_id: ['climate.salon'] });
+  });
+});

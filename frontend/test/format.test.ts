@@ -559,3 +559,26 @@ describe('formatOutcome / outcomeIsBad with invalid_data', () => {
     expect(outcomeIsBad(wouldCall(undefined))).toBe(false);
   });
 });
+
+describe('formatOutcome / outcomeIsBad with wrong_targets', () => {
+  const reason = "input_boolean.turn_on can't act on switch.slp (it takes input_boolean entities)";
+  const called = { outcome: 'called', at: '2026-11-13T16:00:00Z', detail: null, wrong_targets: [reason] };
+
+  it('names the entity the action skipped on a row that fired', () => {
+    expect(formatOutcome(called, 'en')).toContain(reason);
+    expect(outcomeIsBad(called)).toBe(true);
+  });
+
+  it('does not repeat a reason the failed detail already gives', () => {
+    const failed = { ...called, outcome: 'failed', detail: reason };
+    expect(formatOutcome(failed, 'en').split(reason).length - 1).toBe(1);
+  });
+
+  it('folds the reasons across calls, once each', () => {
+    const folded = foldCallResults(
+      [{ outcome: 'called', wrong_targets: [reason] }, { outcome: 'called', wrong_targets: [reason] }],
+      '2026-11-13T16:00:00Z',
+    );
+    expect(folded.wrong_targets).toEqual([reason]);
+  });
+});

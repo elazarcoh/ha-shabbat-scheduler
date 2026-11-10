@@ -827,3 +827,25 @@ def test_a_completed_row_survives_a_payload_with_nothing_in_it(hass):
     result = described[EVENT_RULE_COMPLETED](Event(EVENT_RULE_COMPLETED, {}))
     assert result["message"]
     assert "None" not in result["message"]
+
+
+WRONG = "input_boolean.turn_on can't act on switch.slp (it takes input_boolean entities)"
+
+
+def test_a_fired_rule_names_the_entity_its_action_skipped(hass):
+    described = _describers(hass)
+    result = described[EVENT_RULE_COMPLETED](
+        _completed(results=[{"action": "input_boolean.turn_on", "outcome": "called",
+                             "wrong_targets": [WRONG]}])
+    )
+    assert "fired" in result["message"]
+    assert WRONG in result["message"]
+
+
+def test_a_failed_rule_does_not_repeat_the_reason_its_error_already_gives(hass):
+    described = _describers(hass)
+    result = described[EVENT_RULE_COMPLETED](
+        _completed(results=[{"action": "input_boolean.turn_on", "outcome": "failed",
+                             "error": WRONG, "wrong_targets": [WRONG]}])
+    )
+    assert result["message"].count(WRONG) == 1

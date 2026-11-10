@@ -74,6 +74,12 @@ export interface LastOutcome {
   /** The call was made and resolved to no entity that exists. */
   no_live_targets?: boolean;
   /**
+   * Why the action skipped an entity it can't act on, e.g. "input_boolean.turn_on
+   * can't act on switch.x (...); use switch.turn_on". Set when the call still
+   * reached something else; otherwise the same reason is the failed `detail`.
+   */
+  wrong_targets?: string[];
+  /**
    * Reasons a targeted entity's OWN advertised options (`fan_modes`,
    * `hvac_modes`, and the like) would refuse a value in `data`, right now.
    * Simulate-only (see `engine.py`'s `_call`): a real failing call gets the

@@ -19,7 +19,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 
-from . import websocket_api
+from . import target_filter, websocket_api
 from .block import preview_payload
 from .const import (
     CONF_AUTO_DISARM,
@@ -221,6 +221,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     async def _hass_started(_hass: HomeAssistant) -> None:
+        # Every integration is loaded now, so every action can be described;
+        # the engine reads these from the cache when a rule fires.
+        await target_filter.async_load_descriptions(hass)
         catch_up["started"] = True
         # jewish_calendar may have published while we were setting up.
         await engine.async_refresh()

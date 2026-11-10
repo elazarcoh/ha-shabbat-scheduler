@@ -205,3 +205,35 @@ async def test_describe_data_violations_reports_every_violation_not_just_the_fir
     assert len(violations) == 2
     assert any("fan_mode" in v for v in violations)
     assert any("hvac_mode" in v for v in violations)
+
+
+def _takes(hass, action, domains):
+    from homeassistant.helpers.service import async_set_service_schema
+    from pytest_homeassistant_custom_component.common import async_mock_service
+
+    domain, service = action.split(".")
+    async_mock_service(hass, domain, service)
+    async_set_service_schema(
+        hass, domain, service, {"fields": {}, "target": {"entity": [{"domain": domains}]}})
+
+
+async def test_an_entity_the_action_cannot_take_is_rejected(hass):
+    _takes(hass, "input_boolean.turn_on", ["input_boolean"])
+    _takes(hass, "switch.turn_on", ["switch"])
+    with pytest.raises(RuleValidationError, match=r"can't act on switch\.slp.*use switch\.turn_on"):
+        await async_validate_rule(hass, _rule(
+            action="input_boolean.turn_on", target={"entity_id": ["switch.slp"]}))
+
+
+async def test_an_entity_the_action_takes_is_accepted(hass):
+    _takes(hass, "switch.turn_on", ["switch"])
+    await async_validate_rule(hass, _rule(action="switch.turn_on", target={"entity_id": "switch.slp"}))
+
+
+async def test_an_action_home_assistant_does_not_describe_is_not_checked(hass):
+    await async_validate_rule(hass, _rule(action="nope.turn_on", target={"entity_id": ["switch.slp"]}))
+
+
+async def test_an_area_is_not_checked_at_save_time(hass):
+    _takes(hass, "light.turn_on", ["light"])
+    await async_validate_rule(hass, _rule(action="light.turn_on", target={"area_id": "salon"}))

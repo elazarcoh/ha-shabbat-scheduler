@@ -338,6 +338,27 @@ too stale reports `skipped_stale` and now fires its own
 `shabbat_scheduler_rule_completed` event, so the skip is a logbook row rather
 than an entry in an aggregate `last_run` that the next rule overwrites.
 
+## An action only reaches the entities it can act on
+
+Home Assistant skips a targeted entity an action can not handle, such as
+`input_boolean.turn_on` on a `switch`, with only a log warning; the call
+itself succeeds. Each action's own description (`target.entity` filters,
+the same data HA's target picker uses) says which domains and integrations
+it takes, and `target_filter.py` reads it:
+
+- **Saving** (card or YAML import) refuses a rule whose target names such an
+  entity, and suggests the action in the entity's own domain when one exists.
+  Areas, labels and devices are not checked here.
+- **Firing** a rule that reaches nothing else is `failed` with the same
+  reason; one that reached something else is `called` with `wrong_targets`,
+  shown on the row and in the logbook. Simulate reports it too.
+- A `group.` entity is always accepted (HA expands it first), an action with
+  no description is not checked, and only `domain`/`integration` are read,
+  not device classes or features.
+- The engine reads the descriptions from HA's cache, filled when HA has
+  started, on every save and simulate, and by the frontend. A service that
+  appears later and is fired before any of those goes unchecked.
+
 ## Residual risks (accepted, not fixed)
 
 - **Delayed missing-zmanim notification.** A restart landing inside the hold

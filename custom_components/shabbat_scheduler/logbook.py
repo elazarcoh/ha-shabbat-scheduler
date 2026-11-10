@@ -198,6 +198,25 @@ def _note_no_live_targets(message: str, results: list[dict]) -> str:
     return f"{message} — {NO_LIVE_TARGETS_NOTE}"
 
 
+def _note_wrong_targets(message: str, results: list[dict]) -> str:
+    """Say which entity the action skipped because it can't act on it.
+
+    Only on a row that otherwise reads as fired: a call that reached
+    nothing else is `failed` with the same reason as its error.
+    """
+    reasons: list[str] = []
+    for item in results:
+        raw = item.get("wrong_targets")
+        if not isinstance(raw, list):
+            continue
+        for reason in raw:
+            if isinstance(reason, str) and reason and reason not in reasons and reason not in message:
+                reasons.append(reason)
+    if not reasons:
+        return message
+    return f"{message} — {'; '.join(reasons)}"
+
+
 def _note_diagnostics(message: str, results: list[dict]) -> str:
     """Both target diagnostics, in order of how actionable they are.
 
@@ -205,7 +224,9 @@ def _note_diagnostics(message: str, results: list[dict]) -> str:
     mutually exclusive across a multi-call rule, where one call can carry
     each.
     """
-    return _note_no_live_targets(_note_unknown(message, results), results)
+    return _note_wrong_targets(
+        _note_no_live_targets(_note_unknown(message, results), results), results
+    )
 
 
 def _catch_up_message(results: list[dict]) -> str:

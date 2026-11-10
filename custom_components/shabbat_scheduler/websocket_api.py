@@ -15,7 +15,7 @@ from homeassistant.helpers import target as target_helper
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.util import dt as dt_util
 
-from . import ha_validation
+from . import ha_validation, target_filter
 from .block import (
     block_payload,
     compute_block,
@@ -304,6 +304,7 @@ async def ws_run_now(hass: HomeAssistant, connection, msg: dict[str, Any]) -> No
     # the defaults must run_now the same way it would really fire, not
     # against its own bare, possibly-empty target.
     rule = merge_defaults(store.defaults, existing)
+    await target_filter.async_load_descriptions(hass)
     results = await engine.async_apply_rule(rule, simulate=msg["simulate"], at=at)
     connection.send_result(msg["id"], {"results": results})
 
@@ -364,6 +365,7 @@ async def ws_run_day(hass: HomeAssistant, connection, msg: dict[str, Any]) -> No
     resolved = resolve_rules(merged, block, engine._tz())
     day_items = [item for item in resolved if item.rule.day == msg["day"]]
 
+    await target_filter.async_load_descriptions(hass)
     results = []
     for item in day_items:  # in resolve_rules' own order - unchanged
         result = await engine.async_apply_rule(

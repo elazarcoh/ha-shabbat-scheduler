@@ -202,3 +202,83 @@ async def test_a_real_failing_call_does_not_carry_the_redundant_diagnostic(hass)
 
     assert results[0]["outcome"] == "failed"
     assert "invalid_data" not in results[0]
+
+
+# --- an action only acts on the entities it takes ------------------------
+
+
+def _takes(hass, action, domains):
+    from homeassistant.helpers.service import async_set_service_schema
+
+    domain, service = action.split(".")
+    calls = async_mock_service(hass, domain, service)
+    async_set_service_schema(
+        hass, domain, service, {"fields": {}, "target": {"entity": [{"domain": domains}]}})
+    return calls
+
+
+async def test_an_entity_the_action_cannot_take_is_a_failure_not_a_call(hass):
+    """The kids' sleep step: input_boolean.turn_on on a switch did nothing."""
+    engine = await _engine(hass)
+    _takes(hass, "input_boolean.turn_on", ["input_boolean"])
+    _takes(hass, "switch.turn_on", ["switch"])
+    hass.states.async_set("switch.slp", "off")
+    rule = Rule(
+        id="r", profile=1, day="1", time=time(11, 0),
+        action="input_boolean.turn_on", target={"entity_id": ["switch.slp"]},
+    )
+    [result] = await engine.async_apply_rule(rule)
+
+    assert result["outcome"] == "failed"
+    assert result["error"] == (
+        "input_boolean.turn_on can't act on switch.slp (it takes input_boolean entities); "
+        "use switch.turn_on")
+    assert "wrong_targets" not in result
+    assert "no_live_targets" not in result
+
+
+async def test_a_partly_wrong_target_is_called_and_names_what_it_skipped(hass):
+    engine = await _engine(hass)
+    _takes(hass, "input_boolean.turn_on", ["input_boolean"])
+    hass.states.async_set("switch.slp", "off")
+    hass.states.async_set("input_boolean.salon", "off")
+    rule = Rule(
+        id="r", profile=1, day="1", time=time(11, 0),
+        action="input_boolean.turn_on",
+        target={"entity_id": ["input_boolean.salon", "switch.slp"]},
+    )
+    [result] = await engine.async_apply_rule(rule)
+
+    assert result["outcome"] == "called"
+    assert result["wrong_targets"] == [
+        "input_boolean.turn_on can't act on switch.slp (it takes input_boolean entities)"]
+
+
+async def test_simulate_names_an_entity_the_action_cannot_take(hass):
+    engine = await _engine(hass)
+    calls = _takes(hass, "input_boolean.turn_on", ["input_boolean"])
+    hass.states.async_set("switch.slp", "off")
+    rule = Rule(
+        id="r", profile=1, day="1", time=time(11, 0),
+        action="input_boolean.turn_on", target={"entity_id": ["switch.slp"]},
+    )
+    [result] = await engine.async_apply_rule(rule, simulate=True)
+
+    assert calls == []
+    assert result["outcome"] == "would_call"
+    assert "can't act on switch.slp" in result["wrong_targets"][0]
+    assert "no_live_targets" not in result
+
+
+def test_the_outcome_keeps_the_reasons_an_action_skipped_an_entity():
+    from datetime import UTC, datetime
+
+    from custom_components.shabbat_scheduler.engine import build_outcome, outcome_from_results
+
+    at = datetime(2026, 11, 13, 16, 0, tzinfo=UTC)
+    reason = "input_boolean.turn_on can't act on switch.slp"
+    record = outcome_from_results(
+        [{"outcome": "called", "wrong_targets": [reason]},
+         {"outcome": "called", "wrong_targets": [reason]}], at)
+    assert record["wrong_targets"] == [reason]
+    assert "wrong_targets" not in build_outcome("called", at)

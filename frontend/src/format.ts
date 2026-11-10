@@ -320,6 +320,10 @@ export function formatOutcome(outcome: LastOutcome, language?: string): string {
   if (outcome.no_live_targets === true) {
     text = `${text} — ${t(language, 'outcome_reached_nothing')}`;
   }
+  const wrong = (outcome.wrong_targets ?? []).filter((reason) => !text.includes(reason));
+  if (wrong.length > 0) {
+    text = `${text} — ${wrong.join('; ')}`;
+  }
   const invalidData = outcome.invalid_data ?? [];
   if (invalidData.length > 0) {
     text = `${text} — ${t(language, 'outcome_invalid_data')}${invalidData.join('; ')}`;
@@ -363,6 +367,7 @@ export function outcomeIsBad(outcome: LastOutcome): boolean {
     outcome.outcome === 'skipped_stale' ||
     (outcome.unknown_targets ?? []).length > 0 ||
     outcome.no_live_targets === true ||
+    (outcome.wrong_targets ?? []).length > 0 ||
     (outcome.invalid_data ?? []).length > 0 ||
     !(outcome.outcome in OUTCOME_LABELS)
   );
@@ -425,6 +430,9 @@ export function foldCallResults(
   const invalidData = Array.from(new Set(
     results.flatMap((r) => (r.invalid_data as string[] | undefined) ?? []),
   ));
+  const wrongTargets = Array.from(new Set(
+    results.flatMap((r) => (r.wrong_targets as string[] | undefined) ?? []),
+  ));
   return {
     outcome,
     at,
@@ -432,6 +440,7 @@ export function foldCallResults(
     unknown_targets: unknownTargets.length ? unknownTargets : undefined,
     no_live_targets: results.some((r) => r.no_live_targets === true) || undefined,
     invalid_data: invalidData.length ? invalidData : undefined,
+    wrong_targets: wrongTargets.length ? wrongTargets : undefined,
   };
 }
 

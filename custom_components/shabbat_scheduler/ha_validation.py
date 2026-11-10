@@ -20,6 +20,13 @@ whether the entity or the service exists at all. That is knowable right
 now, from the entity's live state, with no service call - unlike "does
 this service exist," which needs nothing but a name and can go stale
 between here and fire time regardless.
+
+The target check in `async_validate_rule` is the same kind of exception:
+an entity id the user typed names its own domain, and the action's
+description (`target_filter`) says which domains it takes, so
+`input_boolean.turn_on` on `switch.x` is wrong now and will be wrong at
+fire time, when Home Assistant would skip it with only a log line. An
+action Home Assistant does not describe right now is not checked.
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ from homeassistant.helpers import condition
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import target as target_helper
 
+from . import target_filter
 from .models import Rule
 from .rule_schema import RuleValidationError
 
@@ -166,9 +174,28 @@ def validate_defaults_for_ha(defaults: dict) -> None:
     validate_target(target)
 
 
+def validate_action_targets(hass: HomeAssistant, action: str, target: dict) -> None:
+    """Raise RuleValidationError if `action` can't act on an entity the target names.
+
+    Only typed ids: what an area or label brings in is narrowed to what the
+    action takes at fire time instead, as Home Assistant itself does.
+    Needs `target_filter.async_load_descriptions` to have run.
+    """
+    from .engine import _named_entity_ids  # engine imports this module
+
+    try:
+        typed = _named_entity_ids(target)
+    except Exception:  # noqa: BLE001 - shape is validate_target's job
+        return
+    if wrong := target_filter.rejected(hass, action, typed):
+        raise RuleValidationError(target_filter.describe(hass, action, wrong))
+
+
 async def async_validate_rule(hass: HomeAssistant, rule: Rule) -> None:
     """Raise RuleValidationError if HA would refuse this rule's shape."""
+    await target_filter.async_load_descriptions(hass)
     validate_target(dict(rule.target))
+    validate_action_targets(hass, rule.action, dict(rule.target))
     validate_data_against_target(hass, dict(rule.target), dict(rule.data))
 
     for item in rule.condition:

@@ -38,6 +38,7 @@ def _outcome_shape(outcome: dict[str, Any] | None) -> dict[str, Any] | None:
         "has_detail": bool(outcome.get("detail")),
         "unknown_target_count": len(outcome.get("unknown_targets") or []),
         "no_live_targets": bool(outcome.get("no_live_targets")),
+        "wrong_target_count": len(outcome.get("wrong_targets") or []),
     }
 
 

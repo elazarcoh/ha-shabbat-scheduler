@@ -42,7 +42,7 @@ from .const import (
     SIGNAL_RULES_CHANGED,
     UNKNOWN_ENTITY_PREFIX,
 )
-from . import repairs
+from . import repairs, target_filter
 from .device_ops import expand_action
 from .ha_validation import describe_data_violations
 from .models import Block, ResolvedRule, Rule
@@ -186,6 +186,7 @@ def build_outcome(
     *,
     unknown_targets: list[str] | None = None,
     no_live_targets: bool = False,
+    wrong_targets: list[str] | None = None,
 ) -> dict:
     """One rule's durable verdict, in the shape the card reads.
 
@@ -216,6 +217,10 @@ def build_outcome(
         record["unknown_targets"] = list(unknown_targets)
     if no_live_targets:
         record["no_live_targets"] = True
+    if wrong_targets:
+        # Reasons, not ids: "input_boolean.turn_on can't act on switch.x
+        # (...); use switch.turn_on" is what the reader can act on.
+        record["wrong_targets"] = list(wrong_targets)
     return record
 
 
@@ -270,6 +275,9 @@ def outcome_from_results(results: list[dict], at: datetime) -> dict | None:
         no_live_targets=any(
             item.get("no_live_targets") is True for item in results
         ),
+        wrong_targets=list(dict.fromkeys(
+            reason for item in results for reason in item.get("wrong_targets") or ()
+        )),
     )
 
 
@@ -1127,10 +1135,12 @@ class ShabbatEngine:
     def _entities_of(self, rule: Rule) -> set[str]:
         """Every entity `rule` acts on, or an empty set if that is unknowable.
 
-        Narrowed to the action's own domain when it has one: `light.turn_on`
-        on an area only reaches that area's lights, and counting its sensors
-        too would stop a later `light.turn_off` on the same lights from ever
-        covering it.
+        Narrowed to what the action can act on: `light.turn_on` on an area
+        only reaches that area's lights, and counting its sensors too would
+        stop a later `light.turn_off` on the same lights from ever covering
+        it. Home Assistant's own description of the action says which
+        entities those are; an action without one falls back to its own
+        domain (`homeassistant.*` excepted, which takes any).
         """
         if not rule.target or _targets_every_entity(rule.target):
             return set()
@@ -1141,6 +1151,8 @@ class ShabbatEngine:
         except Exception:  # noqa: BLE001 - unknowable means "do not supersede"
             return set()
         entities = selected.referenced | selected.indirectly_referenced
+        if target_filter.entity_filters(self.hass, rule.action) is not None:
+            return {e for e in entities if target_filter.accepts(self.hass, rule.action, e)}
         domain = rule.action.partition(".")[0]
         if domain != "homeassistant":
             entities = {e for e in entities if e.startswith(f"{domain}.")}
@@ -1161,8 +1173,18 @@ class ShabbatEngine:
         """
         return context.id in self._our_contexts
 
-    def _inspect_target(self, target: dict) -> tuple[list[str], bool]:
-        """(typed ids that do not exist, whether NOTHING real was targeted).
+    def _inspect_target(
+        self, target: dict, action: str = ""
+    ) -> tuple[list[str], bool, list[str]]:
+        """(typed ids that do not exist, whether NOTHING real was targeted,
+        typed ids that exist but `action` can't act on).
+
+        The third is the same quiet failure as a typo in different clothes:
+        Home Assistant skips an entity the action does not take (e.g.
+        `input_boolean.turn_on` on a switch) with only a log warning. Such
+        entities also do not count as "real" for `nothing_real`, since the
+        call cannot reach them. Which entities an action takes comes from
+        its own description (`target_filter`); unknown means accepted.
 
         TWO SEPARATE QUESTIONS, kept apart deliberately. Conflating them
         is what produced both halves of Gap B's first fix being wrong in
@@ -1208,7 +1230,7 @@ class ShabbatEngine:
         in the domain - the exact inverse of "reached nothing".
         """
         if not target:
-            return [], False
+            return [], False, []
         # The whole body, not just the resolve: a malformed target can
         # equally throw in `_named_entity_ids` or in `TargetSelection`,
         # and neither is a reason to abandon a call HA might well accept.
@@ -1221,9 +1243,14 @@ class ShabbatEngine:
                 entity_id for entity_id in typed
                 if self.hass.states.get(entity_id) is None
             )
+            wrong = target_filter.rejected(
+                self.hass, action,
+                (e for e in typed if self.hass.states.get(e) is not None),
+            ) if action else []
             resolved = selected.referenced | selected.indirectly_referenced
             nothing_real = not _targets_every_entity(target) and not any(
                 self.hass.states.get(entity_id) is not None
+                and (not action or target_filter.accepts(self.hass, action, entity_id))
                 for entity_id in resolved
             )
         except Exception:  # noqa: BLE001 - a bad target must not stop the call
@@ -1235,8 +1262,8 @@ class ShabbatEngine:
             # raising from here. Covered by
             # `test_a_target_home_assistant_cannot_even_parse_does_not_raise`.
             _LOGGER.debug("could not resolve target %s", target, exc_info=True)
-            return [], False
-        return unknown, nothing_real
+            return [], False, []
+        return unknown, nothing_real, wrong
 
     async def _call(
         self,
@@ -1261,14 +1288,19 @@ class ShabbatEngine:
         # exactly where you want to be told about a misspelt entity id, and
         # one that reported "would_call" for a target that cannot resolve
         # would be the same quiet failure one step earlier.
-        unknown, nothing_real = self._inspect_target(target)
+        # From the cache only: loaded at start and on every save, never
+        # here, where an await would let a timer interleave with catch-up.
+        unknown, nothing_real, wrong = self._inspect_target(target, action)
+        wrong_reason = target_filter.describe(self.hass, action, wrong) if wrong else ""
+        if wrong:
+            _LOGGER.warning("rule '%s': %s", rule.name or rule.id, wrong_reason)
         if unknown:
             result["unknown_targets"] = unknown
             _LOGGER.warning(
                 "rule '%s' targets %s, which do not exist",
                 rule.name or rule.id, ", ".join(unknown),
             )
-        elif nothing_real:
+        elif nothing_real and not wrong:
             # THE THIRD DIAGNOSTIC. Nothing is misspelt and the call is
             # genuinely made, so this is not `failed` - but the target
             # resolved to no entity that exists, so the call cannot have
@@ -1297,6 +1329,8 @@ class ShabbatEngine:
             invalid_data = describe_data_violations(self.hass, target, data)
             if invalid_data:
                 result["invalid_data"] = invalid_data
+            if wrong:
+                result["wrong_targets"] = [wrong_reason]
             result["outcome"] = "would_call"
             return result
 
@@ -1369,10 +1403,21 @@ class ShabbatEngine:
                 # A partial miss therefore stays "called": the call did
                 # genuinely help the entities that exist, and
                 # `unknown_targets` still reports the typo.
+                #
+                # An entity the action can't act on counts like a typo:
+                # when nothing else the call reached is real, it reached
+                # nothing and is `failed`, naming the right action; when
+                # something else was reached it stays `called` and says
+                # which entity it skipped.
                 if unknown and nothing_real:
                     result["outcome"] = "failed"
                     result["error"] = UNKNOWN_ENTITY_PREFIX + ", ".join(unknown)
+                elif wrong and nothing_real:
+                    result["outcome"] = "failed"
+                    result["error"] = wrong_reason
                 else:
                     result["outcome"] = "called"
+                    if wrong:
+                        result["wrong_targets"] = [wrong_reason]
                 return result
         return result
